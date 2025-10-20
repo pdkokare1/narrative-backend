@@ -7,8 +7,6 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
-const geminiService = require('./services/geminiService');
-
 const app = express();
 
 // Security & Performance Middleware
@@ -19,8 +17,8 @@ app.use(express.json());
 
 // Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100
 });
 app.use('/api/', limiter);
 
@@ -34,7 +32,6 @@ mongoose.connect(process.env.MONGODB_URI, {
 
 // Enhanced Article Schema with All Components
 const articleSchema = new mongoose.Schema({
-  // Basic Info
   headline: { type: String, required: true },
   summary: { type: String, required: true },
   source: { type: String, required: true },
@@ -44,11 +41,9 @@ const articleSchema = new mongoose.Schema({
   imageUrl: String,
   publishedAt: Date,
   
-  // Bias Scoring
   biasScore: { type: Number, required: true },
   biasLabel: String,
   
-  // 30+ Bias Components
   biasComponents: {
     linguistic: {
       sentimentPolarity: Number,
@@ -73,7 +68,6 @@ const articleSchema = new mongoose.Schema({
     }
   },
   
-  // Credibility Scoring
   credibilityScore: { type: Number, required: true },
   credibilityGrade: String,
   credibilityComponents: {
@@ -85,7 +79,6 @@ const articleSchema = new mongoose.Schema({
     audienceTrust: Number
   },
   
-  // Reliability Scoring
   reliabilityScore: { type: Number, required: true },
   reliabilityGrade: String,
   reliabilityComponents: {
@@ -97,21 +90,17 @@ const articleSchema = new mongoose.Schema({
     updateMaintenance: Number
   },
   
-  // Trust Score
   trustScore: { type: Number, required: true },
   trustLevel: String,
   
-  // Coverage & Clustering
   coverageLeft: Number,
   coverageCenter: Number,
   coverageRight: Number,
   clusterId: Number,
   
-  // Additional Analysis
   keyFindings: [String],
   recommendations: [String],
   
-  // Metadata
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
   analysisVersion: { type: String, default: '2.0' }
@@ -126,24 +115,23 @@ articleSchema.index({ biasScore: 1 });
 
 const Article = mongoose.model('Article', articleSchema);
 
-// ==================== ROUTES ====================
-
-// Health Check
+// Routes
 app.get('/', (req, res) => {
   res.json({
     message: 'The Narrative API v2.0 - Production Ready',
     status: 'healthy',
     features: [
       'Enhanced Bias Detection (30+ parameters)',
-      'Complete Credibility Scoring',
-      'Complete Reliability Scoring',
+      'Complete Credibility Scoring (6 components)',
+      'Complete Reliability Scoring (6 components)',
       'Trust Score Calculation',
-      'Multiple API Keys Support',
+      'Multiple API Keys Support (Rotational)',
       'Story Clustering',
-      'Advanced Filtering'
+      'Advanced Filtering',
+      'Auto-refresh every 6 hours'
     ],
     timestamp: new Date(),
-    uptime: process.uptime()
+    uptime: Math.floor(process.uptime())
   });
 });
 
@@ -161,7 +149,6 @@ app.get('/api/articles', async (req, res) => {
       offset = 0
     } = req.query;
     
-    // Build query
     let query = {};
     
     if (category && category !== 'All Categories') {
@@ -187,7 +174,6 @@ app.get('/api/articles', async (req, res) => {
       }
     }
     
-    // Additional filters
     if (minTrust) {
       query.trustScore = { $gte: parseInt(minTrust) };
     }
@@ -196,8 +182,7 @@ app.get('/api/articles', async (req, res) => {
       query.biasScore = { $lte: parseInt(maxBias) };
     }
     
-    // Sort options
-    let sortOption = { createdAt: -1 }; // Latest first
+    let sortOption = { createdAt: -1 };
     
     if (sort === 'Highest Quality') {
       sortOption = { trustScore: -1, credibilityScore: -1 };
@@ -207,13 +192,11 @@ app.get('/api/articles', async (req, res) => {
       sortOption = { biasScore: 1 };
     }
     
-    // Execute query
     const articles = await Article.find(query)
       .sort(sortOption)
       .limit(parseInt(limit))
       .skip(parseInt(offset));
     
-    // Get total count for pagination
     const total = await Article.countDocuments(query);
     
     res.json({
@@ -258,21 +241,21 @@ app.get('/api/cluster/:clusterId', async (req, res) => {
       clusterId: parseInt(req.params.clusterId) 
     }).sort({ trustScore: -1 });
     
-    // Group by political lean
     const grouped = {
       left: articles.filter(a => ['Left', 'Left-Leaning'].includes(a.politicalLean)),
       center: articles.filter(a => a.politicalLean === 'Center'),
       right: articles.filter(a => ['Right-Leaning', 'Right'].includes(a.politicalLean))
     };
     
-    // Add statistics
     const stats = {
       totalArticles: articles.length,
       leftCount: grouped.left.length,
       centerCount: grouped.center.length,
       rightCount: grouped.right.length,
-      averageBias: articles.reduce((sum, a) => sum + a.biasScore, 0) / articles.length,
-      averageTrust: articles.reduce((sum, a) => sum + a.trustScore, 0) / articles.length
+      averageBias: articles.length > 0 ? 
+        Math.round(articles.reduce((sum, a) => sum + a.biasScore, 0) / articles.length) : 0,
+      averageTrust: articles.length > 0 ?
+        Math.round(articles.reduce((sum, a) => sum + a.trustScore, 0) / articles.length) : 0
     };
     
     res.json({
@@ -293,7 +276,6 @@ app.get('/api/stats', async (req, res) => {
     const sources = await Article.distinct('source');
     const categories = await Article.distinct('category');
     
-    // Average scores
     const avgBias = await Article.aggregate([
       { $group: { _id: null, avg: { $avg: '$biasScore' } } }
     ]);
@@ -302,9 +284,12 @@ app.get('/api/stats', async (req, res) => {
       { $group: { _id: null, avg: { $avg: '$trustScore' } } }
     ]);
     
-    // Distribution by lean
     const leanDistribution = await Article.aggregate([
       { $group: { _id: '$politicalLean', count: { $sum: 1 } } }
+    ]);
+    
+    const categoryDistribution = await Article.aggregate([
+      { $group: { _id: '$category', count: { $sum: 1 } } }
     ]);
     
     res.json({
@@ -314,12 +299,29 @@ app.get('/api/stats', async (req, res) => {
       averageBias: Math.round(avgBias[0]?.avg || 0),
       averageTrust: Math.round(avgTrust[0]?.avg || 0),
       leanDistribution,
+      categoryDistribution,
       lastUpdated: new Date()
     });
     
   } catch (error) {
     console.error('Error fetching stats:', error);
     res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
+});
+
+// Get API Key Usage Statistics
+app.get('/api/stats/keys', async (req, res) => {
+  try {
+    const geminiService = require('./services/geminiService');
+    const newsService = require('./services/newsService');
+    
+    res.json({
+      gemini: geminiService.getStatistics(),
+      news: newsService.getStatistics(),
+      timestamp: new Date()
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to get key statistics' });
   }
 });
 
@@ -344,10 +346,10 @@ app.post('/api/fetch-news', async (req, res) => {
   }
 });
 
-// ==================== NEWS FETCHING & ANALYSIS ====================
-
+// Fetch and Analyze News
 async function fetchAndAnalyzeNews() {
-  const axios = require('axios');
+  const newsService = require('./services/newsService');
+  const geminiService = require('./services/geminiService');
   
   const stats = {
     fetched: 0,
@@ -357,33 +359,20 @@ async function fetchAndAnalyzeNews() {
   };
   
   try {
-    console.log('📡 Fetching from NewsAPI...');
+    console.log('📡 Fetching from NewsAPI with rotational keys...');
     
-    // Fetch from NewsAPI
-    const response = await axios.get('https://newsapi.org/v2/top-headlines', {
-      params: {
-        country: 'us',
-        pageSize: 30,
-        apiKey: process.env.NEWS_API_KEY
-      },
-      timeout: 10000
-    });
-    
-    const articles = response.data.articles;
+    const articles = await newsService.fetchNews();
     stats.fetched = articles.length;
     console.log(`📰 Found ${articles.length} articles`);
     
-    // Process each article
     for (const article of articles) {
       try {
-        // Skip if already exists
         const exists = await Article.findOne({ url: article.url });
         if (exists) {
           stats.skipped++;
           continue;
         }
         
-        // Skip if no description
         if (!article.description || article.description.length < 50) {
           stats.skipped++;
           continue;
@@ -391,10 +380,8 @@ async function fetchAndAnalyzeNews() {
         
         console.log(`🤖 Analyzing: ${article.title.substring(0, 60)}...`);
         
-        // Analyze with Gemini (with retry and multiple keys)
         const analysis = await geminiService.analyzeArticle(article);
         
-        // Create new article with complete data
         const newArticle = new Article({
           headline: article.title,
           summary: analysis.summary,
@@ -405,32 +392,26 @@ async function fetchAndAnalyzeNews() {
           imageUrl: article.urlToImage,
           publishedAt: article.publishedAt,
           
-          // Bias
           biasScore: analysis.biasScore,
           biasLabel: analysis.biasLabel,
           biasComponents: analysis.biasComponents,
           
-          // Credibility
           credibilityScore: analysis.credibilityScore,
           credibilityGrade: analysis.credibilityGrade,
           credibilityComponents: analysis.credibilityComponents,
           
-          // Reliability
           reliabilityScore: analysis.reliabilityScore,
           reliabilityGrade: analysis.reliabilityGrade,
           reliabilityComponents: analysis.reliabilityComponents,
           
-          // Trust
           trustScore: analysis.trustScore,
           trustLevel: analysis.trustLevel,
           
-          // Coverage
           coverageLeft: analysis.coverageLeft,
           coverageCenter: analysis.coverageCenter,
           coverageRight: analysis.coverageRight,
           clusterId: analysis.clusterId,
           
-          // Additional
           keyFindings: analysis.keyFindings || [],
           recommendations: analysis.recommendations || []
         });
@@ -440,7 +421,6 @@ async function fetchAndAnalyzeNews() {
         
         console.log(`✅ Saved: ${article.title.substring(0, 60)}...`);
         
-        // Small delay to avoid rate limits
         await sleep(500);
         
       } catch (error) {
@@ -469,8 +449,6 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// ==================== CRON JOBS ====================
-
 // Auto-fetch news every 6 hours
 cron.schedule('0 */6 * * *', async () => {
   console.log('🔄 Auto-fetching news (scheduled)...');
@@ -493,8 +471,6 @@ cron.schedule('0 2 * * *', async () => {
   }
 });
 
-// ==================== ERROR HANDLING ====================
-
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
@@ -509,8 +485,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-// ==================== START SERVER ====================
-
+// Start server
 const PORT = process.env.PORT || 3001;
 
 app.listen(PORT, () => {
@@ -525,9 +500,10 @@ app.listen(PORT, () => {
 🚀 Server: http://localhost:${PORT}
 📍 Environment: ${process.env.NODE_ENV || 'development'}
 💾 Database: Connected
-🤖 AI: ${geminiService.apiKeys ? geminiService.apiKeys.length : 0} Gemini keys loaded
-📰 News: NewsAPI ready
+🤖 AI: Multiple Gemini keys (rotational)
+📰 News: Multiple NewsAPI keys (rotational)
 🔄 Auto-fetch: Every 6 hours
+🧹 Auto-cleanup: Daily at 2 AM
 
 API Endpoints:
   GET  /                     - Health check
@@ -535,6 +511,7 @@ API Endpoints:
   GET  /api/articles/:id     - Get single article
   GET  /api/cluster/:id      - Compare coverage
   GET  /api/stats            - Get statistics
+  GET  /api/stats/keys       - Get API key usage
   POST /api/fetch-news       - Manual fetch trigger
 
 Ready to serve! 🎉
