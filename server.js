@@ -549,18 +549,3 @@ process.on('SIGTERM', () => {
     process.exit(0);
   });
 });
-```
-
-Save this as: `server.js`
-
-This file includes:
-✅ Multiple Gemini API keys with rotation
-✅ All enhanced formulas (30+ bias parameters)
-✅ Complete credibility & reliability scoring
-✅ Trust score calculation
-✅ Advanced filtering & sorting
-✅ Story clustering
-✅ Rate limiting & security
-✅ Error handling
-✅ Automatic cleanup
-✅ Comprehensive logging
