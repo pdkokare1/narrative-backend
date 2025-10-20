@@ -1,0 +1,211 @@
+// services/geminiService.js
+const axios = require('axios');
+
+class GeminiService {
+  constructor() {
+    this.apiKeys = this.loadApiKeys();
+    this.currentKeyIndex = 0;
+    this.keyUsageCount = new Map();
+    this.keyErrorCount = new Map();
+
+    // Initialize usage trackers
+    this.apiKeys.forEach(key => {
+      this.keyUsageCount.set(key, 0);
+      this.keyErrorCount.set(key, 0);
+    });
+  }
+
+  loadApiKeys() {
+    // Supports GEMINI_API_KEY_1 ... GEMINI_API_KEY_10 in your .env
+    const keys = [];
+    for (let i = 1; i <= 20; i++) {
+      const key = process.env[`GEMINI_API_KEY_${i}`];
+      if (key) keys.push(key);
+    }
+    // Allows a fallback default key
+    if (keys.length === 0 && process.env.GEMINI_API_KEY) keys.push(process.env.GEMINI_API_KEY);
+    if (keys.length === 0) throw new Error('No Gemini API keys provided!');
+    return keys;
+  }
+
+  // Round-robin Gemini API key selection, skipping keys with repeated errors
+  getNextApiKey() {
+    if (!this.apiKeys.length) throw new Error('No Gemini API keys available');
+    const maxErrors = 5; // could be tuned
+    let checked = 0;
+    while (checked < this.apiKeys.length) {
+      const key = this.apiKeys[this.currentKeyIndex];
+      const errorCount = this.keyErrorCount.get(key) || 0;
+      this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+      if (errorCount < maxErrors) return key;
+      checked++;
+    }
+    // If all keys have errors, reset error counts
+    this.apiKeys.forEach(key => this.keyErrorCount.set(key, 0));
+    return this.apiKeys[0];
+  }
+
+  recordSuccess(apiKey) {
+    this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
+  }
+  recordError(apiKey) {
+    this.keyErrorCount.set(apiKey, (this.keyErrorCount.get(apiKey) || 0) + 1);
+  }
+
+  // Main analysis function with automatic retries and API key rotation
+  async analyzeArticle(article, maxRetries = 3) {
+    let lastError = null;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const apiKey = this.getNextApiKey();
+        const result = await this.makeAnalysisRequest(article, apiKey);
+        this.recordSuccess(apiKey);
+        return result;
+      } catch (err) {
+        lastError = err;
+        // Optionally: record error for this key
+      }
+    }
+    throw lastError;
+  }
+
+  async makeAnalysisRequest(article, apiKey) {
+    const prompt = this.buildEnhancedPrompt(article);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+    try {
+      const response = await axios.post(
+        url,
+        {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.4,
+            topK: 32,
+            topP: 0.95,
+            maxOutputTokens: 2048
+          }
+        },
+        { timeout: 30000 }
+      );
+      return this.parseAnalysisResponse(response.data);
+    } catch (err) {
+      this.recordError(apiKey);
+      throw err;
+    }
+  }
+
+  buildEnhancedPrompt(article) {
+    return `You are an expert news analyst. Analyze this news article. Return ONLY valid JSON (no markdown, no explanations).
+
+Article Title: ${article.title}
+Description: ${article.description || ''}
+
+Return detailed multifactor analysis (see example structure):
+
+{
+  "summary": "exactly 60 words summary",
+  "category": "Politics/Economy/Technology/Health/Environment/Justice/Education/Entertainment/Sports",
+  "politicalLean": "Left/Left-Leaning/Center/Right-Leaning/Right",
+
+  "biasScore": 44,
+  "biasLabel": "Low Bias/Moderate/High/Extreme",
+  "biasComponents": {
+    "linguistic": {
+      "sentimentPolarity": 38,
+      "emotionalLanguage": 35,
+      "loadedTerms": 42,
+      "complexityBias": 40
+    },
+    "sourceSelection": {
+      "sourceDiversity": 55,
+      "expertBalance": 53,
+      "attributionTransparency": 74
+    },
+    "demographic": {
+      "genderBalance": 60,
+      "racialBalance": 56,
+      "ageRepresentation": 52
+    },
+    "framing": {
+      "headlineFraming": 47,
+      "storySelection": 54,
+      "omissionBias": 39
+    }
+  },
+
+  "credibilityScore": 87,
+  "credibilityGrade": "A/A+/A-/B+/B/B-/C+/C/C-/D/F",
+  "credibilityComponents": {
+    "sourceCredibility": 88,
+    "factVerification": 90,
+    "professionalism": 84,
+    "evidenceQuality": 80,
+    "transparency": 88,
+    "audienceTrust": 78
+  },
+
+  "reliabilityScore": 93,
+  "reliabilityGrade": "A+",
+  "reliabilityComponents": {
+    "consistency": 95,
+    "temporalStability": 92,
+    "qualityControl": 94,
+    "publicationStandards": 90,
+    "correctionsPolicy": 88,
+    "updateMaintenance": 89
+  },
+
+  "trustScore": 90,
+  "trustLevel": "Highly Trustworthy/Very Trustworthy/Trustworthy/Moderately Trustworthy/Questionable/Low Trust",
+
+  "coverageLeft": 33,
+  "coverageCenter": 35,
+  "coverageRight": 32,
+  "clusterId": 5,
+
+  "keyFindings": [
+    "key insight 1",
+    "key insight 2"
+  ],
+  "recommendations": [
+    "User should crosscheck with alternate sources for more context",
+    "Bias is low but fact verification recommended"
+  ]
+}
+
+IMPORTANT: Output ONLY the JSON, no extra explanations.`;
+  }
+
+  parseAnalysisResponse(data) {
+    try {
+      const text = data.candidates[0].content.parts[0].text;
+      let jsonText = text.trim();
+      jsonText = jsonText.replace(/``````/g, '');
+      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('No JSON found in response');
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (!parsed.summary || !parsed.biasScore || !parsed.credibilityScore) {
+        throw new Error('Missing required fields');
+      }
+      // Calculate trustScore if missing
+      if (!parsed.trustScore && parsed.credibilityScore && parsed.reliabilityScore) {
+        parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
+      }
+      return parsed;
+    } catch (err) {
+      throw new Error('Error parsing Gemini response: ' + err.message);
+    }
+  }
+
+  getStatistics() {
+    return {
+      totalKeys: this.apiKeys.length,
+      keyUsage: Array.from(this.keyUsageCount.entries()).map(([key, count]) => ({
+        key: key.substring(0, 10) + '...',
+        usage: count,
+        errors: this.keyErrorCount.get(key) || 0
+      }))
+    }
+  }
+}
+
+module.exports = new GeminiService();
