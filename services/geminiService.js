@@ -33,20 +33,9 @@ class GeminiService {
 
   getNextApiKey() {
     if (!this.apiKeys.length) throw new Error('No Gemini API keys available');
-    const maxErrors = 5;
-    let checked = 0;
-    
-    while (checked < this.apiKeys.length) {
-      const key = this.apiKeys[this.currentKeyIndex];
-      const errorCount = this.keyErrorCount.get(key) || 0;
-      this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-      
-      if (errorCount < maxErrors) return key;
-      checked++;
-    }
-    
-    this.apiKeys.forEach(key => this.keyErrorCount.set(key, 0));
-    return this.apiKeys[0];
+    const key = this.apiKeys[this.currentKeyIndex];
+    this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+    return key;
   }
 
   recordSuccess(apiKey) {
@@ -57,7 +46,7 @@ class GeminiService {
     this.keyErrorCount.set(apiKey, (this.keyErrorCount.get(apiKey) || 0) + 1);
   }
 
-  async analyzeArticle(article, maxRetries = 3) {
+  async analyzeArticle(article, maxRetries = 2) {
     let lastError = null;
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -72,145 +61,149 @@ class GeminiService {
       }
     }
     
-    console.error('All Gemini attempts failed, returning defaults');
+    console.log('Using default analysis (Gemini failed)');
     return this.getDefaultAnalysis(article);
   }
 
   async makeAnalysisRequest(article, apiKey) {
-    const prompt = this.buildEnhancedPrompt(article);
+    const prompt = this.buildPrompt(article);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
     
     try {
-      const response = await axios.post(
-        url,
-        {
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.3,
-            topK: 32,
-            topP: 0.95,
-            maxOutputTokens: 2048
-          }
-        },
-        { timeout: 30000 }
-      );
+      const response = await axios.post(url, {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.3,
+          topK: 32,
+          topP: 0.95,
+          maxOutputTokens: 1024
+        }
+      }, { timeout: 20000 });
       
-      const result = this.parseAnalysisResponse(response.data, article);
+      const result = this.parseResponse(response.data, article);
       return result;
     } catch (err) {
       this.recordError(apiKey);
-      console.error('Gemini API error:', err.response?.data || err.message);
       throw err;
     }
   }
 
-  buildEnhancedPrompt(article) {
-    const safeTitle = (article.title || 'No title').replace(/"/g, "'");
-    const safeDesc = (article.description || 'No description').replace(/"/g, "'");
-    const safeSource = (article.source?.name || 'Unknown').replace(/"/g, "'");
+  buildPrompt(article) {
+    const title = (article.title || '').substring(0, 200);
+    const description = (article.description || '').substring(0, 300);
     
-    return `You are an expert news analyst. Analyze this news article and return ONLY valid JSON with NO markdown formatting, NO code blocks, NO explanations.
+    return `Analyze this news article and return ONLY a JSON object with bias and credibility scores.
 
-Article Title: ${safeTitle}
-Description: ${safeDesc}
-Source: ${safeSource}
+Title: ${title}
+Description: ${description}
 
-Return this EXACT JSON structure with realistic scores (30-80 range):
-
+Return exactly this JSON format:
 {
-  "summary": "A concise 50-60 word summary of the article",
+  "summary": "Brief summary in 40 words",
   "category": "Politics",
-  "politicalLean": "Center",
+  "politicalLean": "Center", 
   "biasScore": 45,
-  "biasLabel": "Moderate Bias",
-  "biasComponents": {
-    "linguistic": {"sentimentPolarity": 42, "emotionalLanguage": 38, "loadedTerms": 45, "complexityBias": 40},
-    "sourceSelection": {"sourceDiversity": 55, "expertBalance": 50, "attributionTransparency": 60},
-    "demographic": {"genderBalance": 50, "racialBalance": 50, "ageRepresentation": 50},
-    "framing": {"headlineFraming": 48, "storySelection": 52, "omissionBias": 45}
-  },
   "credibilityScore": 75,
-  "credibilityGrade": "B+",
-  "credibilityComponents": {"sourceCredibility": 78, "factVerification": 72, "professionalism": 75, "evidenceQuality": 70, "transparency": 76, "audienceTrust": 74},
-  "reliabilityScore": 80,
-  "reliabilityGrade": "A-",
-  "reliabilityComponents": {"consistency": 82, "temporalStability": 78, "qualityControl": 80, "publicationStandards": 79, "correctionsPolicy": 77, "updateMaintenance": 81},
-  "trustScore": 77,
-  "trustLevel": "High Trustworthiness",
-  "coverageLeft": 30,
-  "coverageCenter": 40,
-  "coverageRight": 30,
-  "clusterId": ${Math.floor(Math.random() * 10) + 1},
-  "keyFindings": ["First key finding", "Second insight", "Third observation"],
-  "recommendations": ["Cross-reference with other sources", "Verify specific claims"]
+  "reliabilityScore": 78,
+  "trustScore": 76
 }
 
-CRITICAL: Return ONLY the JSON object. NO markdown, NO backticks, NO explanations.`;
+Return ONLY the JSON object, nothing else.`;
   }
 
-  parseAnalysisResponse(data, article) {
+  parseResponse(data, article) {
     try {
+      // Safety check
       if (!data || !data.candidates || !data.candidates[0]) {
-        console.error('Invalid Gemini response structure');
+        console.error('Invalid Gemini response');
         return this.getDefaultAnalysis(article);
       }
 
-      let text = data.candidates[0].content.parts[0].text.trim();
-      
-      // Remove markdown code blocks without regex
-      if (text.startsWith('```
-        text = text.substring(7);
+      let text = data.candidates[0].content.parts[0].text;
+      if (!text) {
+        console.error('No text in Gemini response');
+        return this.getDefaultAnalysis(article);
       }
-      if (text.startsWith('```')) {
-        text = text.substring(3);
-      }
-      if (text.endsWith('```
-        text = text.substring(0, text.length - 3);
-      }
+
+      // Ultra-safe JSON extraction
       text = text.trim();
       
-      // Find JSON object boundaries
-      const firstBrace = text.indexOf('{');
-      const lastBrace = text.lastIndexOf('}');
+      // Remove markdown if present
+      if (text.includes('```
+        const parts = text.split('```');
+        for (let part of parts) {
+          if (part.includes('{') && part.includes('}')) {
+            text = part;
+            break;
+          }
+        }
+      }
       
-      if (firstBrace === -1 || lastBrace === -1) {
+      // Find JSON boundaries
+      let startIndex = text.indexOf('{');
+      let endIndex = text.lastIndexOf('}');
+      
+      if (startIndex === -1 || endIndex === -1) {
         console.error('No JSON found in response');
         return this.getDefaultAnalysis(article);
       }
       
-      text = text.substring(firstBrace, lastBrace + 1);
+      text = text.substring(startIndex, endIndex + 1);
       
+      // Parse JSON
       const parsed = JSON.parse(text);
       
-      if (!parsed.summary || !parsed.biasScore || !parsed.credibilityScore) {
-        console.error('Missing required fields');
-        return this.getDefaultAnalysis(article);
-      }
+      // Validate and enhance
+      const result = this.enhanceAnalysis(parsed, article);
       
-      parsed.biasScore = Number(parsed.biasScore) || 45;
-      parsed.credibilityScore = Number(parsed.credibilityScore) || 75;
-      parsed.reliabilityScore = Number(parsed.reliabilityScore) || 80;
-      parsed.trustScore = Number(parsed.trustScore) || 76;
+      console.log(`✅ Analyzed successfully: bias=${result.biasScore}, trust=${result.trustScore}`);
+      return result;
       
-      parsed.biasComponents = parsed.biasComponents || this.getDefaultBiasComponents();
-      parsed.credibilityComponents = parsed.credibilityComponents || this.getDefaultCredibilityComponents();
-      parsed.reliabilityComponents = parsed.reliabilityComponents || this.getDefaultReliabilityComponents();
-      
-      parsed.keyFindings = parsed.keyFindings || ['Analysis completed'];
-      parsed.recommendations = parsed.recommendations || ['Cross-check with other sources'];
-      
-      console.log(`✅ Analyzed: bias=${parsed.biasScore}, trust=${parsed.trustScore}`);
-      
-      return parsed;
     } catch (err) {
-      console.error('Parse error:', err.message);
+      console.error('Parse error, using defaults:', err.message);
       return this.getDefaultAnalysis(article);
     }
   }
 
+  enhanceAnalysis(parsed, article) {
+    return {
+      summary: parsed.summary || (article.description || article.title || 'No summary').substring(0, 200),
+      category: parsed.category || this.guessCategory(article.title || ''),
+      politicalLean: parsed.politicalLean || 'Center',
+      
+      biasScore: this.safeNumber(parsed.biasScore, 45),
+      biasLabel: 'Moderate Bias',
+      biasComponents: this.getDefaultBiasComponents(),
+      
+      credibilityScore: this.safeNumber(parsed.credibilityScore, 75),
+      credibilityGrade: 'B',
+      credibilityComponents: this.getDefaultCredibilityComponents(),
+      
+      reliabilityScore: this.safeNumber(parsed.reliabilityScore, 78),
+      reliabilityGrade: 'B+',
+      reliabilityComponents: this.getDefaultReliabilityComponents(),
+      
+      trustScore: this.safeNumber(parsed.trustScore, 76),
+      trustLevel: 'Trustworthy',
+      
+      coverageLeft: 33,
+      coverageCenter: 34,
+      coverageRight: 33,
+      clusterId: Math.floor(Math.random() * 10) + 1,
+      
+      keyFindings: ['Article analyzed successfully', 'Cross-reference recommended'],
+      recommendations: ['Verify key claims', 'Check multiple sources']
+    };
+  }
+
+  safeNumber(value, defaultValue) {
+    const num = Number(value);
+    return (isNaN(num) || num < 0 || num > 100) ? defaultValue : num;
+  }
+
   getDefaultAnalysis(article) {
     return {
-      summary: (article.description || article.title || 'No summary').substring(0, 200),
+      summary: (article.description || article.title || 'No summary available').substring(0, 200),
       category: this.guessCategory(article.title || ''),
       politicalLean: 'Center',
       biasScore: 45,
@@ -228,17 +221,17 @@ CRITICAL: Return ONLY the JSON object. NO markdown, NO backticks, NO explanation
       coverageCenter: 34,
       coverageRight: 33,
       clusterId: Math.floor(Math.random() * 10) + 1,
-      keyFindings: ['Article analyzed with default metrics', 'Manual verification recommended'],
-      recommendations: ['Verify key claims independently', 'Compare with other outlets']
+      keyFindings: ['Default analysis applied', 'Manual verification recommended'],
+      recommendations: ['Verify independently', 'Compare with other sources']
     };
   }
 
   getDefaultBiasComponents() {
     return {
-      linguistic: {sentimentPolarity: 45, emotionalLanguage: 40, loadedTerms: 42, complexityBias: 38},
-      sourceSelection: {sourceDiversity: 50, expertBalance: 48, attributionTransparency: 55},
-      demographic: {genderBalance: 50, racialBalance: 50, ageRepresentation: 50},
-      framing: {headlineFraming: 46, storySelection: 48, omissionBias: 44}
+      linguistic: { sentimentPolarity: 45, emotionalLanguage: 40, loadedTerms: 42, complexityBias: 38 },
+      sourceSelection: { sourceDiversity: 50, expertBalance: 48, attributionTransparency: 55 },
+      demographic: { genderBalance: 50, racialBalance: 50, ageRepresentation: 50 },
+      framing: { headlineFraming: 46, storySelection: 48, omissionBias: 44 }
     };
   }
 
@@ -258,15 +251,15 @@ CRITICAL: Return ONLY the JSON object. NO markdown, NO backticks, NO explanation
 
   guessCategory(title) {
     const t = title.toLowerCase();
-    if (t.includes('trump') || t.includes('biden') || t.includes('election') || t.includes('congress')) return 'Politics';
-    if (t.includes('stock') || t.includes('economy') || t.includes('market') || t.includes('business')) return 'Economy';
-    if (t.includes('tech') || t.includes('apple') || t.includes('google') || t.includes('ai')) return 'Technology';
-    if (t.includes('health') || t.includes('medical') || t.includes('doctor') || t.includes('hospital')) return 'Health';
-    if (t.includes('climate') || t.includes('environment') || t.includes('energy')) return 'Environment';
-    if (t.includes('court') || t.includes('justice') || t.includes('law') || t.includes('crime')) return 'Justice';
-    if (t.includes('school') || t.includes('education') || t.includes('university')) return 'Education';
+    if (t.includes('trump') || t.includes('biden') || t.includes('election')) return 'Politics';
+    if (t.includes('stock') || t.includes('economy') || t.includes('business')) return 'Economy';
+    if (t.includes('tech') || t.includes('apple') || t.includes('google')) return 'Technology';
+    if (t.includes('health') || t.includes('medical') || t.includes('doctor')) return 'Health';
+    if (t.includes('climate') || t.includes('environment')) return 'Environment';
+    if (t.includes('court') || t.includes('justice') || t.includes('law')) return 'Justice';
+    if (t.includes('school') || t.includes('education')) return 'Education';
     if (t.includes('movie') || t.includes('music') || t.includes('celebrity')) return 'Entertainment';
-    if (t.includes('sports') || t.includes('game') || t.includes('team') || t.includes('nfl')) return 'Sports';
+    if (t.includes('sports') || t.includes('game') || t.includes('team')) return 'Sports';
     return 'Politics';
   }
 
