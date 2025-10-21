@@ -8,6 +8,8 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
+
+// Trust proxy for Render
 app.set('trust proxy', 1);
 
 // Security & Performance Middleware
@@ -23,15 +25,12 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
+// MongoDB Connection (remove deprecated options)
+mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ Connected to MongoDB'))
   .catch(err => console.error('❌ MongoDB error:', err));
 
-// Enhanced Article Schema with All Components
+// Enhanced Article Schema
 const articleSchema = new mongoose.Schema({
   headline: { type: String, required: true },
   summary: { type: String, required: true },
@@ -44,7 +43,6 @@ const articleSchema = new mongoose.Schema({
   
   biasScore: { type: Number, required: true },
   biasLabel: String,
-  
   biasComponents: {
     linguistic: {
       sentimentPolarity: Number,
@@ -107,7 +105,7 @@ const articleSchema = new mongoose.Schema({
   analysisVersion: { type: String, default: '2.0' }
 });
 
-// Indexes for performance
+// Indexes
 articleSchema.index({ category: 1, createdAt: -1 });
 articleSchema.index({ politicalLean: 1 });
 articleSchema.index({ clusterId: 1 });
@@ -121,22 +119,12 @@ app.get('/', (req, res) => {
   res.json({
     message: 'The Narrative API v2.0 - Production Ready',
     status: 'healthy',
-    features: [
-      'Enhanced Bias Detection (30+ parameters)',
-      'Complete Credibility Scoring (6 components)',
-      'Complete Reliability Scoring (6 components)',
-      'Trust Score Calculation',
-      'Multiple API Keys Support (Rotational)',
-      'Story Clustering',
-      'Advanced Filtering',
-      'Auto-refresh every 6 hours'
-    ],
     timestamp: new Date(),
     uptime: Math.floor(process.uptime())
   });
 });
 
-// Get Articles with Advanced Filtering
+// Get Articles with Filtering
 app.get('/api/articles', async (req, res) => {
   try {
     const { 
@@ -162,15 +150,15 @@ app.get('/api/articles', async (req, res) => {
     
     // Quality filter
     if (quality && quality !== 'All Quality Levels') {
-      if (quality.includes('90-100')) {
+      if (quality.includes('90-100') || quality.includes('A+')) {
         query.trustScore = { $gte: 90 };
-      } else if (quality.includes('80-89')) {
+      } else if (quality.includes('80-89') || quality.includes('A ')) {
         query.trustScore = { $gte: 80, $lt: 90 };
-      } else if (quality.includes('70-79')) {
+      } else if (quality.includes('70-79') || quality.includes('B')) {
         query.trustScore = { $gte: 70, $lt: 80 };
-      } else if (quality.includes('60-69')) {
+      } else if (quality.includes('60-69') || quality.includes('C')) {
         query.trustScore = { $gte: 60, $lt: 70 };
-      } else if (quality.includes('0-59')) {
+      } else if (quality.includes('0-59') || quality.includes('D') || quality.includes('F')) {
         query.trustScore = { $lt: 60 };
       }
     }
@@ -219,15 +207,13 @@ app.get('/api/articles', async (req, res) => {
   }
 });
 
-// Get Single Article with Full Details
+// Get Single Article
 app.get('/api/articles/:id', async (req, res) => {
   try {
     const article = await Article.findById(req.params.id);
-    
     if (!article) {
       return res.status(404).json({ error: 'Article not found' });
     }
-    
     res.json(article);
   } catch (error) {
     console.error('Error fetching article:', error);
@@ -235,7 +221,7 @@ app.get('/api/articles/:id', async (req, res) => {
   }
 });
 
-// Get Articles by Cluster (for Compare Coverage)
+// Get Cluster
 app.get('/api/cluster/:clusterId', async (req, res) => {
   try {
     const articles = await Article.find({ 
@@ -310,7 +296,7 @@ app.get('/api/stats', async (req, res) => {
   }
 });
 
-// Get API Key Usage Statistics
+// Get API Key Statistics
 app.get('/api/stats/keys', async (req, res) => {
   try {
     const geminiService = require('./services/geminiService');
@@ -326,7 +312,7 @@ app.get('/api/stats/keys', async (req, res) => {
   }
 });
 
-// Manual News Fetch Trigger
+// Manual News Fetch
 app.post('/api/fetch-news', async (req, res) => {
   try {
     console.log('📰 Manual news fetch triggered...');
@@ -360,7 +346,7 @@ async function fetchAndAnalyzeNews() {
   };
   
   try {
-    console.log('📡 Fetching from NewsAPI with rotational keys...');
+    console.log('📡 Fetching from NewsAPI...');
     
     const articles = await newsService.fetchNews();
     stats.fetched = articles.length;
@@ -450,9 +436,9 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Auto-fetch news every 6 hours
+// Auto-fetch every 6 hours
 cron.schedule('0 */6 * * *', async () => {
-  console.log('🔄 Auto-fetching news (scheduled)...');
+  console.log('🔄 Auto-fetching news...');
   try {
     await fetchAndAnalyzeNews();
   } catch (error) {
@@ -460,7 +446,7 @@ cron.schedule('0 */6 * * *', async () => {
   }
 });
 
-// Daily cleanup of old articles (keep last 7 days)
+// Daily cleanup
 cron.schedule('0 2 * * *', async () => {
   console.log('🧹 Cleaning up old articles...');
   try {
@@ -477,7 +463,7 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
-// Global error handler
+// Error handler
 app.use((err, req, res, next) => {
   console.error('Global error:', err);
   res.status(500).json({
@@ -499,7 +485,7 @@ app.listen(PORT, () => {
 ╚════════════════════════════════════════════╝
 
 🚀 Server: http://localhost:${PORT}
-📍 Environment: ${process.env.NODE_ENV || 'development'}
+📍 Environment: ${process.env.NODE_ENV || 'production'}
 💾 Database: Connected
 🤖 AI: Multiple Gemini keys (rotational)
 📰 News: Multiple NewsAPI keys (rotational)
@@ -519,11 +505,10 @@ Ready to serve! 🎉
   `);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
+// Graceful shutdown (FIXED - no callback)
+process.on('SIGTERM', async () => {
   console.log('👋 SIGTERM received, shutting down gracefully...');
-  mongoose.connection.close(() => {
-    console.log('💾 MongoDB connection closed');
-    process.exit(0);
-  });
+  await mongoose.connection.close();
+  console.log('💾 MongoDB connection closed');
+  process.exit(0);
 });
