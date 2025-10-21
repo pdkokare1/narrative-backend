@@ -333,15 +333,42 @@ CRITICAL: Return ONLY the JSON object. NO markdown, NO \`\`\`json tags, NO expla
 
   guessCategory(title) {
     const titleLower = title.toLowerCase();
-    if (titleLower.match(/trump|biden|election|congress|senate|vote|campaign/)) return 'Politics';
-    if (titleLower.match(/stock|economy|market|trade|business|company/)) return 'Economy';
-    if (titleLower.match(/tech|apple|google|ai|software|cyber/)) return 'Technology';
-    if (titleLower.match(/health|medical|hospital|doctor|disease/)) return 'Health';
-    if (titleLower.match(/climate|environment|energy|pollution/)) return 'Environment';
-    if (titleLower.match(/court|justice|law|legal|crime/)) return 'Justice';
-    if (titleLower.match(/school|education|university|student/)) return 'Education';
-    if (titleLower.match(/movie|music|celebrity|entertainment/)) return 'Entertainment';
-    if (titleLower.match(/sports|game|team|player|nfl|nba/)) return 'Sports';
+    
+    // FIXED: Using includes() instead of match() to avoid regex issues
+    if (titleLower.includes('trump') || titleLower.includes('biden') || 
+        titleLower.includes('election') || titleLower.includes('congress') || 
+        titleLower.includes('senate') || titleLower.includes('vote') || 
+        titleLower.includes('campaign')) return 'Politics';
+        
+    if (titleLower.includes('stock') || titleLower.includes('economy') || 
+        titleLower.includes('market') || titleLower.includes('trade') || 
+        titleLower.includes('business') || titleLower.includes('company')) return 'Economy';
+        
+    if (titleLower.includes('tech') || titleLower.includes('apple') || 
+        titleLower.includes('google') || titleLower.includes('ai') || 
+        titleLower.includes('software') || titleLower.includes('cyber')) return 'Technology';
+        
+    if (titleLower.includes('health') || titleLower.includes('medical') || 
+        titleLower.includes('hospital') || titleLower.includes('doctor') || 
+        titleLower.includes('disease')) return 'Health';
+        
+    if (titleLower.includes('climate') || titleLower.includes('environment') || 
+        titleLower.includes('energy') || titleLower.includes('pollution')) return 'Environment';
+        
+    if (titleLower.includes('court') || titleLower.includes('justice') || 
+        titleLower.includes('law') || titleLower.includes('legal') || 
+        titleLower.includes('crime')) return 'Justice';
+        
+    if (titleLower.includes('school') || titleLower.includes('education') || 
+        titleLower.includes('university') || titleLower.includes('student')) return 'Education';
+        
+    if (titleLower.includes('movie') || titleLower.includes('music') || 
+        titleLower.includes('celebrity') || titleLower.includes('entertainment')) return 'Entertainment';
+        
+    if (titleLower.includes('sports') || titleLower.includes('game') || 
+        titleLower.includes('team') || titleLower.includes('player') || 
+        titleLower.includes('nfl') || titleLower.includes('nba')) return 'Sports';
+        
     return 'Politics';
   }
 
