@@ -92,7 +92,8 @@ class GeminiService {
     const title = (article.title || '').substring(0, 200);
     const description = (article.description || '').substring(0, 300);
     
-    return `Analyze this news article and return ONLY a JSON object with bias and credibility scores.
+    return (
+`Analyze this news article and return ONLY a JSON object with bias and credibility scores.
 
 Title: ${title}
 Description: ${description}
@@ -108,57 +109,55 @@ Return exactly this JSON format:
   "trustScore": 76
 }
 
-Return ONLY the JSON object, nothing else.`;
+Return ONLY the JSON object, nothing else.`
+    );
   }
 
   parseResponse(data, article) {
     try {
       // Safety check
-      if (!data || !data.candidates || !data.candidates[0]) {
+      if (!data || !data.candidates || !data.candidates) {
         console.error('Invalid Gemini response');
         return this.getDefaultAnalysis(article);
       }
 
-      let text = data.candidates[0].content.parts[0].text;
+      let text = data.candidates.content.parts.text;
       if (!text) {
         console.error('No text in Gemini response');
         return this.getDefaultAnalysis(article);
       }
 
-      // Ultra-safe JSON extraction
-      text = text.trim();
-      
-      // Remove markdown if present
-      if (text.includes('```
-        const parts = text.split('```');
-        for (let part of parts) {
-          if (part.includes('{') && part.includes('}')) {
-            text = part;
+      // Ultra-safe JSON extraction (NO REGEX, NO MULTILINE SYNTAX ERRORS)
+      text = String(text).trim();
+
+      // Remove markdown code block markers
+      if (text.includes('```')) {
+        const pieces = text.split('```
+        for (let piece of pieces) {
+          if (piece.includes('{') && piece.includes('}')) {
+            text = piece;
             break;
           }
         }
       }
-      
       // Find JSON boundaries
       let startIndex = text.indexOf('{');
       let endIndex = text.lastIndexOf('}');
-      
       if (startIndex === -1 || endIndex === -1) {
         console.error('No JSON found in response');
         return this.getDefaultAnalysis(article);
       }
-      
       text = text.substring(startIndex, endIndex + 1);
-      
-      // Parse JSON
+
+      // Try parse
       const parsed = JSON.parse(text);
-      
+
       // Validate and enhance
       const result = this.enhanceAnalysis(parsed, article);
-      
+
       console.log(`✅ Analyzed successfully: bias=${result.biasScore}, trust=${result.trustScore}`);
       return result;
-      
+
     } catch (err) {
       console.error('Parse error, using defaults:', err.message);
       return this.getDefaultAnalysis(article);
@@ -170,29 +169,23 @@ Return ONLY the JSON object, nothing else.`;
       summary: parsed.summary || (article.description || article.title || 'No summary').substring(0, 200),
       category: parsed.category || this.guessCategory(article.title || ''),
       politicalLean: parsed.politicalLean || 'Center',
-      
       biasScore: this.safeNumber(parsed.biasScore, 45),
       biasLabel: 'Moderate Bias',
       biasComponents: this.getDefaultBiasComponents(),
-      
       credibilityScore: this.safeNumber(parsed.credibilityScore, 75),
       credibilityGrade: 'B',
       credibilityComponents: this.getDefaultCredibilityComponents(),
-      
       reliabilityScore: this.safeNumber(parsed.reliabilityScore, 78),
       reliabilityGrade: 'B+',
       reliabilityComponents: this.getDefaultReliabilityComponents(),
-      
       trustScore: this.safeNumber(parsed.trustScore, 76),
       trustLevel: 'Trustworthy',
-      
       coverageLeft: 33,
       coverageCenter: 34,
       coverageRight: 33,
       clusterId: Math.floor(Math.random() * 10) + 1,
-      
-      keyFindings: ['Article analyzed successfully', 'Cross-reference recommended'],
-      recommendations: ['Verify key claims', 'Check multiple sources']
+      keyFindings: ['Article analyzed successfully'],
+      recommendations: ['Verify key claims']
     };
   }
 
@@ -221,8 +214,8 @@ Return ONLY the JSON object, nothing else.`;
       coverageCenter: 34,
       coverageRight: 33,
       clusterId: Math.floor(Math.random() * 10) + 1,
-      keyFindings: ['Default analysis applied', 'Manual verification recommended'],
-      recommendations: ['Verify independently', 'Compare with other sources']
+      keyFindings: ['Default analysis applied'],
+      recommendations: ['Verify independently']
     };
   }
 
@@ -250,7 +243,7 @@ Return ONLY the JSON object, nothing else.`;
   }
 
   guessCategory(title) {
-    const t = title.toLowerCase();
+    const t = (title || '').toLowerCase();
     if (t.includes('trump') || t.includes('biden') || t.includes('election')) return 'Politics';
     if (t.includes('stock') || t.includes('economy') || t.includes('business')) return 'Economy';
     if (t.includes('tech') || t.includes('apple') || t.includes('google')) return 'Technology';
