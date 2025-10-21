@@ -8,6 +8,7 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
+app.set('trust proxy', 1);
 
 // Security & Performance Middleware
 app.use(helmet());
