@@ -1,4 +1,3 @@
-// services/newsService.js
 const axios = require('axios');
 
 class NewsService {
@@ -7,14 +6,14 @@ class NewsService {
     this.currentKeyIndex = 0;
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
-    this.maxConsecutiveErrors = 3; // skip key if it gets 3 errors in a row
+    this.maxConsecutiveErrors = 3;
 
     this.apiKeys.forEach(key => {
       this.keyUsageCount.set(key, 0);
       this.keyErrorCount.set(key, 0);
     });
 
-    console.log(`📰 Loaded ${this.apiKeys.length} NewsAPI keys`);
+    console.log(`📰 Loaded ${this.apiKeys.length} NewsAPI key(s)`);
   }
 
   loadApiKeys() {
@@ -23,8 +22,12 @@ class NewsService {
       const key = process.env[`NEWS_API_KEY_${i}`];
       if (key) keys.push(key);
     }
-    if (keys.length === 0 && process.env.NEWS_API_KEY) keys.push(process.env.NEWS_API_KEY);
-    if (keys.length === 0) throw new Error('No NewsAPI keys found!');
+    if (keys.length === 0 && process.env.NEWS_API_KEY) {
+      keys.push(process.env.NEWS_API_KEY);
+    }
+    if (keys.length === 0) {
+      throw new Error('No NewsAPI keys found!');
+    }
     return keys;
   }
 
@@ -33,25 +36,22 @@ class NewsService {
     while (cycles < this.apiKeys.length) {
       const key = this.apiKeys[this.currentKeyIndex];
       this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-      // If this key has not exceeded error threshold
       if ((this.keyErrorCount.get(key) || 0) < this.maxConsecutiveErrors) return key;
       cycles++;
     }
-    // If all keys have too many errors, reset error counts
     this.apiKeys.forEach(key => this.keyErrorCount.set(key, 0));
     return this.apiKeys[this.currentKeyIndex++ % this.apiKeys.length];
   }
 
   recordSuccess(apiKey) {
     this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
-    this.keyErrorCount.set(apiKey, 0); // reset error counter on success
+    this.keyErrorCount.set(apiKey, 0);
   }
 
   recordError(apiKey) {
     this.keyErrorCount.set(apiKey, (this.keyErrorCount.get(apiKey) || 0) + 1);
   }
 
-  // Rotational fetch with retries and backoff
   async fetchNews(maxRetries = 3) {
     let lastError = null;
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -64,7 +64,6 @@ class NewsService {
         this.recordError(apiKey);
         lastError = error;
         if (attempt < maxRetries - 1) {
-          // Exponential backoff
           await this.sleep(1500 * (attempt + 1));
         }
       }
