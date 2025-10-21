@@ -1,4 +1,3 @@
-// services/geminiService.js
 const axios = require('axios');
 
 class GeminiService {
@@ -25,9 +24,6 @@ class GeminiService {
     if (keys.length === 0 && process.env.GEMINI_API_KEY) {
       keys.push(process.env.GEMINI_API_KEY);
     }
-    if (keys.length === 0 && process.env.GEMINI_API_KEY_1) {
-      keys.push(process.env.GEMINI_API_KEY_1);
-    }
     if (keys.length === 0) {
       console.error('❌ No Gemini API keys found!');
       throw new Error('No Gemini API keys provided!');
@@ -49,7 +45,6 @@ class GeminiService {
       checked++;
     }
     
-    // Reset error counts if all keys have errors
     this.apiKeys.forEach(key => this.keyErrorCount.set(key, 0));
     return this.apiKeys[0];
   }
@@ -77,7 +72,6 @@ class GeminiService {
       }
     }
     
-    // Return default values if all attempts fail
     console.error('All Gemini attempts failed, returning defaults');
     return this.getDefaultAnalysis(article);
   }
@@ -111,13 +105,17 @@ class GeminiService {
   }
 
   buildEnhancedPrompt(article) {
+    const safeTitle = (article.title || 'No title').replace(/"/g, "'");
+    const safeDesc = (article.description || 'No description').replace(/"/g, "'");
+    const safeSource = (article.source?.name || 'Unknown').replace(/"/g, "'");
+    
     return `You are an expert news analyst. Analyze this news article and return ONLY valid JSON with NO markdown formatting, NO code blocks, NO explanations.
 
-Article Title: ${article.title}
-Description: ${article.description || 'No description'}
-Source: ${article.source?.name || 'Unknown'}
+Article Title: ${safeTitle}
+Description: ${safeDesc}
+Source: ${safeSource}
 
-Return this EXACT JSON structure with realistic scores (30-80 range for most values):
+Return this EXACT JSON structure with realistic scores (30-80 range):
 
 {
   "summary": "A concise 50-60 word summary of the article",
@@ -126,66 +124,28 @@ Return this EXACT JSON structure with realistic scores (30-80 range for most val
   "biasScore": 45,
   "biasLabel": "Moderate Bias",
   "biasComponents": {
-    "linguistic": {
-      "sentimentPolarity": 42,
-      "emotionalLanguage": 38,
-      "loadedTerms": 45,
-      "complexityBias": 40
-    },
-    "sourceSelection": {
-      "sourceDiversity": 55,
-      "expertBalance": 50,
-      "attributionTransparency": 60
-    },
-    "demographic": {
-      "genderBalance": 50,
-      "racialBalance": 50,
-      "ageRepresentation": 50
-    },
-    "framing": {
-      "headlineFraming": 48,
-      "storySelection": 52,
-      "omissionBias": 45
-    }
+    "linguistic": {"sentimentPolarity": 42, "emotionalLanguage": 38, "loadedTerms": 45, "complexityBias": 40},
+    "sourceSelection": {"sourceDiversity": 55, "expertBalance": 50, "attributionTransparency": 60},
+    "demographic": {"genderBalance": 50, "racialBalance": 50, "ageRepresentation": 50},
+    "framing": {"headlineFraming": 48, "storySelection": 52, "omissionBias": 45}
   },
   "credibilityScore": 75,
   "credibilityGrade": "B+",
-  "credibilityComponents": {
-    "sourceCredibility": 78,
-    "factVerification": 72,
-    "professionalism": 75,
-    "evidenceQuality": 70,
-    "transparency": 76,
-    "audienceTrust": 74
-  },
+  "credibilityComponents": {"sourceCredibility": 78, "factVerification": 72, "professionalism": 75, "evidenceQuality": 70, "transparency": 76, "audienceTrust": 74},
   "reliabilityScore": 80,
   "reliabilityGrade": "A-",
-  "reliabilityComponents": {
-    "consistency": 82,
-    "temporalStability": 78,
-    "qualityControl": 80,
-    "publicationStandards": 79,
-    "correctionsPolicy": 77,
-    "updateMaintenance": 81
-  },
+  "reliabilityComponents": {"consistency": 82, "temporalStability": 78, "qualityControl": 80, "publicationStandards": 79, "correctionsPolicy": 77, "updateMaintenance": 81},
   "trustScore": 77,
   "trustLevel": "High Trustworthiness",
   "coverageLeft": 30,
   "coverageCenter": 40,
   "coverageRight": 30,
   "clusterId": ${Math.floor(Math.random() * 10) + 1},
-  "keyFindings": [
-    "First key finding about the article",
-    "Second important insight",
-    "Third notable observation"
-  ],
-  "recommendations": [
-    "Cross-reference with other sources for complete context",
-    "Verify specific claims with fact-checking services"
-  ]
+  "keyFindings": ["First key finding", "Second insight", "Third observation"],
+  "recommendations": ["Cross-reference with other sources", "Verify specific claims"]
 }
 
-CRITICAL: Return ONLY the JSON object. NO markdown, NO \`\`\`json tags, NO explanations. Just pure JSON.`;
+CRITICAL: Return ONLY the JSON object. NO markdown, NO backticks, NO explanations.`;
   }
 
   parseAnalysisResponse(data, article) {
@@ -195,180 +155,118 @@ CRITICAL: Return ONLY the JSON object. NO markdown, NO \`\`\`json tags, NO expla
         return this.getDefaultAnalysis(article);
       }
 
-      let text = data.candidates[0].content.parts[0].text;
+      let text = data.candidates[0].content.parts[0].text.trim();
       
-      // Clean up response
+      // Remove markdown code blocks without regex
+      if (text.startsWith('```
+        text = text.substring(7);
+      }
+      if (text.startsWith('```')) {
+        text = text.substring(3);
+      }
+      if (text.endsWith('```
+        text = text.substring(0, text.length - 3);
+      }
       text = text.trim();
-      text = text.replace(/```
-      text = text.replace(/```\n?/g, '');
-      text = text.replace(/^[^{]*/, ''); // Remove everything before first {
-      text = text.replace(/[^}]*$/, ''); // Remove everything after last }
       
-      // Find JSON object
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        console.error('No JSON found in Gemini response');
+      // Find JSON object boundaries
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      
+      if (firstBrace === -1 || lastBrace === -1) {
+        console.error('No JSON found in response');
         return this.getDefaultAnalysis(article);
       }
       
-      const parsed = JSON.parse(jsonMatch[0]);
+      text = text.substring(firstBrace, lastBrace + 1);
       
-      // Validate required fields
+      const parsed = JSON.parse(text);
+      
       if (!parsed.summary || !parsed.biasScore || !parsed.credibilityScore) {
-        console.error('Missing required fields in analysis');
+        console.error('Missing required fields');
         return this.getDefaultAnalysis(article);
       }
       
-      // Ensure all scores are numbers
       parsed.biasScore = Number(parsed.biasScore) || 45;
       parsed.credibilityScore = Number(parsed.credibilityScore) || 75;
       parsed.reliabilityScore = Number(parsed.reliabilityScore) || 80;
-      parsed.trustScore = Number(parsed.trustScore) || Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
+      parsed.trustScore = Number(parsed.trustScore) || 76;
       
-      // Ensure components exist with defaults
       parsed.biasComponents = parsed.biasComponents || this.getDefaultBiasComponents();
       parsed.credibilityComponents = parsed.credibilityComponents || this.getDefaultCredibilityComponents();
       parsed.reliabilityComponents = parsed.reliabilityComponents || this.getDefaultReliabilityComponents();
       
-      parsed.keyFindings = parsed.keyFindings || ['Analysis completed', 'Review recommended'];
+      parsed.keyFindings = parsed.keyFindings || ['Analysis completed'];
       parsed.recommendations = parsed.recommendations || ['Cross-check with other sources'];
       
-      console.log(`✅ Successfully analyzed article: ${parsed.biasScore} bias, ${parsed.trustScore} trust`);
+      console.log(`✅ Analyzed: bias=${parsed.biasScore}, trust=${parsed.trustScore}`);
       
       return parsed;
     } catch (err) {
-      console.error('Error parsing Gemini response:', err.message);
+      console.error('Parse error:', err.message);
       return this.getDefaultAnalysis(article);
     }
   }
 
   getDefaultAnalysis(article) {
-    const clusterId = Math.floor(Math.random() * 10) + 1;
-    
     return {
-      summary: (article.description || article.title || 'No summary available').substring(0, 200),
+      summary: (article.description || article.title || 'No summary').substring(0, 200),
       category: this.guessCategory(article.title || ''),
       politicalLean: 'Center',
-      
       biasScore: 45,
       biasLabel: 'Moderate Bias',
       biasComponents: this.getDefaultBiasComponents(),
-      
       credibilityScore: 75,
       credibilityGrade: 'B',
       credibilityComponents: this.getDefaultCredibilityComponents(),
-      
       reliabilityScore: 78,
       reliabilityGrade: 'B+',
       reliabilityComponents: this.getDefaultReliabilityComponents(),
-      
       trustScore: 76,
       trustLevel: 'Trustworthy',
-      
       coverageLeft: 33,
       coverageCenter: 34,
       coverageRight: 33,
-      clusterId: clusterId,
-      
-      keyFindings: [
-        'Article analyzed with default metrics',
-        'Manual verification recommended',
-        'Cross-reference with multiple sources'
-      ],
-      recommendations: [
-        'Verify key claims independently',
-        'Check original source for full context',
-        'Compare with other news outlets'
-      ]
+      clusterId: Math.floor(Math.random() * 10) + 1,
+      keyFindings: ['Article analyzed with default metrics', 'Manual verification recommended'],
+      recommendations: ['Verify key claims independently', 'Compare with other outlets']
     };
   }
 
   getDefaultBiasComponents() {
     return {
-      linguistic: {
-        sentimentPolarity: 45,
-        emotionalLanguage: 40,
-        loadedTerms: 42,
-        complexityBias: 38
-      },
-      sourceSelection: {
-        sourceDiversity: 50,
-        expertBalance: 48,
-        attributionTransparency: 55
-      },
-      demographic: {
-        genderBalance: 50,
-        racialBalance: 50,
-        ageRepresentation: 50
-      },
-      framing: {
-        headlineFraming: 46,
-        storySelection: 48,
-        omissionBias: 44
-      }
+      linguistic: {sentimentPolarity: 45, emotionalLanguage: 40, loadedTerms: 42, complexityBias: 38},
+      sourceSelection: {sourceDiversity: 50, expertBalance: 48, attributionTransparency: 55},
+      demographic: {genderBalance: 50, racialBalance: 50, ageRepresentation: 50},
+      framing: {headlineFraming: 46, storySelection: 48, omissionBias: 44}
     };
   }
 
   getDefaultCredibilityComponents() {
     return {
-      sourceCredibility: 75,
-      factVerification: 70,
-      professionalism: 78,
-      evidenceQuality: 72,
-      transparency: 74,
-      audienceTrust: 73
+      sourceCredibility: 75, factVerification: 70, professionalism: 78,
+      evidenceQuality: 72, transparency: 74, audienceTrust: 73
     };
   }
 
   getDefaultReliabilityComponents() {
     return {
-      consistency: 78,
-      temporalStability: 76,
-      qualityControl: 79,
-      publicationStandards: 77,
-      correctionsPolicy: 75,
-      updateMaintenance: 78
+      consistency: 78, temporalStability: 76, qualityControl: 79,
+      publicationStandards: 77, correctionsPolicy: 75, updateMaintenance: 78
     };
   }
 
   guessCategory(title) {
-    const titleLower = title.toLowerCase();
-    
-    // FIXED: Using includes() instead of match() to avoid regex issues
-    if (titleLower.includes('trump') || titleLower.includes('biden') || 
-        titleLower.includes('election') || titleLower.includes('congress') || 
-        titleLower.includes('senate') || titleLower.includes('vote') || 
-        titleLower.includes('campaign')) return 'Politics';
-        
-    if (titleLower.includes('stock') || titleLower.includes('economy') || 
-        titleLower.includes('market') || titleLower.includes('trade') || 
-        titleLower.includes('business') || titleLower.includes('company')) return 'Economy';
-        
-    if (titleLower.includes('tech') || titleLower.includes('apple') || 
-        titleLower.includes('google') || titleLower.includes('ai') || 
-        titleLower.includes('software') || titleLower.includes('cyber')) return 'Technology';
-        
-    if (titleLower.includes('health') || titleLower.includes('medical') || 
-        titleLower.includes('hospital') || titleLower.includes('doctor') || 
-        titleLower.includes('disease')) return 'Health';
-        
-    if (titleLower.includes('climate') || titleLower.includes('environment') || 
-        titleLower.includes('energy') || titleLower.includes('pollution')) return 'Environment';
-        
-    if (titleLower.includes('court') || titleLower.includes('justice') || 
-        titleLower.includes('law') || titleLower.includes('legal') || 
-        titleLower.includes('crime')) return 'Justice';
-        
-    if (titleLower.includes('school') || titleLower.includes('education') || 
-        titleLower.includes('university') || titleLower.includes('student')) return 'Education';
-        
-    if (titleLower.includes('movie') || titleLower.includes('music') || 
-        titleLower.includes('celebrity') || titleLower.includes('entertainment')) return 'Entertainment';
-        
-    if (titleLower.includes('sports') || titleLower.includes('game') || 
-        titleLower.includes('team') || titleLower.includes('player') || 
-        titleLower.includes('nfl') || titleLower.includes('nba')) return 'Sports';
-        
+    const t = title.toLowerCase();
+    if (t.includes('trump') || t.includes('biden') || t.includes('election') || t.includes('congress')) return 'Politics';
+    if (t.includes('stock') || t.includes('economy') || t.includes('market') || t.includes('business')) return 'Economy';
+    if (t.includes('tech') || t.includes('apple') || t.includes('google') || t.includes('ai')) return 'Technology';
+    if (t.includes('health') || t.includes('medical') || t.includes('doctor') || t.includes('hospital')) return 'Health';
+    if (t.includes('climate') || t.includes('environment') || t.includes('energy')) return 'Environment';
+    if (t.includes('court') || t.includes('justice') || t.includes('law') || t.includes('crime')) return 'Justice';
+    if (t.includes('school') || t.includes('education') || t.includes('university')) return 'Education';
+    if (t.includes('movie') || t.includes('music') || t.includes('celebrity')) return 'Entertainment';
+    if (t.includes('sports') || t.includes('game') || t.includes('team') || t.includes('nfl')) return 'Sports';
     return 'Politics';
   }
 
