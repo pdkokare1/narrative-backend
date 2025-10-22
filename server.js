@@ -7,10 +7,9 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
-// --- FIX 1: Import services at the top ---
+// --- Services are imported at the top ---
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService');
-// --- End Fix 1 ---
 
 const app = express();
 
@@ -31,6 +30,7 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ Connected to MongoDB'))
   .catch(err => console.error('❌ MongoDB error:', err));
 
+// --- UPDATED SCHEMA ---
 const articleSchema = new mongoose.Schema({
   headline: { type: String, required: true },
   summary: { type: String, required: true },
@@ -41,7 +41,12 @@ const articleSchema = new mongoose.Schema({
   imageUrl: String,
   publishedAt: Date,
   
-  biasScore: { type: Number, required: true },
+  // NEW: Added fields for new features
+  analysisType: { type: String, default: 'Full', enum: ['Full', 'SentimentOnly'] },
+  sentiment: { type: String, default: 'Neutral', enum: ['Positive', 'Negative', 'Neutral'] },
+  
+  // CHANGED: Removed 'required: true' and added 'default: 0'
+  biasScore: { type: Number, default: 0 },
   biasLabel: String,
   
   biasComponents: {
@@ -68,7 +73,7 @@ const articleSchema = new mongoose.Schema({
     }
   },
   
-  credibilityScore: { type: Number, required: true },
+  credibilityScore: { type: Number, default: 0 },
   credibilityGrade: String,
   credibilityComponents: {
     sourceCredibility: Number,
@@ -79,7 +84,7 @@ const articleSchema = new mongoose.Schema({
     audienceTrust: Number
   },
   
-  reliabilityScore: { type: Number, required: true },
+  reliabilityScore: { type: Number, default: 0 },
   reliabilityGrade: String,
   reliabilityComponents: {
     consistency: Number,
@@ -90,7 +95,7 @@ const articleSchema = new mongoose.Schema({
     updateMaintenance: Number
   },
   
-  trustScore: { type: Number, required: true },
+  trustScore: { type: Number, default: 0 },
   trustLevel: String,
   
   coverageLeft: Number,
@@ -103,8 +108,9 @@ const articleSchema = new mongoose.Schema({
   
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
-  analysisVersion: { type: String, default: '2.0' }
+  analysisVersion: { type: String, default: '2.1' } // Version bump
 });
+// --- END OF UPDATED SCHEMA ---
 
 articleSchema.index({ category: 1, createdAt: -1 });
 articleSchema.index({ politicalLean: 1 });
@@ -116,14 +122,15 @@ const Article = mongoose.model('Article', articleSchema);
 
 app.get('/', (req, res) => {
   res.json({
-    message: 'The Narrative API v2.0 - Production Ready',
+    message: 'The Narrative API v2.1 - Production Ready',
     status: 'healthy',
     features: [
       'Enhanced Bias Detection (30+ parameters)',
       'Complete Credibility Scoring (6 components)',
       'Complete Reliability Scoring (6 components)',
       'Trust Score Calculation',
-      'Multiple API Keys Support (Rotational)',
+      'Sentiment Analysis (Positive/Negative/Neutral)',
+      'Analysis Type (Full vs. SentimentOnly reviews)',
       'Story Clustering',
       'Advanced Filtering',
       'Auto-refresh every 6 hours'
@@ -142,9 +149,7 @@ app.get('/api/articles', async (req, res) => {
       minTrust,
       maxBias,
       sort, 
-      // --- FIX 2: Change default limit to 100 to match frontend ---
-      limit = 100,
-      // --- End Fix 2 ---
+      limit = 100, // Corrected default limit
       offset = 0
     } = req.query;
     
@@ -158,6 +163,8 @@ app.get('/api/articles', async (req, res) => {
       query.politicalLean = lean;
     }
     
+    // This filter will now correctly exclude 'SentimentOnly' articles 
+    // (since their trustScore is 0) unless 'All Quality' is selected.
     if (quality && quality !== 'All Quality Levels') {
       if (quality.includes('90-100')) {
         query.trustScore = { $gte: 90 };
@@ -234,7 +241,8 @@ app.get('/api/articles/:id', async (req, res) => {
 app.get('/api/cluster/:clusterId', async (req, res) => {
   try {
     const articles = await Article.find({ 
-      clusterId: parseInt(req.params.clusterId) 
+      clusterId: parseInt(req.params.clusterId),
+      analysisType: 'Full' // Only cluster 'Full' news articles
     }).sort({ trustScore: -1 });
     
     const grouped = {
@@ -272,14 +280,17 @@ app.get('/api/stats', async (req, res) => {
     const categories = await Article.distinct('category');
     
     const avgBias = await Article.aggregate([
+      { $match: { analysisType: 'Full' } }, // Only average bias for 'Full' articles
       { $group: { _id: null, avg: { $avg: '$biasScore' } } }
     ]);
     
     const avgTrust = await Article.aggregate([
+      { $match: { analysisType: 'Full' } }, // Only average trust for 'Full' articles
       { $group: { _id: null, avg: { $avg: '$trustScore' } } }
     ]);
     
     const leanDistribution = await Article.aggregate([
+      { $match: { analysisType: 'Full' } },
       { $group: { _id: '$politicalLean', count: { $sum: 1 } } }
     ]);
     
@@ -370,6 +381,7 @@ async function fetchAndAnalyzeNews() {
         
         const analysis = await geminiService.analyzeArticle(article);
         
+        // --- UPDATED to save new fields ---
         const newArticle = new Article({
           headline: article.title,
           summary: analysis.summary,
@@ -380,6 +392,11 @@ async function fetchAndAnalyzeNews() {
           imageUrl: article.urlToImage,
           publishedAt: article.publishedAt,
           
+          // NEW FIELDS
+          analysisType: analysis.analysisType,
+          sentiment: analysis.sentiment,
+          
+          // These fields will be 0 if analysisType is 'SentimentOnly'
           biasScore: analysis.biasScore,
           biasLabel: analysis.biasLabel,
           biasComponents: analysis.biasComponents,
@@ -407,11 +424,10 @@ async function fetchAndAnalyzeNews() {
         await newArticle.save();
         stats.processed++;
         
-        console.log(`✅ Saved: ${article.title.substring(0, 60)}...`);
+        console.log(`✅ Saved: ${article.title.substring(0, 60)}... (${analysis.analysisType})`);
         
-        // --- FIX 3: Increase sleep to 1.5s (1500ms) to avoid rate limit ---
+        // --- Sleep to avoid rate limit ---
         await sleep(1500);
-        // --- End Fix 3 ---
         
       } catch (error) {
         console.error(`❌ Error processing article: ${error.message}`);
@@ -473,7 +489,7 @@ app.listen(PORT, () => {
   console.log(`
 ╔════════════════════════════════════════════╗
 ║                                            ║
-║      THE NARRATIVE API v2.0                ║
+║      THE NARRATIVE API v2.1                ║
 ║      Production Server Running             ║
 ║                                            ║
 ╚════════════════════════════════════════════╝
