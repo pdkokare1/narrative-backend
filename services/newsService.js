@@ -191,9 +191,18 @@ class NewsService {
     }));
   }
 
+  // --- THIS IS THE FIXED FUNCTION ---
   getStatistics() {
     return {
       totalGNewsKeys: this.gnewsKeys.length,
       totalNewsAPIKeys: this.newsapiKeys.length,
       keyUsage: Array.from(this.keyUsageCount.entries()).map(([key, count]) => ({
-        key: key.substring(0, 15
+        key: key.substring(0, 10) + '...',
+        usage: count,
+        errors: this.keyErrorCount.get(key) || 0
+      }))
+    };
+  }
+} // <-- This bracket was missing or part of the broken code
+
+module.exports = new NewsService();
