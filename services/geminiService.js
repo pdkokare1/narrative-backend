@@ -16,7 +16,7 @@ class GeminiService {
   }
 
   loadApiKeys() {
-    // Supports GEMINI_API_KEY_1 ... GEMINI_API_KEY_10 in your .env
+    // Supports GEMINI_API_KEY_1 ... GEMINI_API_KEY_20 in your .env
     const keys = [];
     for (let i = 1; i <= 20; i++) {
       const key = process.env[`GEMINI_API_KEY_${i}`];
@@ -94,10 +94,17 @@ class GeminiService {
   }
 
   buildEnhancedPrompt(article) {
+    // This is the updated prompt
     return `You are an expert news analyst. Analyze this news article. Return ONLY valid JSON (no markdown, no explanations).
 
 Article Title: ${article.title}
 Description: ${article.description || ''}
+
+INSTRUCTIONS:
+1.  First, determine the article type. Is it 'Full' (hard news: politics, economy, etc.) or 'SentimentOnly' (subjective reviews: tech, car, movie reviews, opinions, etc.)?
+2.  Second, determine the 'sentiment' (Positive, Negative, Neutral) of the article towards its main topic.
+3.  If 'analysisType' is 'Full', provide all bias, credibility, and reliability scores as numbers.
+4.  If 'analysisType' is 'SentimentOnly', set *all* scores (biasScore, credibilityScore, etc.) and component scores (linguistic, sourceSelection, etc.) to 0.
 
 Return detailed multifactor analysis (see example structure):
 
@@ -105,6 +112,9 @@ Return detailed multifactor analysis (see example structure):
   "summary": "exactly 60 words summary",
   "category": "Politics/Economy/Technology/Health/Environment/Justice/Education/Entertainment/Sports",
   "politicalLean": "Left/Left-Leaning/Center/Right-Leaning/Right",
+  
+  "analysisType": "Full",
+  "sentiment": "Negative",
 
   "biasScore": 44,
   "biasLabel": "Low Bias/Moderate/High/Extreme",
@@ -172,7 +182,7 @@ Return detailed multifactor analysis (see example structure):
   ]
 }
 
-IMPORTANT: Output ONLY the JSON, no extra explanations.`;
+IMPORTANT: Output ONLY the JSON, no extra explanations. For a 'SentimentOnly' article, all score fields *must* be 0.`;
   }
 
   parseAnalysisResponse(data) {
@@ -183,13 +193,24 @@ IMPORTANT: Output ONLY the JSON, no extra explanations.`;
       const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
       if (!jsonMatch) throw new Error('No JSON found in response');
       const parsed = JSON.parse(jsonMatch[0]);
-      if (!parsed.summary || !parsed.biasScore || !parsed.credibilityScore) {
-        throw new Error('Missing required fields');
-      }
-      // Calculate trustScore if missing
-      if (!parsed.trustScore && parsed.credibilityScore && parsed.reliabilityScore) {
+      
+      // Ensure required fields exist
+      if (!parsed.summary) throw new Error('Missing required field: summary');
+      if (!parsed.sentiment) parsed.sentiment = 'Neutral'; // Default sentiment
+      if (!parsed.analysisType) parsed.analysisType = 'Full'; // Default type
+      
+      // Calculate trustScore if missing (and if it's a 'Full' analysis)
+      if (parsed.analysisType === 'Full' && !parsed.trustScore && parsed.credibilityScore && parsed.reliabilityScore) {
         parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
+      } else if (parsed.analysisType === 'SentimentOnly') {
+        // Ensure all scores are 0 if it's a review
+        parsed.biasScore = 0;
+        parsed.credibilityScore = 0;
+        parsed.reliabilityScore = 0;
+        parsed.trustScore = 0;
+        parsed.politicalLean = 'Center'; // Reviews don't have a lean
       }
+
       return parsed;
     } catch (err) {
       throw new Error('Error parsing Gemini response: ' + err.message);
