@@ -7,6 +7,11 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+// --- FIX 1: Import services at the top ---
+const geminiService = require('./services/geminiService');
+const newsService = require('./services/newsService');
+// --- End Fix 1 ---
+
 const app = express();
 
 app.set('trust proxy', 1);
@@ -137,7 +142,9 @@ app.get('/api/articles', async (req, res) => {
       minTrust,
       maxBias,
       sort, 
-      limit = 60,
+      // --- FIX 2: Change default limit to 100 to match frontend ---
+      limit = 100,
+      // --- End Fix 2 ---
       offset = 0
     } = req.query;
     
@@ -299,9 +306,7 @@ app.get('/api/stats', async (req, res) => {
 
 app.get('/api/stats/keys', async (req, res) => {
   try {
-    const geminiService = require('./services/geminiService');
-    const newsService = require('./services/newsService');
-    
+    // Services are now imported at the top
     res.json({
       gemini: geminiService.getStatistics(),
       news: newsService.getStatistics(),
@@ -333,9 +338,7 @@ app.post('/api/fetch-news', async (req, res) => {
 });
 
 async function fetchAndAnalyzeNews() {
-  const newsService = require('./services/newsService');
-  const geminiService = require('./services/geminiService');
-  
+  // Services are now imported at the top
   const stats = {
     fetched: 0,
     processed: 0,
@@ -406,7 +409,9 @@ async function fetchAndAnalyzeNews() {
         
         console.log(`✅ Saved: ${article.title.substring(0, 60)}...`);
         
-        await sleep(500);
+        // --- FIX 3: Increase sleep to 1.5s (1500ms) to avoid rate limit ---
+        await sleep(1500);
+        // --- End Fix 3 ---
         
       } catch (error) {
         console.error(`❌ Error processing article: ${error.message}`);
