@@ -451,7 +451,7 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-cron.schedule('0 */6 * * *', async () => {
+cron.schedule('*/30 * * * *', async () => {
   console.log('🔄 Auto-fetching news (scheduled)...');
   try {
     await fetchAndAnalyzeNews();
