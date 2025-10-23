@@ -328,24 +328,19 @@ app.get('/api/stats/keys', async (req, res) => {
   }
 });
 
-app.post('/api/fetch-news', async (req, res) => {
-  try {
-    console.log('📰 Manual news fetch triggered...');
-    const result = await fetchAndAnalyzeNews();
-    
-    res.json({
-      message: 'News fetch completed',
-      ...result,
-      timestamp: new Date()
-    });
-    
-  } catch (error) {
-    console.error('Error in manual fetch:', error);
-    res.status(500).json({
-      error: 'Failed to fetch news',
-      details: error.message
-    });
-  }
+// This is the NEW function that runs in the background
+app.post('/api/fetch-news', (req, res) => {
+  // Respond to the user IMMEDIATELY
+  res.json({
+    message: 'News fetch acknowledged. Analysis is starting in the background.',
+    timestamp: new Date()
+  });
+
+  // Start the long task, but DON'T wait for it
+  fetchAndAnalyzeNews().catch(err => {
+    // Log any errors that happen in the background
+    console.error('❌ Error during background fetch:', err);
+  });
 });
 
 async function fetchAndAnalyzeNews() {
