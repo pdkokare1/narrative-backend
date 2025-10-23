@@ -133,7 +133,7 @@ app.get('/', (req, res) => {
       'Analysis Type (Full vs. SentimentOnly reviews)',
       'Story Clustering',
       'Advanced Filtering',
-      'Auto-refresh every 6 hours'
+      'Auto-refresh every 30 minutes' // <-- UPDATED THIS LINE
     ],
     timestamp: new Date(),
     uptime: Math.floor(process.uptime())
@@ -446,6 +446,7 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// THIS IS THE CORRECT 30-MINUTE SCHEDULE
 cron.schedule('*/30 * * * *', async () => {
   console.log('🔄 Auto-fetching news (scheduled)...');
   try {
@@ -494,7 +495,7 @@ app.listen(PORT, () => {
 💾 Database: Connected
 🤖 AI: Multiple Gemini keys (rotational)
 📰 News: Multiple NewsAPI keys (rotational)
-🔄 Auto-fetch: Every 6 hours
+🔄 Auto-fetch: Every 30 minutes
 🧹 Auto-cleanup: Daily at 2 AM
 
 API Endpoints:
