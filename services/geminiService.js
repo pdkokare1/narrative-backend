@@ -71,7 +71,7 @@ class GeminiService {
 
   async makeAnalysisRequest(article, apiKey) {
     const prompt = this.buildEnhancedPrompt(article);
-    const url = `https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key=${apiKey}`;
+   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${apiKey}`;
     try {
       const response = await axios.post(
         url,
