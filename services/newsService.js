@@ -1,11 +1,21 @@
-// services/newsService.js (Updated for News Focus)
+// services/newsService.js (FINAL v2.4 - Focused News Fetching)
 const axios = require('axios');
 
-// Helper to remove duplicate articles by URL
+// --- Helper Functions ---
+function sleep(ms) { // Keep sleep available if needed later
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function removeDuplicatesByURL(articles) {
+    if (!Array.isArray(articles)) return []; // Handle invalid input
     const seenUrls = new Set();
     return articles.filter(article => {
-        if (!article || !article.url || seenUrls.has(article.url)) {
+        if (!article || typeof article !== 'object' || !article.url || typeof article.url !== 'string') {
+            // console.warn("⚠️ Skipping invalid article object during deduplication:", article);
+            return false;
+        }
+        if (seenUrls.has(article.url)) {
+            // console.log(`⏩ Skipping duplicate URL: ${article.url}`); // Verbose log
             return false;
         }
         seenUrls.add(article.url);
@@ -13,290 +23,308 @@ function removeDuplicatesByURL(articles) {
     });
 }
 
+// --- NewsService Class ---
 class NewsService {
   constructor() {
-    this.gnewsKeys = this.loadGNewsKeys();
-    this.newsapiKeys = this.loadNewsAPIKeys();
+    this.gnewsKeys = this.loadApiKeys('GNEWS');
+    this.newsapiKeys = this.loadApiKeys('NEWS_API'); // Corrected variable name
     this.currentGNewsIndex = 0;
     this.currentNewsAPIIndex = 0;
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
 
-    // Initialize tracking
+    // Initialize trackers for all loaded keys
     [...this.gnewsKeys, ...this.newsapiKeys].forEach(key => {
-      this.keyUsageCount.set(key, 0);
-      this.keyErrorCount.set(key, 0);
+        if (key) { // Ensure key is valid before setting
+            this.keyUsageCount.set(key, 0);
+            this.keyErrorCount.set(key, 0);
+        }
     });
-
-    console.log(`📰 GNews keys loaded: ${this.gnewsKeys.length}`);
-    console.log(`📰 NewsAPI keys loaded: ${this.newsapiKeys.length}`);
+    console.log(`📰 News Service Initialized.`);
   }
 
-  loadGNewsKeys() {
+  // Generic function to load keys for a specific provider
+  loadApiKeys(providerPrefix) {
     const keys = [];
+    // Check numbered keys (e.g., GNEWS_API_KEY_1)
     for (let i = 1; i <= 20; i++) {
-      const key = process.env[`GNEWS_API_KEY_${i}`];
+      const key = process.env[`${providerPrefix}_API_KEY_${i}`]?.trim();
       if (key) keys.push(key);
     }
-    if (keys.length === 0 && process.env.GNEWS_API_KEY) keys.push(process.env.GNEWS_API_KEY);
-    console.log(`🔑 Loaded ${keys.length} GNews API keys.`);
+    // Check for a default key (e.g., GNEWS_API_KEY)
+    const defaultKey = process.env[`${providerPrefix}_API_KEY`]?.trim();
+    if (keys.length === 0 && defaultKey) {
+        keys.push(defaultKey);
+        console.log(`🔑 Using default ${providerPrefix}_API_KEY.`);
+    }
+
+    if (keys.length === 0) console.warn(`⚠️ No ${providerPrefix} API keys found.`);
+    else console.log(`🔑 Loaded ${keys.length} ${providerPrefix} API key(s).`);
     return keys;
   }
 
-  loadNewsAPIKeys() {
-    const keys = [];
-    for (let i = 1; i <= 20; i++) {
-      const key = process.env[`NEWS_API_KEY_${i}`];
-      if (key) keys.push(key);
-    }
-    if (keys.length === 0 && process.env.NEWS_API_KEY) keys.push(process.env.NEWS_API_KEY);
-    console.log(`🔑 Loaded ${keys.length} NewsAPI API keys.`);
-    return keys;
+  // --- Key Rotation and Management ---
+  getNextKey(keys, currentIndex) {
+      if (!keys || keys.length === 0) return { key: null, nextIndex: 0 };
+      const key = keys[currentIndex];
+      const nextIndex = (currentIndex + 1) % keys.length;
+      return { key, nextIndex };
   }
 
   getNextGNewsKey() {
-    if (this.gnewsKeys.length === 0) return null;
-    const key = this.gnewsKeys[this.currentGNewsIndex];
-    this.currentGNewsIndex = (this.currentGNewsIndex + 1) % this.gnewsKeys.length;
-    // console.log(`🔄 Using GNews Key index: ${this.currentGNewsIndex}`); // Debugging
-    return key;
+      const { key, nextIndex } = this.getNextKey(this.gnewsKeys, this.currentGNewsIndex);
+      this.currentGNewsIndex = nextIndex;
+      return key;
   }
 
   getNextNewsAPIKey() {
-    if (this.newsapiKeys.length === 0) return null;
-    const key = this.newsapiKeys[this.currentNewsAPIIndex];
-    this.currentNewsAPIIndex = (this.currentNewsAPIIndex + 1) % this.newsapiKeys.length;
-    // console.log(`🔄 Using NewsAPI Key index: ${this.currentNewsAPIIndex}`); // Debugging
-    return key;
+      const { key, nextIndex } = this.getNextKey(this.newsapiKeys, this.currentNewsAPIIndex);
+      this.currentNewsAPIIndex = nextIndex;
+      return key;
   }
 
-  recordSuccess(apiKey) {
-    this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
-    this.keyErrorCount.set(apiKey, 0); // Reset errors on success
-  }
+ recordSuccess(apiKey, apiName = "NewsAPI") {
+    if (apiKey && this.keyUsageCount.has(apiKey)) {
+        this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
+        if (this.keyErrorCount.get(apiKey) > 0) {
+            this.keyErrorCount.set(apiKey, 0); // Reset errors on success
+            // console.log(`✅ Error count reset for ${apiName} key ...${apiKey.slice(-4)}`);
+        }
+    }
+}
 
-  recordError(apiKey) {
-    const newErrorCount = (this.keyErrorCount.get(apiKey) || 0) + 1;
-    this.keyErrorCount.set(apiKey, newErrorCount);
-     console.warn(`📈 Increased error count for key ending ...${apiKey.slice(-4)} to ${newErrorCount}`);
-  }
+recordError(apiKey, apiName = "NewsAPI") {
+    if (apiKey && this.keyErrorCount.has(apiKey)) {
+        const currentErrors = (this.keyErrorCount.get(apiKey) || 0) + 1;
+        this.keyErrorCount.set(apiKey, currentErrors);
+        console.warn(`📈 Error count for ${apiName} key ...${apiKey.slice(-4)} increased to ${currentErrors}`);
+    } else if (apiKey) {
+        console.warn(`📈 Attempted to record error for unknown ${apiName} key ...${apiKey.slice(-4)}`);
+    } else {
+        console.warn(`📈 Attempted to record error for ${apiName}, but API key was missing.`);
+    }
+}
 
-  // --- UPDATED FETCHNEWS LOGIC ---
+
+  // --- Main Fetch Logic: Prioritize GNews, Fallback to NewsAPI ---
   async fetchNews() {
     let allArticles = [];
-    let sourcesAttempted = [];
+    let successfulSources = new Set();
+    const startTime = Date.now();
 
-    // Prioritize GNews
+    // --- GNews Attempts ---
     if (this.gnewsKeys.length > 0) {
-      console.log('📡 Attempting GNews API calls (US, IN, World)...');
-      try {
-        // Fetch US Top Headlines
-        const usArticles = await this.fetchFromGNews({ country: 'us', max: 20 }); // Limit calls slightly
-        if (usArticles) {
-            allArticles.push(...usArticles);
-            sourcesAttempted.push('GNews-US');
-            console.log(`✅ GNews US success: ${usArticles.length} articles`);
-        }
+      console.log('📡 Fetching from GNews (US, IN, World)...');
+      const gnewsRequests = [
+        { params: { country: 'us', max: 25 }, name: 'GNews-US' }, // Increased limit slightly
+        { params: { country: 'in', max: 25 }, name: 'GNews-IN' },
+        { params: { topic: 'world', lang: 'en', max: 20 }, name: 'GNews-World' } // English for world topic
+      ];
 
-        // Fetch India Top Headlines
-        const inArticles = await this.fetchFromGNews({ country: 'in', max: 20 });
-         if (inArticles) {
-            allArticles.push(...inArticles);
-            sourcesAttempted.push('GNews-IN');
-            console.log(`✅ GNews IN success: ${inArticles.length} articles`);
-        }
+      // Execute requests concurrently
+      const gnewsResults = await Promise.allSettled(
+        gnewsRequests.map(req => this.fetchFromGNews(req.params, req.name))
+      );
 
-        // Fetch World (Geopolitical) Headlines
-        const worldArticles = await this.fetchFromGNews({ topic: 'world', max: 20 });
-         if (worldArticles) {
-            allArticles.push(...worldArticles);
-            sourcesAttempted.push('GNews-World');
-            console.log(`✅ GNews World success: ${worldArticles.length} articles`);
+      // Process results
+      gnewsResults.forEach((result, index) => {
+        const reqName = gnewsRequests[index].name;
+        if (result.status === 'fulfilled' && Array.isArray(result.value) && result.value.length > 0) {
+          console.log(`✅ ${reqName} successful: ${result.value.length} articles.`);
+          allArticles.push(...result.value);
+          successfulSources.add(reqName);
+        } else if (result.status === 'fulfilled') {
+          console.log(`🆗 ${reqName} returned 0 articles.`);
+        } else { // status === 'rejected'
+          console.error(`❌ ${reqName} failed: ${result.reason?.message || result.reason}`);
         }
-
-      } catch (err) {
-        console.error(' GNews failed during multi-fetch:', err.message);
-        // Continue to NewsAPI if GNews had issues
-      }
+      });
+    } else {
+      console.warn("⚠️ Skipping GNews fetch: No keys configured.");
     }
 
-    // Fallback to NewsAPI if GNews failed completely or yielded few results
-    if (this.newsapiKeys.length > 0 && allArticles.length < 15) { // Only fallback if GNews results are low
-      console.log('📡 Attempting NewsAPI (fallback)...');
-      try {
-        // NewsAPI calls (Note: Free tier usually only works on localhost)
-        const newsApiArticlesUS = await this.fetchFromNewsAPI({ country: 'us', pageSize: 15 });
-        if (newsApiArticlesUS) {
-            allArticles.push(...newsApiArticlesUS);
-            sourcesAttempted.push('NewsAPI-US');
-            console.log(`✅ NewsAPI US success: ${newsApiArticlesUS.length} articles`);
-        }
-         const newsApiArticlesIN = await this.fetchFromNewsAPI({ country: 'in', pageSize: 15 });
-        if (newsApiArticlesIN) {
-            allArticles.push(...newsApiArticlesIN);
-            sourcesAttempted.push('NewsAPI-IN');
-            console.log(`✅ NewsAPI IN success: ${newsApiArticlesIN.length} articles`);
-        }
-        // Maybe a general query for geopolitics
-         const newsApiArticlesWorld = await this.fetchFromNewsAPI({ q: 'geopolitics OR international relations', language: 'en', pageSize: 10 });
-         if (newsApiArticlesWorld) {
-             allArticles.push(...newsApiArticlesWorld);
-             sourcesAttempted.push('NewsAPI-World');
-             console.log(`✅ NewsAPI World success: ${newsApiArticlesWorld.length} articles`);
-         }
 
-      } catch (err) {
-        console.error(' NewsAPI fallback failed:', err.message);
-      }
+    // --- NewsAPI Fallback ---
+    const needsNewsApiFallback = this.newsapiKeys.length > 0 && (this.gnewsKeys.length === 0 || allArticles.length < 20); // Trigger if GNews failed or returned few
+
+    if (needsNewsApiFallback) {
+      console.log('📡 GNews insufficient/unavailable. Fetching fallback from NewsAPI (US, IN, Geopolitics)...');
+      const newsapiRequests = [
+         { params: { country: 'us', pageSize: 20 }, name: 'NewsAPI-US', endpoint: 'top-headlines' },
+         { params: { country: 'in', pageSize: 20 }, name: 'NewsAPI-IN', endpoint: 'top-headlines' },
+         { params: { q: 'geopolitics OR "international relations" OR diplomacy', language: 'en', pageSize: 15, sortBy: 'publishedAt' }, name: 'NewsAPI-Geopolitics', endpoint: 'everything' }
+      ];
+
+      const newsapiResults = await Promise.allSettled(
+        newsapiRequests.map(req => this.fetchFromNewsAPI(req.params, req.name, req.endpoint))
+      );
+
+      newsapiResults.forEach((result, index) => {
+        const reqName = newsapiRequests[index].name;
+        if (result.status === 'fulfilled' && Array.isArray(result.value) && result.value.length > 0) {
+          console.log(`✅ ${reqName} successful: ${result.value.length} articles.`);
+          allArticles.push(...result.value);
+          successfulSources.add(reqName);
+        } else if (result.status === 'fulfilled') {
+          console.log(`🆗 ${reqName} returned 0 articles.`);
+        } else {
+          console.error(`❌ ${reqName} fallback failed: ${result.reason?.message || result.reason}`);
+        }
+      });
+    } else if (this.newsapiKeys.length > 0) {
+      console.log('📡 Skipping NewsAPI fallback: GNews provided sufficient data or NewsAPI keys missing.');
     }
 
-    // Remove duplicates before returning
+    // --- Deduplicate & Finalize ---
     const uniqueArticles = removeDuplicatesByURL(allArticles);
-    console.log(`📰 Total unique articles fetched from [${sourcesAttempted.join(', ')}]: ${uniqueArticles.length}`);
+    uniqueArticles.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt)); // Sort by newest first
 
-    if (uniqueArticles.length === 0 && sourcesAttempted.length === 0) {
-      throw new Error('All news APIs failed or no keys configured.');
-    } else if (uniqueArticles.length === 0) {
-       console.warn('⚠️ No unique articles found after fetching from available sources.');
+    const endTime = Date.now();
+    const duration = ((endTime - startTime) / 1000).toFixed(2);
+    const sourceList = Array.from(successfulSources).join(', ') || 'None';
+
+    console.log(`📰 FetchNews finished in ${duration}s. Sources contacted: [${sourceList}]. Found ${uniqueArticles.length} unique articles.`);
+
+    if (uniqueArticles.length === 0 && successfulSources.size === 0) {
+        if (this.gnewsKeys.length === 0 && this.newsapiKeys.length === 0) {
+            console.error('❌ News fetching failed critically: No API keys configured for any provider.');
+        } else {
+           console.error('❌ News fetching failed critically: All attempted API calls failed or returned no data.');
+        }
+        return []; // Return empty array on critical failure
     }
 
     return uniqueArticles;
   }
 
-  // --- UPDATED GNEWS FUNCTION ---
-  async fetchFromGNews(params) {
+  // --- GNews API Call Helper ---
+  async fetchFromGNews(params, sourceName = "GNews") {
     const apiKey = this.getNextGNewsKey();
-    if (!apiKey) {
-        console.warn('⚠️ No GNews API key available for this request.');
-        return null; // Don't throw, just return null so multi-fetch can continue
-    }
+    // Use Promise.reject for consistency with Promise.allSettled
+    if (!apiKey) return Promise.reject(new Error(`No GNews key available for ${sourceName}`));
 
-    const defaultParams = {
-        lang: 'en', // Prefer English
-        sortby: 'publishedAt',
-        max: 10 // Default limit per call
-    };
-
+    const defaultParams = { lang: 'en', sortby: 'publishedAt', max: 10 }; // Default max per request
     const requestParams = { ...defaultParams, ...params, apikey: apiKey };
-    const queryDescription = params.country ? `country=${params.country}` : `topic=${params.topic}`; // For logging
+    const url = 'https://gnews.io/api/v4/top-headlines';
 
     try {
-      // console.log(`📡 GNews Request (${queryDescription}):`, requestParams); // Debugging
-      const response = await axios.get('https://gnews.io/api/v4/top-headlines', {
-        params: requestParams,
-        timeout: 15000 // 15 second timeout
-      });
+      const response = await axios.get(url, { params: requestParams, timeout: 25000 }); // Increased timeout
 
-      if (!response.data || !response.data.articles || response.data.articles.length === 0) {
-        console.warn(`⚠️ GNews (${queryDescription}) returned no articles or invalid structure.`);
-        // Don't record error for empty results, but don't record success either
-        return []; // Return empty array, not null
+      // Validate response structure
+      if (!response?.data || !Array.isArray(response.data.articles)) {
+        console.warn(`⚠️ ${sourceName} response missing 'articles' array.`);
+        return []; // Valid but empty
       }
+      if (response.data.articles.length === 0) return []; // Valid but empty
 
-      this.recordSuccess(apiKey);
+      this.recordSuccess(apiKey, sourceName);
       return this.transformGNewsArticles(response.data.articles);
 
     } catch (error) {
-      this.recordError(apiKey);
-      let errorMsg = ` GNews request (${queryDescription}) failed: ${error.message}`;
-      if (error.response) {
-        errorMsg += ` (Status: ${error.response.status})`;
-        if (error.response.status === 401) errorMsg += ' - Invalid API Key?';
-        if (error.response.status === 429) errorMsg += ' - Rate Limit Exceeded?';
-      }
-      console.error(errorMsg);
-      // Don't re-throw, let the multi-fetch continue if possible
-      return null;
+      this.recordError(apiKey, sourceName);
+      const errorMsg = this.formatApiError(error, sourceName);
+      return Promise.reject(new Error(errorMsg)); // Reject promise
     }
   }
 
-  // --- UPDATED NEWSAPI FUNCTION (Handles params better) ---
-  async fetchFromNewsAPI(params) {
+  // --- NewsAPI Call Helper ---
+  async fetchFromNewsAPI(params, sourceName = "NewsAPI", endpointType = 'top-headlines') {
       const apiKey = this.getNextNewsAPIKey();
-      if (!apiKey) {
-          console.warn('⚠️ No NewsAPI key available for this request.');
-          return null;
-      }
+      if (!apiKey) return Promise.reject(new Error(`No NewsAPI key available for ${sourceName}`));
 
-       const defaultParams = {
-            language: 'en',
-            pageSize: 10 // Default limit per call
-       };
-
-        const requestParams = { ...defaultParams, ...params, apiKey: apiKey };
-        const queryDescription = params.country ? `country=${params.country}` : `q=${params.q}`; // For logging
-
+      const defaultParams = { language: 'en', pageSize: 10 };
+      const requestParams = { ...defaultParams, ...params, apiKey: apiKey };
+      const baseUrl = 'https://newsapi.org/v2/';
+      const endpoint = endpointType === 'everything' ? 'everything' : 'top-headlines';
+      const url = baseUrl + endpoint;
+       // Add sorting for 'everything' endpoint
+      if(endpoint === 'everything' && !requestParams.sortBy) requestParams.sortBy = 'publishedAt';
 
       try {
-          // console.log(`📡 NewsAPI Request (${queryDescription}):`, requestParams); // Debugging
-          const response = await axios.get('https://newsapi.org/v2/top-headlines', { // Still uses top-headlines endpoint
-              params: requestParams,
-              timeout: 15000
-          });
+          const response = await axios.get(url, { params: requestParams, timeout: 25000 }); // Increased timeout
 
-          if (!response.data || !response.data.articles || response.data.articles.length === 0) {
-                console.warn(`⚠️ NewsAPI (${queryDescription}) returned no articles or invalid structure.`);
-                return [];
-          }
+         if (!response?.data || !Array.isArray(response.data.articles)) {
+             console.warn(`⚠️ ${sourceName} response missing 'articles' array.`);
+             return [];
+         }
+         if (response.data.articles.length === 0) return [];
 
-          this.recordSuccess(apiKey);
+          this.recordSuccess(apiKey, sourceName);
           return this.transformNewsAPIArticles(response.data.articles);
 
       } catch (error) {
-          this.recordError(apiKey);
-          let errorMsg = ` NewsAPI request (${queryDescription}) failed: ${error.message}`;
-          if (error.response) {
-            errorMsg += ` (Status: ${error.response.status})`;
-             if (error.response.status === 401) errorMsg += ' - Invalid API Key / Not localhost?';
-             if (error.response.status === 429) errorMsg += ' - Rate Limit Exceeded?';
-          }
-           console.error(errorMsg);
-           return null;
+          this.recordError(apiKey, sourceName);
+          const errorMsg = this.formatApiError(error, sourceName);
+          return Promise.reject(new Error(errorMsg)); // Reject promise
       }
   }
 
+  // --- Error Formatting Helper ---
+  formatApiError(error, apiName) {
+      let msg = `${apiName} request failed: `;
+      if (error.response) {
+          msg += `Status ${error.response.status}`;
+          const status = error.response.status;
+          if (status === 401) msg += ' (Invalid API Key/Auth)';
+          else if (status === 429) msg += ' (Rate Limit Exceeded)';
+          else if (status === 403) msg += ' (Forbidden/Permissions Issue)';
+          else if (status === 426 && apiName.includes('NewsAPI')) msg += ' (Upgrade Required - Free plan on live?)';
+          else if (status >= 500) msg += ' (Server Error)';
+          // Avoid logging full response data for brevity/security
+          // msg += ` - Body: ${JSON.stringify(error.response.data)?.substring(0, 100)}...`;
+      } else if (error.request) {
+          msg += 'No response received (Network issue or timeout)';
+      } else {
+          msg += error.message; // Setup error
+      }
+      return msg;
+  }
 
-  // --- TRANSFORMERS (No changes needed) ---
+  // --- Article Transformers (with basic validation) ---
   transformGNewsArticles(articles) {
+    if (!Array.isArray(articles)) return [];
     return articles
       .map(article => ({
-        source: {
-          name: article.source?.name || 'Unknown GNews Source' // Safer access
-        },
-        title: article.title || 'No Title Provided',
-        description: article.description || article.content || 'No description available',
-        url: article.url || null, // Set to null if missing
-        urlToImage: article.image || null,
-        publishedAt: article.publishedAt || new Date().toISOString(),
-        content: article.content || ''
+        source: { name: article?.source?.name?.trim() || 'Unknown GNews Source' },
+        title: article?.title?.trim() || null,
+        description: (article?.description || article?.content)?.trim() || null,
+        url: article?.url?.trim() || null,
+        urlToImage: article?.image?.trim() || null,
+        publishedAt: article?.publishedAt || new Date().toISOString(),
+        content: article?.content?.trim() || ''
       }))
-      .filter(article => article.url && article.title && article.description); // Filter out articles missing essential info
+      .filter(a => a.url && a.title && a.description); // Ensure essential fields have values
   }
 
   transformNewsAPIArticles(articles) {
+     if (!Array.isArray(articles)) return [];
     return articles
       .map(article => ({
-        source: {
-          name: article.source?.name || 'Unknown NewsAPI Source' // Safer access
-        },
-        title: article.title || 'No Title Provided',
-        description: article.description || 'No description available',
-        url: article.url || null, // Set to null if missing
-        urlToImage: article.urlToImage || null,
-        publishedAt: article.publishedAt || new Date().toISOString(),
-        content: article.content || ''
+        source: { name: article?.source?.name?.trim() || 'Unknown NewsAPI Source' },
+        title: article?.title?.trim() || null,
+        description: article?.description?.trim() || null,
+        url: article?.url?.trim() || null,
+        urlToImage: article?.urlToImage?.trim() || null,
+        publishedAt: article?.publishedAt || new Date().toISOString(),
+        content: article?.content?.trim() || ''
       }))
-       .filter(article => article.url && article.title && article.description); // Filter out articles missing essential info
+       .filter(a => a.url && a.title && a.description);
   }
 
+  // --- Statistics ---
   getStatistics() {
+    const loadedGKeys = this.gnewsKeys || [];
+    const loadedNKeys = this.newsapiKeys || [];
+    const allKeys = [...loadedGKeys, ...loadedNKeys];
+
     return {
-      totalGNewsKeys: this.gnewsKeys.length,
-      totalNewsAPIKeys: this.newsapiKeys.length,
-      keyUsage: Array.from(this.keyUsageCount.entries()).map(([key, count]) => ({
-        key: `...${key.slice(-4)}`, // Show only last 4 chars
-        usage: count,
-        errors: this.keyErrorCount.get(key) || 0
+      totalGNewsKeysLoaded: loadedGKeys.length,
+      totalNewsAPIKeysLoaded: loadedNKeys.length,
+      keyStatus: allKeys.map((key, index) => ({
+        provider: loadedGKeys.includes(key) ? 'GNews' : 'NewsAPI',
+        keyLast4: key ? `...${key.slice(-4)}` : 'N/A',
+        usage: key ? (this.keyUsageCount.get(key) || 0) : 0,
+        consecutiveErrors: key ? (this.keyErrorCount.get(key) || 0) : 0
       }))
     };
   }
