@@ -73,16 +73,36 @@ class GeminiService {
     const prompt = this.buildEnhancedPrompt(article);
    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`;
     try {
-      const response = await axios.post(
+     const response = await axios.post(
         url,
         {
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
+          generationConfig: { // <--- Existing config
             temperature: 0.4,
             topK: 32,
             topP: 0.95,
             maxOutputTokens: 2048
-          }
+          },
+          // --- ADD THIS BLOCK ---
+          safetySettings: [
+            {
+              category: "HARM_CATEGORY_HARASSMENT",
+              threshold: "BLOCK_ONLY_HIGH" // Or BLOCK_NONE
+            },
+            {
+              category: "HARM_CATEGORY_HATE_SPEECH",
+              threshold: "BLOCK_ONLY_HIGH" // Or BLOCK_NONE
+            },
+            {
+              category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+              threshold: "BLOCK_ONLY_HIGH" // Or BLOCK_NONE
+            },
+            {
+              category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+              threshold: "BLOCK_ONLY_HIGH" // Or BLOCK_NONE
+            }
+          ]
+          // --- END OF ADDED BLOCK ---
         },
         { timeout: 30000 }
       );
