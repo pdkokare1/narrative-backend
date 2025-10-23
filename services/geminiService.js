@@ -1,11 +1,12 @@
-// services/geminiService.js (FINAL VERSION - Includes 503 retry and safer parser)
+// services/geminiService.js (FINAL v2.5 - BLOCK_NONE, 4096 tokens, retry, safer parser)
 const axios = require('axios');
 
-// Helper function for sleep
+// --- Helper Functions ---
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// --- GeminiService Class ---
 class GeminiService {
   constructor() {
     this.apiKeys = this.loadApiKeys();
@@ -18,324 +19,330 @@ class GeminiService {
       this.keyUsageCount.set(key, 0);
       this.keyErrorCount.set(key, 0);
     });
-    console.log(`🤖 GeminiService initialized with ${this.apiKeys.length} API keys.`);
+    console.log(`🤖 Gemini Service Initialized: ${this.apiKeys.length} API keys loaded.`);
   }
 
+  // Load API keys from environment variables
   loadApiKeys() {
     const keys = [];
     for (let i = 1; i <= 20; i++) {
-      const key = process.env[`GEMINI_API_KEY_${i}`];
+      const key = process.env[`GEMINI_API_KEY_${i}`]?.trim();
       if (key) keys.push(key);
     }
-    if (keys.length === 0 && process.env.GEMINI_API_KEY) {
-        keys.push(process.env.GEMINI_API_KEY);
+    const defaultKey = process.env.GEMINI_API_KEY?.trim();
+    if (keys.length === 0 && defaultKey) {
+        keys.push(defaultKey);
+        console.log("🔑 Using default GEMINI_API_KEY.");
     }
-    if (keys.length === 0) {
-        console.error("🚨 CRITICAL: No Gemini API keys found in environment variables!");
-        throw new Error('No Gemini API keys provided!');
-    }
+    if (keys.length === 0) console.warn("⚠️ No Gemini API keys found. Analysis may fail.");
+    else console.log(`🔑 Loaded ${keys.length} Gemini API key(s).`);
     return keys;
   }
 
+  // Get next available API key with rotation and error skipping
   getNextApiKey() {
-    if (!this.apiKeys.length) throw new Error('No Gemini API keys available');
-    const maxErrorsPerKey = 5; // Max consecutive errors before temporarily skipping a key
+    if (!this.apiKeys || this.apiKeys.length === 0) throw new Error('No Gemini API keys available.');
+
+    const numKeys = this.apiKeys.length;
+    const maxErrorsPerKey = 5; // Skip key after 5 consecutive errors
     let attempts = 0;
 
-    while (attempts < this.apiKeys.length) {
+    while (attempts < numKeys) {
       const keyIndex = this.currentKeyIndex;
       const key = this.apiKeys[keyIndex];
       const errorCount = this.keyErrorCount.get(key) || 0;
 
-      // Move to next key for next time
-      this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+      this.currentKeyIndex = (this.currentKeyIndex + 1) % numKeys; // Cycle for next call
 
       if (errorCount < maxErrorsPerKey) {
-        // console.log(`🔑 Using Gemini Key index ${keyIndex}`); // Uncomment for debugging key rotation
-        return key; // Found a usable key
-      } else {
-          console.warn(`⚠️ Temporarily skipping Gemini key index ${keyIndex} due to ${errorCount} errors.`);
+        return key; // Found usable key
+      } else if (errorCount === maxErrorsPerKey) { // Log skip only once
+          console.warn(`⚠️ Temporarily skipping Gemini key ...${key.slice(-4)} (Index ${keyIndex}) due to ${errorCount} errors.`);
       }
       attempts++;
     }
 
-    // If all keys have too many errors, log a warning and reset errors for all keys
-    console.error(`🚨 All Gemini keys have reached the error threshold (${maxErrorsPerKey}). Resetting error counts and retrying.`);
-    this.apiKeys.forEach(key => this.keyErrorCount.set(key, 0));
-    // Return the first key after reset
-    this.currentKeyIndex = 0;
+    // All keys skipped - reset counts and use first key
+    console.error(`🚨 All ${numKeys} Gemini keys hit error threshold (${maxErrorsPerKey}). Resetting counts.`);
+    this.apiKeys.forEach(k => this.keyErrorCount.set(k, 0));
+    this.currentKeyIndex = 1 % numKeys; // Prepare for next cycle
     return this.apiKeys[0];
   }
 
-  recordSuccess(apiKey) {
-    this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
-    // Reset error count for this key on success
-    this.keyErrorCount.set(apiKey, 0);
+  // Record success and reset error count
+  recordSuccess(apiKey, apiName = "Gemini") {
+    if (apiKey && this.keyUsageCount.has(apiKey)) {
+        this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
+        if (this.keyErrorCount.get(apiKey) > 0) this.keyErrorCount.set(apiKey, 0);
+    }
   }
 
-  recordError(apiKey) {
-    const currentErrors = (this.keyErrorCount.get(apiKey) || 0) + 1;
-    this.keyErrorCount.set(apiKey, currentErrors);
-    console.warn(`📈 Increased error count for key ending in ...${apiKey.slice(-4)} to ${currentErrors}`);
+  // Record error for a key
+  recordError(apiKey, apiName = "Gemini") {
+    if (apiKey && this.keyErrorCount.has(apiKey)) {
+        const currentErrors = (this.keyErrorCount.get(apiKey) || 0) + 1;
+        this.keyErrorCount.set(apiKey, currentErrors);
+        console.warn(`📈 Error count for ${apiName} key ...${apiKey.slice(-4)} is now ${currentErrors}`);
+    } else if (apiKey) {
+        console.warn(`📈 Tried to record error for unknown ${apiName} key ...${apiKey.slice(-4)}`);
+    } else {
+        console.warn(`📈 Tried to record ${apiName} error, but API key was invalid.`);
+    }
   }
 
-  // --- Main analysis function with retries for 503 errors ---
+  // --- Main Analysis Function with Retries ---
   async analyzeArticle(article, maxRetries = 3) {
+    if (!this.apiKeys || this.apiKeys.length === 0) throw new Error("Analysis failed: No Gemini keys configured.");
+
     let lastError = null;
-    let apiKey = ''; // Keep track of the key used in the last attempt
+    let apiKeyUsed = '';
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        apiKey = this.getNextApiKey(); // Get a potentially usable key
-        const result = await this.makeAnalysisRequest(article, apiKey);
-        this.recordSuccess(apiKey); // Mark key as successful
-        return result; // Got a result, exit loop
+        apiKeyUsed = this.getNextApiKey();
+        const result = await this.makeAnalysisRequest(article, apiKeyUsed);
+        this.recordSuccess(apiKeyUsed);
+        return result; // Success!
 
-      } catch (err) {
-        lastError = err; // Store the error
-        this.recordError(apiKey); // Mark this key as having an error
+      } catch (error) {
+        lastError = error;
+        if (apiKeyUsed) this.recordError(apiKeyUsed); // Record error for the key used
 
-        // Check if it's a retriable error (e.g., 503 or maybe 429 Rate Limit)
-        const isRetriable = (err.response?.status === 503) || (err.response?.status === 429);
+        const status = error.response?.status;
+        const isRetriable = (status === 503 || status === 429); // Retry on Service Unavailable or Rate Limit
 
         if (isRetriable && attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000; // Exponential backoff with jitter
-          console.warn(`⚠️ Gemini API returned ${err.response.status}. Retrying attempt ${attempt + 1}/${maxRetries} after ${Math.round(delay/1000)}s...`);
+          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000; // Exponential backoff
+          console.warn(`⏳ Gemini returned ${status}. Retrying attempt ${attempt + 1}/${maxRetries} after ${Math.round(delay/1000)}s...`);
           await sleep(delay);
         } else {
-            // Not a retriable error, or out of retries, break the loop and throw
-            console.error(`❌ Gemini analysis failed after ${attempt} attempt(s) for article: ${article.title.substring(0, 60)}...`);
-            break; // Exit loop, will throw lastError below
+          console.error(`❌ Gemini analysis failed definitively after ${attempt} attempt(s) for article: "${article?.title?.substring(0, 60)}..."`);
+          break; // Exit retry loop
         }
       }
-    }
-    // If loop finished without returning, throw the last captured error
-    throw lastError;
+    } // End loop
+
+    // If loop finishes, throw the last error
+    throw lastError || new Error(`Gemini analysis failed after ${maxRetries} attempts.`);
   }
 
+  // --- Make Single API Request ---
   async makeAnalysisRequest(article, apiKey) {
+    if (!apiKey) throw new Error("Internal error: apiKey missing for makeAnalysisRequest");
+
     const prompt = this.buildEnhancedPrompt(article);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`;
 
     try {
       const response = await axios.post(
         url,
-        {
+        { // Request Body
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            temperature: 0.4, // Lower temp for more deterministic analysis
+            temperature: 0.4,
             topK: 32,
             topP: 0.95,
-            maxOutputTokens: 2048 // Sufficient for the JSON structure
+            maxOutputTokens: 4096 // Increased limit
           },
-          // --- ADDED SAFETY SETTINGS ---
+          // --- SAFETY SETTINGS: BLOCK_NONE ---
           safetySettings: [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
           ]
-          // --- END SAFETY SETTINGS ---
         },
-        {
-            timeout: 45000, // Increased timeout to 45 seconds
-            // Add adapter to handle potential proxy/network issues if necessary
-            // adapter: require('axios/lib/adapters/http') // Example, might need npm install http
+        { // Axios Config
+            timeout: 60000, // 60 second timeout
+            responseType: 'json', // Expect JSON response
+            validateStatus: (status) => status >= 200 && status < 300, // Only 2xx are success
         }
       );
-      // Check for empty or missing data before parsing
-      if (!response || !response.data) {
-          throw new Error("Received empty response from Gemini API");
-      }
-      return this.parseAnalysisResponse(response.data); // Pass full data object
 
-    } catch (err) {
-      // Axios wraps HTTP errors in err.response
-      if (err.response) {
-        console.error(`❌ Gemini API Error: Status ${err.response.status} - ${JSON.stringify(err.response.data)}`);
-        // Re-throw specific retriable errors for the retry logic
-        if (err.response.status === 503 || err.response.status === 429) {
-            throw err; // Let analyzeArticle handle retry
-        }
-        // For other client/server errors (4xx, 5xx), throw a more specific error
-        throw new Error(`Gemini API request failed with status ${err.response.status}`);
-      } else if (err.request) {
-        // Request made but no response received (network issue, timeout)
-        console.error('❌ Gemini API Error: No response received.', err.message);
-        throw new Error(`Gemini API request failed: No response. ${err.message}`);
-      } else {
-        // Setup error or other issue
-        console.error('❌ Gemini API Error: Request setup failed.', err.message);
-        throw new Error(`Gemini API request setup failed: ${err.message}`);
+      if (!response.data || typeof response.data !== 'object') {
+          throw new Error("Received invalid response data from Gemini API despite 2xx status.");
       }
-      // Note: recordError is called by analyzeArticle after catching
+      return this.parseAnalysisResponse(response.data);
+
+    } catch (error) {
+        if (error.response) { // Server responded with non-2xx status
+            console.error(`❌ Gemini API HTTP Error: Status ${error.response.status}`, error.response.data);
+            if (error.response.status === 503 || error.response.status === 429) {
+                error.message = `Gemini API returned status ${error.response.status}`; // For retry logic
+                throw error;
+            }
+            throw new Error(`Gemini API request failed with HTTP status ${error.response.status}`);
+        } else if (error.request) { // No response received
+            console.error('❌ Gemini API Network Error: No response.', error.message);
+            throw new Error(`Gemini API request failed: No response (check network/timeout).`);
+        } else { // Setup error
+            console.error('❌ Gemini API Setup Error:', error.message);
+            throw new Error(`Gemini API request setup failed: ${error.message}`);
+        }
     }
   }
 
+  // --- Build Prompt ---
   buildEnhancedPrompt(article) {
-    // --- PROMPT (No changes needed) ---
-    return `You are an expert news analyst. Analyze this news article. Return ONLY valid JSON (no markdown, no explanations).
+    const title = article?.title || "No Title";
+    const description = article?.description || "No Description";
 
-Article Title: ${article.title}
-Description: ${article.description || ''}
+    // Keep prompt concise but clear
+    return `Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
 
 INSTRUCTIONS:
-1. First, determine the article type. Is it 'Full' (hard news: politics, economy, etc.) or 'SentimentOnly' (subjective reviews: tech, car, movie reviews, opinions, etc.)?
-2. Second, determine the 'sentiment' (Positive, Negative, Neutral) of the article towards its main topic.
-3. If 'analysisType' is 'Full', provide all bias, credibility, and reliability scores as numbers between 0 and 100.
-4. If 'analysisType' is 'SentimentOnly', set *all* numerical score fields (biasScore, credibilityScore, reliabilityScore, trustScore, and all component scores like sentimentPolarity, sourceDiversity, etc.) to 0.
+1. 'analysisType': 'Full' (news) or 'SentimentOnly' (review/opinion).
+2. 'sentiment': 'Positive', 'Negative', or 'Neutral'.
+3. If 'Full': Provide scores (0-100) for bias, credibility, reliability, trust, and components. Assign labels/grades.
+4. If 'SentimentOnly': Set ALL numerical scores (biasScore, credibilityScore, reliabilityScore, trustScore, ALL component scores) strictly to 0. Set politicalLean to 'Not Applicable'.
 
-Return detailed multifactor analysis (use the exact structure below):
-
+JSON Structure:
 {
-  "summary": "exactly 60 words summary",
+  "summary": "Neutral summary (exactly 60 words).",
   "category": "Politics/Economy/Technology/Health/Environment/Justice/Education/Entertainment/Sports/Other",
   "politicalLean": "Left/Left-Leaning/Center/Right-Leaning/Right/Not Applicable",
   "analysisType": "Full",
-  "sentiment": "Positive/Negative/Neutral",
-  "biasScore": 44,
-  "biasLabel": "Low Bias/Moderate/High/Extreme",
-  "biasComponents": {
-    "linguistic": { "sentimentPolarity": 38, "emotionalLanguage": 35, "loadedTerms": 42, "complexityBias": 40 },
-    "sourceSelection": { "sourceDiversity": 55, "expertBalance": 53, "attributionTransparency": 74 },
-    "demographic": { "genderBalance": 60, "racialBalance": 56, "ageRepresentation": 52 },
-    "framing": { "headlineFraming": 47, "storySelection": 54, "omissionBias": 39 }
-  },
-  "credibilityScore": 87,
-  "credibilityGrade": "A+/A/A-/B+/B/B-/C+/C/C-/D/F",
-  "credibilityComponents": { "sourceCredibility": 88, "factVerification": 90, "professionalism": 84, "evidenceQuality": 80, "transparency": 88, "audienceTrust": 78 },
-  "reliabilityScore": 93,
-  "reliabilityGrade": "A+/A/A-/B+/B/B-/C+/C/C-/D/F",
-  "reliabilityComponents": { "consistency": 95, "temporalStability": 92, "qualityControl": 94, "publicationStandards": 90, "correctionsPolicy": 88, "updateMaintenance": 89 },
-  "trustScore": 90,
-  "trustLevel": "Highly Trustworthy/Very Trustworthy/Trustworthy/Moderately Trustworthy/Questionable/Low Trust/Not Applicable",
-  "coverageLeft": 33,
-  "coverageCenter": 35,
-  "coverageRight": 32,
-  "clusterId": 5,
-  "keyFindings": ["key insight 1", "key insight 2"],
-  "recommendations": ["User should crosscheck with alternate sources", "Fact verification recommended"]
+  "sentiment": "Neutral",
+  "biasScore": 50, "biasLabel": "Moderate",
+  "biasComponents": {"linguistic": {"sentimentPolarity": 50,...}, "sourceSelection": {...}, "demographic": {...}, "framing": {...}},
+  "credibilityScore": 75, "credibilityGrade": "B",
+  "credibilityComponents": {"sourceCredibility": 70,...},
+  "reliabilityScore": 80, "reliabilityGrade": "B+",
+  "reliabilityComponents": {"consistency": 80,...},
+  "trustScore": 77, "trustLevel": "Trustworthy",
+  "coverageLeft": 33, "coverageCenter": 34, "coverageRight": 33,
+  "clusterId": 1,
+  "keyFindings": ["Finding 1.", "Finding 2."],
+  "recommendations": ["Rec 1.", "Rec 2."]
 }
 
-IMPORTANT: Output ONLY the JSON object. Do not include markdown backticks (\`\`\`) or the word 'json'. For a 'SentimentOnly' article, all numerical score fields MUST be 0.`;
+Output ONLY the JSON object.`;
   }
 
-  // --- FINAL, SAFEST PARSER ---
+  // --- Parse and Validate Response ---
   parseAnalysisResponse(data) {
-    // Check for safety blocks or other API-level issues first
-    if (!data.candidates || data.candidates.length === 0) {
-      const blockReason = data.promptFeedback?.blockReason || 'No candidates in response';
-      const safetyRatings = data.promptFeedback?.safetyRatings || [];
-      console.error(`❌ Gemini API Error: ${blockReason}. Safety Ratings: ${JSON.stringify(safetyRatings)}`);
-      // It's helpful to log the full response if possible, but be careful with size/sensitive data
-      // console.error("Full blocked response data:", JSON.stringify(data));
-      throw new Error(`API block or error: ${blockReason}`);
-    }
-
-    // Check if the candidate itself finished due to safety or other reasons
-    const candidate = data.candidates[0];
-    if (candidate.finishReason && candidate.finishReason !== 'STOP') {
-        // Reasons can be SAFETY, RECITATION, MAX_TOKENS, OTHER
-        console.error(`❌ Gemini API Warning: Candidate finished due to ${candidate.finishReason}. Ratings: ${JSON.stringify(candidate.safetyRatings || [])}`);
-        // If it's a safety block, we definitely don't have content
-        if (candidate.finishReason === 'SAFETY') {
-             throw new Error(`API block or error: Candidate stopped for SAFETY`);
-        }
-        // If MAX_TOKENS or RECITATION, content might be partial/unusable. Treat as error for now.
-        // If OTHER, something unexpected happened.
-        if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
-             throw new Error(`Candidate finished with reason ${candidate.finishReason} but has no content.`);
-        }
-    }
-
-    // Now, safely access the text content
-    if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0 || !candidate.content.parts[0].text) {
-         console.error("❌ Gemini API Error: Response candidate exists but has no text part.", JSON.stringify(candidate));
-         throw new Error('Response candidate missing text content');
-    }
-
-    const text = candidate.content.parts[0].text;
-    let jsonText = text.trim();
-
-    if (jsonText.length === 0) {
-      throw new Error('Received empty text response from API');
-    }
-
-    // Attempt to extract JSON even if there's extra text/markdown
-    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-       console.error("❌ Gemini response did not contain valid JSON structure:", jsonText);
-       throw new Error('No JSON object found in response text');
-    }
-
     try {
-        const parsed = JSON.parse(jsonMatch[0]); // Try parsing only the matched block
-
-        // --- VALIDATION AND DEFAULTS ---
-        if (typeof parsed !== 'object' || parsed === null) {
-            throw new Error('Parsed content is not a JSON object');
+        // 1. Check Safety Blocks / API Errors
+        if (!data.candidates || data.candidates.length === 0) {
+            const blockReason = data.promptFeedback?.blockReason || 'No candidates';
+            console.error(`❌ Parser Error: Response blocked or no candidates. Reason: ${blockReason}`, data.promptFeedback?.safetyRatings);
+            throw new Error(`API Response Error: ${blockReason}`);
         }
-        if (!parsed.summary) throw new Error('Missing required field: summary');
+        const candidate = data.candidates[0];
 
-        parsed.sentiment = parsed.sentiment || 'Neutral';
-        parsed.analysisType = parsed.analysisType || 'Full';
-        parsed.politicalLean = parsed.politicalLean || (parsed.analysisType === 'SentimentOnly' ? 'Not Applicable' : 'Center');
+        // 2. Check Candidate Finish Reason
+        if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+            console.warn(`⚠️ Parser Warning: Candidate finishReason: ${candidate.finishReason}. Content may be partial.`, candidate.safetyRatings);
+            if (candidate.finishReason === 'SAFETY') throw new Error(`API Response Blocked: Candidate stopped for SAFETY`);
+            if (!candidate.content?.parts?.[0]?.text) throw new Error(`Candidate stopped for ${candidate.finishReason} and has no text.`);
+        }
 
+        // 3. Extract Text
+        const text = candidate.content?.parts?.[0]?.text;
+        if (typeof text !== 'string' || !text.trim()) throw new Error('Response candidate missing valid text content');
 
-        // Default scores to 0 if missing or if SentimentOnly
+        // 4. Extract JSON (Handles potential markdown)
+        const jsonMatch = text.trim().match(/(?:```json)?\s*(\{[\s\S]*\})\s*(?:```)?/);
+        if (!jsonMatch?.[1]) throw new Error('No valid JSON object found in response text');
+        const jsonString = jsonMatch[1];
+
+        // 5. Parse JSON
+        let parsed = JSON.parse(jsonString); // Will throw on invalid JSON
+
+        // 6. Validate & Apply Defaults
+        if (typeof parsed !== 'object' || parsed === null) throw new Error('Parsed content is not a valid object');
+
+        // Required fields with defaults
+        parsed.summary = (typeof parsed.summary === 'string' && parsed.summary.trim()) ? parsed.summary.trim() : 'Summary unavailable';
+        parsed.analysisType = ['Full', 'SentimentOnly'].includes(parsed.analysisType) ? parsed.analysisType : 'Full';
         const isSentimentOnly = parsed.analysisType === 'SentimentOnly';
-        parsed.biasScore = !isSentimentOnly ? (Number(parsed.biasScore) || 0) : 0;
-        parsed.credibilityScore = !isSentimentOnly ? (Number(parsed.credibilityScore) || 0) : 0;
-        parsed.reliabilityScore = !isSentimentOnly ? (Number(parsed.reliabilityScore) || 0) : 0;
-        parsed.trustScore = !isSentimentOnly ? (Number(parsed.trustScore) || 0) : 0;
+        parsed.sentiment = ['Positive', 'Negative', 'Neutral'].includes(parsed.sentiment) ? parsed.sentiment : 'Neutral';
+        const defaultLean = isSentimentOnly ? 'Not Applicable' : 'Center';
+        parsed.politicalLean = ['Left', 'Left-Leaning', 'Center', 'Right-Leaning', 'Right', 'Not Applicable'].includes(parsed.politicalLean) ? parsed.politicalLean : defaultLean;
+        parsed.category = (typeof parsed.category === 'string' && parsed.category.trim()) ? parsed.category.trim() : 'General';
 
-        // Default component objects and their nested scores if needed
-        parsed.biasComponents = parsed.biasComponents || {};
-        parsed.biasComponents.linguistic = parsed.biasComponents.linguistic || {};
-        parsed.biasComponents.sourceSelection = parsed.biasComponents.sourceSelection || {};
-        parsed.biasComponents.demographic = parsed.biasComponents.demographic || {};
-        parsed.biasComponents.framing = parsed.biasComponents.framing || {};
 
-        parsed.credibilityComponents = parsed.credibilityComponents || {};
-        parsed.reliabilityComponents = parsed.reliabilityComponents || {};
+        // Function to safely parse score (0-100), returns 0 if invalid or SentimentOnly
+        const parseScore = (score) => {
+             if (isSentimentOnly) return 0;
+             const num = Number(score);
+             return !isNaN(num) && num >= 0 && num <= 100 ? Math.round(num) : 0;
+        };
 
-        // Simplified check: if SentimentOnly, ensure components are zeroed (more robust needed if partial data possible)
-        if (isSentimentOnly) {
-            // A more thorough zeroing of nested component scores would go here if needed
-        }
+        // Scores
+        parsed.biasScore = parseScore(parsed.biasScore);
+        parsed.credibilityScore = parseScore(parsed.credibilityScore);
+        parsed.reliabilityScore = parseScore(parsed.reliabilityScore);
+        parsed.trustScore = parseScore(parsed.trustScore);
 
-        // Calculate trustScore if needed (only for Full analysis)
-        if (parsed.analysisType === 'Full' && parsed.trustScore === 0 && parsed.credibilityScore > 0 && parsed.reliabilityScore > 0) {
+        // Components (ensure objects exist, parse nested scores)
+        const ensureObject = (obj) => typeof obj === 'object' && obj !== null ? obj : {};
+        const parseComponentScores = (compObj) => {
+            if (!compObj) return {};
+            for (const key in compObj) {
+                if (Object.hasOwnProperty.call(compObj, key)) {
+                     compObj[key] = parseScore(compObj[key]); // Apply score parsing to all component values
+                }
+            }
+            return compObj;
+        };
+
+        parsed.biasComponents = ensureObject(parsed.biasComponents);
+        parsed.biasComponents.linguistic = parseComponentScores(ensureObject(parsed.biasComponents.linguistic));
+        parsed.biasComponents.sourceSelection = parseComponentScores(ensureObject(parsed.biasComponents.sourceSelection));
+        parsed.biasComponents.demographic = parseComponentScores(ensureObject(parsed.biasComponents.demographic));
+        parsed.biasComponents.framing = parseComponentScores(ensureObject(parsed.biasComponents.framing));
+
+        parsed.credibilityComponents = parseComponentScores(ensureObject(parsed.credibilityComponents));
+        parsed.reliabilityComponents = parseComponentScores(ensureObject(parsed.reliabilityComponents));
+
+
+        // Recalculate Trust Score if needed
+        if (!isSentimentOnly && parsed.trustScore === 0 && parsed.credibilityScore > 0 && parsed.reliabilityScore > 0) {
           parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
-          console.log(`ℹ️ Calculated trustScore: ${parsed.trustScore}`);
-        } else if (parsed.analysisType === 'SentimentOnly') {
-             parsed.trustScore = 0; // Ensure it's zero
         }
 
-        parsed.keyFindings = parsed.keyFindings || [];
-        parsed.recommendations = parsed.recommendations || [];
+        // Ensure arrays exist
+        parsed.keyFindings = Array.isArray(parsed.keyFindings) ? parsed.keyFindings.map(String) : []; // Ensure strings
+        parsed.recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [];
 
-        return parsed; // Return the validated and potentially defaulted object
+        // Optional fields - ensure correct type or set to undefined
+        parsed.biasLabel = typeof parsed.biasLabel === 'string' ? parsed.biasLabel : undefined;
+        parsed.credibilityGrade = typeof parsed.credibilityGrade === 'string' ? parsed.credibilityGrade : undefined;
+        parsed.reliabilityGrade = typeof parsed.reliabilityGrade === 'string' ? parsed.reliabilityGrade : undefined;
+        parsed.trustLevel = typeof parsed.trustLevel === 'string' ? parsed.trustLevel : undefined;
+        parsed.coverageLeft = typeof parsed.coverageLeft === 'number' ? parsed.coverageLeft : undefined;
+        parsed.coverageCenter = typeof parsed.coverageCenter === 'number' ? parsed.coverageCenter : undefined;
+        parsed.coverageRight = typeof parsed.coverageRight === 'number' ? parsed.coverageRight : undefined;
+        parsed.clusterId = typeof parsed.clusterId === 'number' ? parsed.clusterId : undefined;
 
-    } catch (parseError) {
-        console.error("❌ Error parsing JSON from Gemini response:", parseError.message);
-        console.error("--- Raw JSON Text Attempted ---");
-        console.error(jsonMatch ? jsonMatch[0] : jsonText); // Log what was attempted
-        console.error("--- End Raw JSON Text ---");
-        throw new Error(`Failed to parse JSON: ${parseError.message}`);
+        return parsed; // Return validated object
+
+    } catch (error) {
+        console.error(`❌ Error during Gemini response parsing/validation: ${error.message}`);
+        // Log the raw data only if not in production for security/privacy
+        if (process.env.NODE_ENV !== 'production') {
+             console.error("--- Raw Response Data ---");
+             console.error(JSON.stringify(data, null, 2)); // Log formatted full data
+             console.error("--- End Raw Data ---");
+        }
+        throw new Error(`Failed to process Gemini response: ${error.message}`);
     }
   }
 
+  // --- Get Statistics ---
   getStatistics() {
+    const loadedKeys = this.apiKeys || [];
     return {
-      totalKeys: this.apiKeys.length,
-      currentKeyIndex: this.currentKeyIndex, // Useful for debugging
-      keyUsage: Array.from(this.keyUsageCount.entries()).map(([key, count]) => ({
-        key: `...${key.slice(-4)}`, // Show only last 4 chars
-        usage: count,
-        errors: this.keyErrorCount.get(key) || 0
+      totalKeysLoaded: loadedKeys.length,
+      currentKeyIndex: this.currentKeyIndex,
+      keyStatus: loadedKeys.map((key, index) => ({
+        index: index,
+        keyLast4: key ? `...${key.slice(-4)}` : 'N/A', // Handle potentially null keys
+        usage: key ? (this.keyUsageCount.get(key) || 0) : 0,
+        consecutiveErrors: key ? (this.keyErrorCount.get(key) || 0) : 0
       }))
-    }
+    };
   }
 }
 
