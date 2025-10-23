@@ -185,14 +185,59 @@ Return detailed multifactor analysis (see example structure):
 IMPORTANT: Output ONLY the JSON, no extra explanations. For a 'SentimentOnly' article, all score fields *must* be 0.`;
   }
 
-  parseAnalysisResponse(data) {
-    try {
-      const text = data.candidates[0].content.parts[0].text;
-      let jsonText = text.trim();
-      jsonText = jsonText.replace(/``````/g, '');
-      const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) throw new Error('No JSON found in response');
-      const parsed = JSON.parse(jsonMatch[0]);
+  // This is the NEW, robust function
+parseAnalysisResponse(data) {
+  try {
+    // --- NEW SAFETY CHECK ---
+    // Checks if the API was blocked (e.g., safety reasons) or returned an error
+    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+      const blockReason = data.promptFeedback?.blockReason || 'Unknown error (no candidate array)';
+      throw new Error(`API block or error: ${blockReason}`);
+    }
+    // --- END NEW CHECK ---
+
+    const text = data.candidates[0].content.parts[0].text;
+    let jsonText = text.trim();
+
+    // Fix for 'Unexpected end of JSON input'
+    if (jsonText.length === 0) {
+      throw new Error('Received empty text response from API');
+    }
+
+    jsonText = jsonText.replace(/``````/g, '');
+    const jsonMatch = jsonText.match(/\{[\s\S]*\}/);
+
+    if (!jsonMatch) {
+       // Log the bad response for debugging
+       console.error("Gemini response did not contain JSON:", text);
+       throw new Error('No JSON found in response');
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]);
+
+    // Ensure required fields exist
+    if (!parsed.summary) throw new Error('Missing required field: summary');
+    if (!parsed.sentiment) parsed.sentiment = 'Neutral'; // Default sentiment
+    if (!parsed.analysisType) parsed.analysisType = 'Full'; // Default type
+
+    // Calculate trustScore if missing (and if it's a 'Full' analysis)
+    if (parsed.analysisType === 'Full' && !parsed.trustScore && parsed.credibilityScore && parsed.reliabilityScore) {
+      parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
+    } else if (parsed.analysisType === 'SentimentOnly') {
+      // Ensure all scores are 0 if it's a review
+      parsed.biasScore = 0;
+      parsed.credibilityScore = 0;
+      parsed.reliabilityScore = 0;
+      parsed.trustScore = 0;
+      parsed.politicalLean = 'Center'; // Reviews don't have a lean
+    }
+
+    return parsed;
+  } catch (err) {
+    // This will now pass a cleaner error message up
+    throw new Error('Error parsing Gemini response: ' + err.message);
+  }
+}
       
       // Ensure required fields exist
       if (!parsed.summary) throw new Error('Missing required field: summary');
