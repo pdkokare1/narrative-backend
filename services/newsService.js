@@ -1,4 +1,4 @@
-// services/newsService.js (FINAL v2.4 - Focused News Fetching)
+// services/newsService.js (FINAL v2.5 - Focused News Fetching)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -35,7 +35,7 @@ class NewsService {
 
     // Initialize trackers for all loaded keys
     [...this.gnewsKeys, ...this.newsapiKeys].forEach(key => {
-        if (key) { // Ensure key is valid before setting
+        if (key) { // Ensure key is not null/undefined
             this.keyUsageCount.set(key, 0);
             this.keyErrorCount.set(key, 0);
         }
@@ -213,9 +213,9 @@ recordError(apiKey, apiName = "NewsAPI") {
       // Validate response structure
       if (!response?.data || !Array.isArray(response.data.articles)) {
         console.warn(`⚠️ ${sourceName} response missing 'articles' array.`);
-        return []; // Valid but empty
+        return []; // Treat as empty result, not error
       }
-      if (response.data.articles.length === 0) return []; // Valid but empty
+      if (response.data.articles.length === 0) return []; // Valid but empty result
 
       this.recordSuccess(apiKey, sourceName);
       return this.transformGNewsArticles(response.data.articles);
@@ -293,7 +293,7 @@ recordError(apiKey, apiName = "NewsAPI") {
         publishedAt: article?.publishedAt || new Date().toISOString(),
         content: article?.content?.trim() || ''
       }))
-      .filter(a => a.url && a.title && a.description); // Ensure essential fields have values
+      .filter(a => a.url && a.title && a.description); // Ensure essentials are present
   }
 
   transformNewsAPIArticles(articles) {
@@ -305,11 +305,12 @@ recordError(apiKey, apiName = "NewsAPI") {
         description: article?.description?.trim() || null,
         url: article?.url?.trim() || null,
         urlToImage: article?.urlToImage?.trim() || null,
-        publishedAt: article?.publishedAt || new Date().toISOString(),
+        publishedAt: article?.publishedAt || new Date().toISOString(), // Use ISOString
         content: article?.content?.trim() || ''
       }))
        .filter(a => a.url && a.title && a.description);
   }
+
 
   // --- Statistics ---
   getStatistics() {
@@ -322,7 +323,7 @@ recordError(apiKey, apiName = "NewsAPI") {
       totalNewsAPIKeysLoaded: loadedNKeys.length,
       keyStatus: allKeys.map((key, index) => ({
         provider: loadedGKeys.includes(key) ? 'GNews' : 'NewsAPI',
-        keyLast4: key ? `...${key.slice(-4)}` : 'N/A',
+        keyLast4: key ? `...${key.slice(-4)}` : 'N/A', // Handle null/undefined key if array loading failed
         usage: key ? (this.keyUsageCount.get(key) || 0) : 0,
         consecutiveErrors: key ? (this.keyErrorCount.get(key) || 0) : 0
       }))
