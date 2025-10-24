@@ -1,4 +1,4 @@
-// server.js (FINAL v2.6 - PDF Formula, Clustering, Junk Filter)
+// server.js (FINAL v2.7 - Rebrand, Advanced Duplicate Check)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -73,7 +73,7 @@ const articleSchema = new mongoose.Schema({
   clusterTopic: { type: String, index: true, trim: true }, // NEW FIELD FOR CLUSTERING
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.6' } // Version bump
+  analysisVersion: { type: String, default: '2.7' } // Version bump
 }, {
   timestamps: true, // Adds createdAt and updatedAt
   autoIndex: process.env.NODE_ENV !== 'production',
@@ -87,6 +87,7 @@ articleSchema.index({ trustScore: -1, publishedAt: -1 });
 articleSchema.index({ biasScore: 1, publishedAt: -1 });
 articleSchema.index({ createdAt: 1 }); // For cleanup
 articleSchema.index({ clusterTopic: 1, publishedAt: -1 }); // Index for new field
+articleSchema.index({ headline: 1, source: 1, publishedAt: -1 }); // NEW: For duplicate check
 
 const Article = mongoose.model('Article', articleSchema);
 
@@ -95,15 +96,14 @@ const Article = mongoose.model('Article', articleSchema);
 // GET / - Health Check
 app.get('/', (req, res) => {
   res.status(200).json({
-    message: `The Narrative API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
+    message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
     status: 'healthy',
     features: [
-      'PDF-Based Trust Score (OTS = sqrt(UCS*URS))', // UPDATED
-      'AI-Powered Event Clustering', // UPDATED
-      'Junk/Ad Article Filtering', // UPDATED
-      'Credibility & Reliability Scoring',
-      'Analysis Type (Full/SentimentOnly)',
-      'Advanced Filtering', 'Auto-refresh every 30 mins'
+      'PDF-Based Trust Score (OTS = sqrt(UCS*URS))',
+      'AI-Powered Event Clustering',
+      'Junk/Ad Article Filtering',
+      'Advanced Duplicate Checking', // NEW
+      'Consolidated Analysis UI' // NEW
     ],
     timestamp: new Date().toISOString(),
     uptime: process.uptime ? Math.floor(process.uptime()) : 'N/A'
@@ -306,8 +306,19 @@ async function fetchAndAnalyzeNews() {
                 continue;
             }
 
-            // 2. Check Duplicates
-            const exists = await Article.findOne({ url: article.url }, { _id: 1 }).lean();
+            // 2. Check Duplicates (ADVANCED)
+            const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+            const exists = await Article.findOne({
+              $or: [
+                { url: article.url },
+                { 
+                  headline: article.title, 
+                  source: article.source?.name, 
+                  publishedAt: { $gte: oneDayAgo } 
+                }
+              ]
+            }, { _id: 1 }).lean();
+            
             if (exists) {
                 stats.skipped_duplicate++;
                 continue;
@@ -336,7 +347,6 @@ async function fetchAndAnalyzeNews() {
               publishedAt: article.publishedAt ? new Date(article.publishedAt) : new Date(),
               analysisType: analysis.analysisType || 'Full',
               sentiment: analysis.sentiment || 'Neutral',
-              // Use analysis results, defaulting to 0, ensuring 0 for SentimentOnly
               biasScore: analysis.biasScore, // Directly from parser
               biasLabel: analysis.biasLabel,
               biasComponents: analysis.biasComponents || {},
@@ -369,17 +379,15 @@ async function fetchAndAnalyzeNews() {
 
                 if (existingCluster && existingCluster.clusterId) {
                     newArticleData.clusterId = existingCluster.clusterId;
-                    console.log(`Assigning existing clusterId [${newArticleData.clusterId}] for topic: "${newArticleData.clusterTopic}"`);
+                    // console.log(`Assigning existing clusterId [${newArticleData.clusterId}] for topic: "${newArticleData.clusterTopic}"`);
                 } else {
                     // This is a new topic, find the max clusterId and add 1
                     const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select({ clusterId: 1 }).lean();
                     newArticleData.clusterId = (maxIdDoc?.clusterId || 0) + 1;
-                    console.log(`Assigning NEW clusterId [${newArticleData.clusterId}] for topic: "${newArticleData.clusterTopic}"`);
+                    // console.log(`Assigning NEW clusterId [${newArticleData.clusterId}] for topic: "${newArticleData.clusterTopic}"`);
                 }
             }
             // (End Clustering Logic)
-
-            // REMOVED old trustScore recalculation block. It's now done in geminiService.
 
             // 5. Save to DB
             const savedArticle = await Article.create(newArticleData);
@@ -387,8 +395,6 @@ async function fetchAndAnalyzeNews() {
             console.log(`✅ Saved [${savedArticle._id}]: ${savedArticle.headline.substring(0, 50)}... (${savedArticle.analysisType})`);
 
             // --- DELAY FOR FREE TIER RATE LIMIT ---
-            // IMPORTANT: If you have NOT enabled billing for Gemini API, uncomment the next line.
-            // If you HAVE enabled billing, KEEP the next line commented out.
             await sleep(31000); // Wait 31 seconds (allows slightly under 2 RPM)
             // ----------------------------------------
 
@@ -474,10 +480,11 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 3001; // Render injects PORT
+const HOST = process.env.HOST || '0.0.0.0'; // Bind to all interfaces
 
 // Start Server
-app.listen(PORT, '0.0.0.0', () => { // <-- THE FIX IS HERE
-  console.log(`\n🚀 Server listening on host 0.0.0.0, port ${PORT}`); // Updated log
+app.listen(PORT, HOST, () => {
+  console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
   console.log(`🔗 Health Check: http://localhost:${PORT}/`);
   console.log(`API available at /api`);
   console.log(`🕒 News fetch scheduled: Every 30 minutes`);
