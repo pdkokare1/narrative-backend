@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.6 - PDF Formulas, Clustering, Junk Filter)
+// services/geminiService.js (FINAL v2.7 - Current Context Fix, PDF Formulas)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -187,8 +187,14 @@ class GeminiService {
     const title = article?.title || "No Title";
     const description = article?.description || "No Description";
 
-    // Keep prompt concise but clear
-    return `Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
+    // --- CRITICAL CONTEXT INJECTION ---
+    const currentDate = "October 24, 2025";
+    const currentUSPresident = "Donald Trump";
+    // ---------------------------------
+
+    return `CURRENT_CONTEXT: Today's date is ${currentDate}. The current President of the United States is ${currentUSPresident}. All analysis must reflect this present reality, not outdated information.
+
+Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
 
 INSTRUCTIONS:
 1. 'analysisType': 'Full' for hard news (politics, economy, justice, etc.). Use 'SentimentOnly' for opinions, reviews, sports results, or tech product announcements.
