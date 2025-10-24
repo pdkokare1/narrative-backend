@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.8 - BLOCK_NONE, 8192 tokens, retry, component prompt)
+// services/geminiService.js (FINAL v2.9 - BLOCK_NONE, 8192 tokens, retry, component prompt)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -245,6 +245,7 @@ JSON Structure (Return ONLY this object):
             if (typeof parsed !== 'object' || parsed === null) throw new Error('Parsed content is not a valid object');
         } catch (parseError) {
             console.error("❌ Parser Error: Failed to parse extracted JSON string:", parseError.message);
+            // Log the problematic string for debugging
             console.error("--- JSON String Attempted (truncated) ---");
             console.error(jsonString.substring(0, 500) + (jsonString.length > 500 ? '...' : ''));
             console.error("--- End JSON String ---");
