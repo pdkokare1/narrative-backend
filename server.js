@@ -1,4 +1,4 @@
-// server.js (FINAL v2.7 - Rebrand, Advanced Duplicate Check)
+// server.js (FINAL v2.11 - Final UI/Filter Tweaks)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -73,7 +73,7 @@ const articleSchema = new mongoose.Schema({
   clusterTopic: { type: String, index: true, trim: true }, // NEW FIELD FOR CLUSTERING
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.7' } // Version bump
+  analysisVersion: { type: String, default: '2.11' } // Version bump
 }, {
   timestamps: true, // Adds createdAt and updatedAt
   autoIndex: process.env.NODE_ENV !== 'production',
@@ -88,6 +88,7 @@ articleSchema.index({ biasScore: 1, publishedAt: -1 });
 articleSchema.index({ createdAt: 1 }); // For cleanup
 articleSchema.index({ clusterTopic: 1, publishedAt: -1 }); // Index for new field
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 }); // NEW: For duplicate check
+articleSchema.index({ analysisType: 1, publishedAt: -1 }); // NEW: For review filter
 
 const Article = mongoose.model('Article', articleSchema);
 
@@ -102,15 +103,16 @@ app.get('/', (req, res) => {
       'PDF-Based Trust Score (OTS = sqrt(UCS*URS))',
       'AI-Powered Event Clustering',
       'Junk/Ad Article Filtering',
-      'Advanced Duplicate Checking', // NEW
-      'Consolidated Analysis UI' // NEW
+      'Advanced Duplicate Checking',
+      'Review/Opinion Filter', // NEW
+      'Consolidated Analysis UI'
     ],
     timestamp: new Date().toISOString(),
     uptime: process.uptime ? Math.floor(process.uptime()) : 'N/A'
   });
 });
 
-// GET /api/articles - Fetch articles (No change to logic)
+// GET /api/articles - Fetch articles (UPDATED for Review Filter)
 app.get('/api/articles', async (req, res, next) => {
   try {
     const category = req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null;
@@ -126,16 +128,25 @@ app.get('/api/articles', async (req, res, next) => {
     if (category) query.category = category;
     if (lean) query.politicalLean = lean;
 
+    // --- UPDATED Quality Filter Logic ---
     if (quality) {
+      if (quality === 'Review / Opinion') {
+          query.analysisType = 'SentimentOnly';
+      } else {
+        // Ensure only 'Full' analysis articles are considered for score filters
+        query.analysisType = 'Full';
         query.trustScore = query.trustScore || {};
-        const rangeMatch = quality.match(/(\d+)-(\d+)/); // Match number ranges like "80-89"
+        const rangeMatch = quality.match(/(\d+)-(\d+)/);
         if (rangeMatch) {
             query.trustScore.$gte = parseInt(rangeMatch[1]);
-            query.trustScore.$lt = parseInt(rangeMatch[2]) + 1; // Makes range inclusive (e.g., < 90 for 80-89)
+            query.trustScore.$lt = parseInt(rangeMatch[2]) + 1;
         } else if (quality.includes('0-59')) {
              query.trustScore = { $lt: 60 };
-        } // Add other specific non-range quality levels if needed
+        }
+      }
     }
+    // --- End Quality Filter Logic ---
+
     if (!isNaN(minTrust)) query.trustScore = { ...query.trustScore, $gte: minTrust };
     if (!isNaN(maxBias)) query.biasScore = { $lte: maxBias };
 
@@ -311,14 +322,14 @@ async function fetchAndAnalyzeNews() {
             const exists = await Article.findOne({
               $or: [
                 { url: article.url },
-                { 
-                  headline: article.title, 
-                  source: article.source?.name, 
-                  publishedAt: { $gte: oneDayAgo } 
+                {
+                  headline: article.title,
+                  source: article.source?.name,
+                  publishedAt: { $gte: oneDayAgo }
                 }
               ]
             }, { _id: 1 }).lean();
-            
+
             if (exists) {
                 stats.skipped_duplicate++;
                 continue;
