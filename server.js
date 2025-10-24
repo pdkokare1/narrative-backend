@@ -476,8 +476,8 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3001; // Render injects PORT
 
 // Start Server
-app.listen(PORT, () => {
-  console.log(`\n🚀 Server listening on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => { // <-- FIX IS HERE
+  console.log(`\n🚀 Server listening on host 0.0.0.0, port ${PORT}`); // Updated log
   console.log(`🔗 Health Check: http://localhost:${PORT}/`);
   console.log(`API available at /api`);
   console.log(`🕒 News fetch scheduled: Every 30 minutes`);
