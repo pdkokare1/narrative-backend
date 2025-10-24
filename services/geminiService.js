@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.9 - BLOCK_NONE, 8192 tokens, retry, component prompt)
+// services/geminiService.js (FINAL v2.6 - PDF Formulas, Clustering, Junk Filter)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -13,12 +13,16 @@ class GeminiService {
     this.currentKeyIndex = 0;
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
-    this.apiKeys.forEach(key => { // Initialize trackers
-      this.keyUsageCount.set(key, 0); this.keyErrorCount.set(key, 0);
+
+    // Initialize trackers
+    this.apiKeys.forEach(key => {
+      this.keyUsageCount.set(key, 0);
+      this.keyErrorCount.set(key, 0);
     });
     console.log(`🤖 Gemini Service Initialized: ${this.apiKeys.length} API keys loaded.`);
   }
 
+  // Load API keys from environment variables
   loadApiKeys() {
     const keys = [];
     for (let i = 1; i <= 20; i++) {
@@ -35,27 +39,37 @@ class GeminiService {
     return keys;
   }
 
+  // Get next available API key with rotation and error skipping
   getNextApiKey() {
     if (!this.apiKeys || this.apiKeys.length === 0) throw new Error('No Gemini API keys available.');
+
     const numKeys = this.apiKeys.length;
-    const maxErrorsPerKey = 5;
+    const maxErrorsPerKey = 5; // Skip key after 5 consecutive errors
     let attempts = 0;
+
     while (attempts < numKeys) {
       const keyIndex = this.currentKeyIndex;
       const key = this.apiKeys[keyIndex];
       const errorCount = this.keyErrorCount.get(key) || 0;
-      this.currentKeyIndex = (this.currentKeyIndex + 1) % numKeys; // Cycle index
-      if (errorCount < maxErrorsPerKey) return key; // Usable key
-      if (errorCount === maxErrorsPerKey) console.warn(`⚠️ Temporarily skipping Gemini key ...${key.slice(-4)} (Index ${keyIndex}) due to ${errorCount} errors.`);
+
+      this.currentKeyIndex = (this.currentKeyIndex + 1) % numKeys; // Cycle for next call
+
+      if (errorCount < maxErrorsPerKey) {
+        return key; // Found usable key
+      } else if (errorCount === maxErrorsPerKey) { // Log skip only once
+          console.warn(`⚠️ Temporarily skipping Gemini key ...${key.slice(-4)} (Index ${keyIndex}) due to ${errorCount} errors.`);
+      }
       attempts++;
     }
-    // All keys skipped
+
+    // All keys skipped - reset counts and use first key
     console.error(`🚨 All ${numKeys} Gemini keys hit error threshold (${maxErrorsPerKey}). Resetting counts.`);
     this.apiKeys.forEach(k => this.keyErrorCount.set(k, 0));
-    this.currentKeyIndex = 1 % numKeys; // Setup for next cycle
-    return this.apiKeys[0]; // Use first key after reset
+    this.currentKeyIndex = 1 % numKeys; // Prepare for next cycle
+    return this.apiKeys[0];
   }
 
+  // Record success and reset error count
   recordSuccess(apiKey, apiName = "Gemini") {
     if (apiKey && this.keyUsageCount.has(apiKey)) {
         this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
@@ -63,34 +77,42 @@ class GeminiService {
     }
   }
 
+  // Record error for a key
   recordError(apiKey, apiName = "Gemini") {
     if (apiKey && this.keyErrorCount.has(apiKey)) {
         const currentErrors = (this.keyErrorCount.get(apiKey) || 0) + 1;
         this.keyErrorCount.set(apiKey, currentErrors);
         console.warn(`📈 Error count for ${apiName} key ...${apiKey.slice(-4)} is now ${currentErrors}`);
-    } else if (!apiKey) {
-         console.warn(`📈 Tried to record ${apiName} error, but API key was missing.`);
-    } // Don't warn for unknown keys
+    } else if (apiKey) {
+        console.warn(`📈 Tried to record error for unknown ${apiName} key ...${apiKey.slice(-4)}`);
+    } else {
+        console.warn(`📈 Tried to record ${apiName} error, but API key was invalid.`);
+    }
   }
 
   // --- Main Analysis Function with Retries ---
   async analyzeArticle(article, maxRetries = 3) {
     if (!this.apiKeys || this.apiKeys.length === 0) throw new Error("Analysis failed: No Gemini keys configured.");
+
     let lastError = null;
     let apiKeyUsed = '';
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         apiKeyUsed = this.getNextApiKey();
         const result = await this.makeAnalysisRequest(article, apiKeyUsed);
         this.recordSuccess(apiKeyUsed);
         return result; // Success!
+
       } catch (error) {
         lastError = error;
-        if (apiKeyUsed) this.recordError(apiKeyUsed); // Record error only if key was valid
+        if (apiKeyUsed) this.recordError(apiKeyUsed); // Record error for the key used
+
         const status = error.response?.status;
-        const isRetriable = (status === 503 || status === 429);
+        const isRetriable = (status === 503 || status === 429); // Retry on Service Unavailable or Rate Limit
+
         if (isRetriable && attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000; // Exponential backoff
           console.warn(`⏳ Gemini returned ${status}. Retrying attempt ${attempt + 1}/${maxRetries} after ${Math.round(delay/1000)}s...`);
           await sleep(delay);
         } else {
@@ -98,15 +120,15 @@ class GeminiService {
           break; // Exit retry loop
         }
       }
-    }
-    // Throw final error
-    const finalMsg = `Gemini analysis failed after ${maxRetries} attempts for "${article?.title?.substring(0, 60)}...": ${lastError?.message || 'Unknown final error'}`;
-    throw new Error(finalMsg);
+    } // End loop
+
+    // If loop finishes, throw the last error
+    throw lastError || new Error(`Gemini analysis failed after ${maxRetries} attempts.`);
   }
 
   // --- Make Single API Request ---
   async makeAnalysisRequest(article, apiKey) {
-    if (!apiKey) throw new Error("Internal: apiKey missing for makeAnalysisRequest");
+    if (!apiKey) throw new Error("Internal error: apiKey missing for makeAnalysisRequest");
 
     const prompt = this.buildEnhancedPrompt(article);
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`;
@@ -117,11 +139,13 @@ class GeminiService {
         { // Request Body
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            temperature: 0.4, topK: 32, topP: 0.95,
-            // --- INCREASED TOKEN LIMIT ---
-            maxOutputTokens: 8192 // Maximize output tokens
+            temperature: 0.4,
+            topK: 32,
+            topP: 0.95,
+            maxOutputTokens: 4096 // Increased limit
           },
-          safetySettings: [ // BLOCK_NONE settings
+          // --- SAFETY SETTINGS: BLOCK_NONE ---
+          safetySettings: [
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
@@ -129,84 +153,74 @@ class GeminiService {
           ]
         },
         { // Axios Config
-            timeout: 90000, // 90 second timeout
-            responseType: 'json',
-            validateStatus: (status) => status >= 200 && status < 300,
+            timeout: 60000, // 60 second timeout
+            responseType: 'json', // Expect JSON response
+            validateStatus: (status) => status >= 200 && status < 300, // Only 2xx are success
         }
       );
 
       if (!response.data || typeof response.data !== 'object') {
-          throw new Error("Invalid/empty response data despite 2xx status.");
+          throw new Error("Received invalid response data from Gemini API despite 2xx status.");
       }
       return this.parseAnalysisResponse(response.data);
 
-    } catch (error) { // Error Handling
-        if (error.response) {
-            console.error(`❌ Gemini HTTP Error: Status ${error.response.status}`, error.response.data);
+    } catch (error) {
+        if (error.response) { // Server responded with non-2xx status
+            console.error(`❌ Gemini API HTTP Error: Status ${error.response.status}`, error.response.data);
             if (error.response.status === 503 || error.response.status === 429) {
-                error.message = `Gemini API returned status ${error.response.status}`; throw error;
+                error.message = `Gemini API returned status ${error.response.status}`; // For retry logic
+                throw error;
             }
-            throw new Error(`Gemini request failed (HTTP ${error.response.status})`);
-        } else if (error.request) {
-            console.error('❌ Gemini Network Error:', error.message);
-            throw new Error(`Gemini request failed: No response (check network/timeout).`);
-        } else {
-            console.error('❌ Gemini Setup Error:', error.message);
-            throw new Error(`Gemini request setup failed: ${error.message}`);
+            throw new Error(`Gemini API request failed with HTTP status ${error.response.status}`);
+        } else if (error.request) { // No response received
+            console.error('❌ Gemini API Network Error: No response.', error.message);
+            throw new Error(`Gemini API request failed: No response (check network/timeout).`);
+        } else { // Setup error
+            console.error('❌ Gemini API Setup Error:', error.message);
+            throw new Error(`Gemini API request setup failed: ${error.message}`);
         }
     }
   }
 
-  // --- Build Prompt for Component Scores ---
+  // --- Build Prompt ---
   buildEnhancedPrompt(article) {
     const title = article?.title || "No Title";
     const description = article?.description || "No Description";
-    const currentDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
-    // Prompt asking for component scores
-    return `Analyze the article (Title: "${title}", Desc: "${description}") on ${currentDate}. Base analysis *only* on provided text. Return ONLY a valid JSON object.
+    // Keep prompt concise but clear
+    return `Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
 
 INSTRUCTIONS:
-1. 'analysisType': 'Full' (news) or 'SentimentOnly' (review/opinion).
-2. 'sentiment': 'Positive', 'Negative', 'Neutral'.
-3. 'politicalLean': 'Left'/'Left-Leaning'/'Center'/'Right-Leaning'/'Right'/'Not Applicable'.
-4. If 'Full', estimate ALL component scores (0-100).
-5. If 'SentimentOnly', set ALL component scores below strictly to 0.
+1. 'analysisType': 'Full' for hard news (politics, economy, justice, etc.). Use 'SentimentOnly' for opinions, reviews, sports results, or tech product announcements.
+2. 'sentiment': 'Positive', 'Negative', or 'Neutral' (Reflecting the article's overall sentiment towards the main *subject* or *topic* of the news, not just the language tone).
+3. 'isJunk': 'Yes' if the article is purely promotional, sponsored content, an ad, or not a real news story. Otherwise, 'No'.
+4. 'clusterTopic': A 3-5 word descriptive name for the core news event (e.g., 'US Election Polls Q3', 'Ukraine Peace Summit', 'New iPhone Launch'). Null if not a news event.
+5. If 'Full': Provide scores (0-100) for bias, credibility, reliability, and all components. Assign labels/grades.
+6. If 'SentimentOnly': Set ALL numerical scores (biasScore, credibilityScore, reliabilityScore, ALL component scores) strictly to 0. Set politicalLean to 'Not Applicable'.
 
-JSON Structure (Return ONLY this object):
+JSON Structure:
 {
   "summary": "Neutral summary (exactly 60 words).",
   "category": "Politics/Economy/Technology/Health/Environment/Justice/Education/Entertainment/Sports/Other",
-  "politicalLean": "Center",
+  "politicalLean": "Left/Left-Leaning/Center/Right-Leaning/Right/Not Applicable",
   "analysisType": "Full",
   "sentiment": "Neutral",
-  "estimated_components": {
-    "credibility": {
-      "SC_Historical_Accuracy": 75, "SC_Org_Reputation": 70, "SC_Industry_Recognition": 60, "SC_Corrections_Policy_Quality": 65, "SC_Editorial_Standards": 70,
-      "VC_Source_Citation_Quality": 70, "VC_Fact_Verification_Process": 65, "VC_Claims_Substantiation": 70, "VC_External_Validation": 60,
-      "PC_Objectivity_Score": 70, "PC_Source_Transparency": 75, "PC_Editorial_Independence": 70, "PC_Professional_Standards_Adherence": 70,
-      "EC_Data_Quality": 65, "EC_Evidence_Strength": 70, "EC_Expert_Validation": 60, "EC_Methodological_Rigor": 50,
-      "TC_Source_Disclosure": 75, "TC_Ownership_Transparency": 50, "TC_Corrections_Transparency": 60, "TC_Financial_Transparency": 40,
-      "AC_Reader_Trust_Rating": 60, "AC_Community_Fact_Check_Score": 50, "AC_Cross_Platform_Reputation": 60
-    },
-    "reliability": {
-      "CM_Accuracy_Consistency": 70, "CM_Quality_Variance": 75, "CM_Bias_Stability": 70, "CM_Source_Pattern_Consistency": 70,
-      "TS_Historical_Track_Record": 60, "TS_Publication_Longevity": 60, "TS_Performance_Trend": 50,
-      "QC_Editorial_Review_Process": 70, "QC_Fact_Checking_Infrastructure": 65, "QC_Error_Detection_Rate": 60, "QC_Correction_Response_Time": 60,
-      "PS_Journalistic_Code_Adherence": 70, "PS_Industry_Certification": 40, "PS_Professional_Membership": 50, "PS_Ethics_Compliance": 70,
-      "RCS_Correction_Rate_Quality": 80, "RCS_Retraction_Appropriateness": 70, "RCS_Accountability_Transparency": 65,
-      "UMS_Story_Update_Frequency": 60, "UMS_Update_Substantiveness": 70, "UMS_Archive_Accuracy": 75
-    },
-    "bias": {
-      "L_Linguistic_Bias": 50, "S_Source_Bias": 50, "P_Psychological_Bias": 50, "C_Content_Bias": 50, "T_Temporal_Bias": 50,
-      "M_Meta_Info_Bias": 50, "D_Demographic_Bias": 50, "ST_Structural_Bias": 50, "CU_Cultural_Bias": 50, "EC_Economic_Bias": 50, "EN_Environmental_Bias": 50
-    }
-  },
-  "keyFindings": ["Finding 1 based *only* on article.", "Finding 2 based *only* on article."],
-  "recommendations": ["Recommendation 1 based on analysis.", "Recommendation 2 based on analysis."]
-}`;
-  }
+  "isJunk": "No",
+  "clusterTopic": "US-China Trade Talks",
+  "biasScore": 50, "biasLabel": "Moderate",
+  "biasComponents": {"linguistic": {"sentimentPolarity": 50,...}, "sourceSelection": {...}, "demographic": {...}, "framing": {...}},
+  "credibilityScore": 75, "credibilityGrade": "B",
+  "credibilityComponents": {"sourceCredibility": 70, "factVerification": 80, "professionalism": 75, "evidenceQuality": 85, "transparency": 60, "audienceTrust": 65},
+  "reliabilityScore": 80, "reliabilityGrade": "B+",
+  "reliabilityComponents": {"consistency": 80, "temporalStability": 70, "qualityControl": 85, "publicationStandards": 90, "correctionsPolicy": 75, "updateMaintenance": 60},
+  "trustLevel": "Trustworthy",
+  "coverageLeft": 33, "coverageCenter": 34, "coverageRight": 33,
+  "keyFindings": ["Finding 1.", "Finding 2."],
+  "recommendations": ["Rec 1.", "Rec 2."]
+}
 
+Output ONLY the JSON object.`;
+  }
 
   // --- Parse and Validate Response ---
   parseAnalysisResponse(data) {
@@ -214,7 +228,7 @@ JSON Structure (Return ONLY this object):
         // 1. Check Safety Blocks / API Errors
         if (!data.candidates || data.candidates.length === 0) {
             const blockReason = data.promptFeedback?.blockReason || 'No candidates';
-            console.error(`❌ Parser Error: Response blocked/no candidates. Reason: ${blockReason}`, data.promptFeedback?.safetyRatings);
+            console.error(`❌ Parser Error: Response blocked or no candidates. Reason: ${blockReason}`, data.promptFeedback?.safetyRatings);
             throw new Error(`API Response Error: ${blockReason}`);
         }
         const candidate = data.candidates[0];
@@ -226,64 +240,103 @@ JSON Structure (Return ONLY this object):
             if (!candidate.content?.parts?.[0]?.text) throw new Error(`Candidate stopped for ${candidate.finishReason} and has no text.`);
         }
 
-        // 3. Safely Extract Text
+        // 3. Extract Text
         const text = candidate.content?.parts?.[0]?.text;
         if (typeof text !== 'string' || !text.trim()) throw new Error('Response candidate missing valid text content');
 
-        // 4. Extract JSON Object (Handles potential markdown)
+        // 4. Extract JSON (Handles potential markdown)
         const jsonMatch = text.trim().match(/(?:```json)?\s*(\{[\s\S]*\})\s*(?:```)?/);
-        if (!jsonMatch?.[1]) { // Check capture group 1 exists
-           console.error("❌ Parser Error: Could not extract valid JSON object from text:", text.substring(0, 500) + '...');
-           throw new Error('No valid JSON object found in response text');
-        }
+        if (!jsonMatch?.[1]) throw new Error('No valid JSON object found in response text');
         const jsonString = jsonMatch[1];
 
         // 5. Parse JSON
-        let parsed;
-        try {
-            parsed = JSON.parse(jsonString);
-            if (typeof parsed !== 'object' || parsed === null) throw new Error('Parsed content is not a valid object');
-        } catch (parseError) {
-            console.error("❌ Parser Error: Failed to parse extracted JSON string:", parseError.message);
-            // Log the problematic string for debugging
-            console.error("--- JSON String Attempted (truncated) ---");
-            console.error(jsonString.substring(0, 500) + (jsonString.length > 500 ? '...' : ''));
-            console.error("--- End JSON String ---");
-            // Add MAX_TOKENS context if relevant
-            const reason = candidate.finishReason === 'MAX_TOKENS' ? ' (MAX_TOKENS likely caused incomplete response)' : '';
-            throw new Error(`Failed to parse JSON${reason}: ${parseError.message}`);
-        }
+        let parsed = JSON.parse(jsonString); // Will throw on invalid JSON
 
-        // 6. Basic Validation & Defaults
+        // 6. Validate & Apply Defaults
+        if (typeof parsed !== 'object' || parsed === null) throw new Error('Parsed content is not a valid object');
+
+        // Required fields with defaults
         parsed.summary = (typeof parsed.summary === 'string' && parsed.summary.trim()) ? parsed.summary.trim() : 'Summary unavailable';
-        if (!parsed.estimated_components || typeof parsed.estimated_components !== 'object') {
-             console.error("❌ Parser Error: Missing 'estimated_components' object."); throw new Error('Missing estimated_components');
-        }
-        parsed.estimated_components.credibility = typeof parsed.estimated_components.credibility === 'object' ? parsed.estimated_components.credibility : {};
-        parsed.estimated_components.reliability = typeof parsed.estimated_components.reliability === 'object' ? parsed.estimated_components.reliability : {};
-        parsed.estimated_components.bias = typeof parsed.estimated_components.bias === 'object' ? parsed.estimated_components.bias : {};
-
-        parsed.category = parsed.category || 'General';
         parsed.analysisType = ['Full', 'SentimentOnly'].includes(parsed.analysisType) ? parsed.analysisType : 'Full';
+        const isSentimentOnly = parsed.analysisType === 'SentimentOnly';
         parsed.sentiment = ['Positive', 'Negative', 'Neutral'].includes(parsed.sentiment) ? parsed.sentiment : 'Neutral';
-        const defaultLean = parsed.analysisType === 'SentimentOnly' ? 'Not Applicable' : 'Center';
+        const defaultLean = isSentimentOnly ? 'Not Applicable' : 'Center';
         parsed.politicalLean = ['Left', 'Left-Leaning', 'Center', 'Right-Leaning', 'Right', 'Not Applicable'].includes(parsed.politicalLean) ? parsed.politicalLean : defaultLean;
-        parsed.keyFindings = Array.isArray(parsed.keyFindings) ? parsed.keyFindings : [];
-        parsed.recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
+        parsed.category = (typeof parsed.category === 'string' && parsed.category.trim()) ? parsed.category.trim() : 'General';
+        
+        // New fields
+        parsed.isJunk = (parsed.isJunk === 'Yes' || parsed.isJunk === true); // Coerce to boolean
+        parsed.clusterTopic = (typeof parsed.clusterTopic === 'string' && parsed.clusterTopic.trim()) ? parsed.clusterTopic.trim() : null;
 
-        return parsed; // Return object with estimates
+
+        // Function to safely parse score (0-100), returns 0 if invalid or SentimentOnly
+        const parseScore = (score) => {
+             if (isSentimentOnly) return 0;
+             const num = Number(score);
+             return !isNaN(num) && num >= 0 && num <= 100 ? Math.round(num) : 0;
+        };
+
+        // Scores
+        parsed.biasScore = parseScore(parsed.biasScore);
+        parsed.credibilityScore = parseScore(parsed.credibilityScore);
+        parsed.reliabilityScore = parseScore(parsed.reliabilityScore);
+        
+        // --- TRUST SCORE CALCULATION (from PDF) ---
+        parsed.trustScore = 0; // Default
+        if (!isSentimentOnly && parsed.credibilityScore > 0 && parsed.reliabilityScore > 0) {
+            // OTS = sqrt(UCS * URS)
+            parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
+        }
+        // --- End Trust Score Calculation ---
+
+        // Components (ensure objects exist, parse nested scores)
+        const ensureObject = (obj) => typeof obj === 'object' && obj !== null ? obj : {};
+        const parseComponentScores = (compObj) => {
+            if (!compObj) return {};
+            for (const key in compObj) {
+                if (Object.hasOwnProperty.call(compObj, key)) {
+                     compObj[key] = parseScore(compObj[key]); // Apply score parsing to all component values
+                }
+            }
+            return compObj;
+        };
+
+        parsed.biasComponents = ensureObject(parsed.biasComponents);
+        parsed.biasComponents.linguistic = parseComponentScores(ensureObject(parsed.biasComponents.linguistic));
+        parsed.biasComponents.sourceSelection = parseComponentScores(ensureObject(parsed.biasComponents.sourceSelection));
+        parsed.biasComponents.demographic = parseComponentScores(ensureObject(parsed.biasComponents.demographic));
+        parsed.biasComponents.framing = parseComponentScores(ensureObject(parsed.biasComponents.framing));
+
+        parsed.credibilityComponents = parseComponentScores(ensureObject(parsed.credibilityComponents));
+        parsed.reliabilityComponents = parseComponentScores(ensureObject(parsed.reliabilityComponents));
+
+        // Ensure arrays exist
+        parsed.keyFindings = Array.isArray(parsed.keyFindings) ? parsed.keyFindings.map(String) : []; // Ensure strings
+        parsed.recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [];
+
+        // Optional fields - ensure correct type or set to undefined
+        parsed.biasLabel = typeof parsed.biasLabel === 'string' ? parsed.biasLabel : undefined;
+        parsed.credibilityGrade = typeof parsed.credibilityGrade === 'string' ? parsed.credibilityGrade : undefined;
+        parsed.reliabilityGrade = typeof parsed.reliabilityGrade === 'string' ? parsed.reliabilityGrade : undefined;
+        parsed.trustLevel = typeof parsed.trustLevel === 'string' ? parsed.trustLevel : undefined;
+        parsed.coverageLeft = typeof parsed.coverageLeft === 'number' ? parsed.coverageLeft : undefined;
+        parsed.coverageCenter = typeof parsed.coverageCenter === 'number' ? parsed.coverageCenter : undefined;
+        parsed.coverageRight = typeof parsed.coverageRight === 'number' ? parsed.coverageRight : undefined;
+        // clusterId is now handled by server.js
+        
+        return parsed; // Return validated object
 
     } catch (error) {
-        console.error(`❌ Error during Gemini response parsing/validation stage: ${error.message}`);
+        console.error(`❌ Error during Gemini response parsing/validation: ${error.message}`);
+        // Log the raw data only if not in production for security/privacy
         if (process.env.NODE_ENV !== 'production') {
-             console.error("--- Raw Response Data (if available) ---");
-             try { console.error(JSON.stringify(data, null, 2)); } catch { console.error("Could not stringify raw data."); }
+             console.error("--- Raw Response Data ---");
+             console.error(JSON.stringify(data, null, 2)); // Log formatted full data
              console.error("--- End Raw Data ---");
         }
         throw new Error(`Failed to process Gemini response: ${error.message}`);
     }
   }
-
 
   // --- Get Statistics ---
   getStatistics() {
@@ -293,7 +346,7 @@ JSON Structure (Return ONLY this object):
       currentKeyIndex: this.currentKeyIndex,
       keyStatus: loadedKeys.map((key, index) => ({
         index: index,
-        keyLast4: key ? `...${key.slice(-4)}` : 'N/A',
+        keyLast4: key ? `...${key.slice(-4)}` : 'N/A', // Handle potentially null keys
         usage: key ? (this.keyUsageCount.get(key) || 0) : 0,
         consecutiveErrors: key ? (this.keyErrorCount.get(key) || 0) : 0
       }))
