@@ -348,7 +348,7 @@ app.use((req, res, next) => { /* ... Unchanged ... */ }); // 404
 app.use((err, req, res, next) => { /* ... Unchanged ... */ }); // Global Error Handler
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => { /* ... Unchanged ... */ });
+app.listen(PORT, '0.0.0.0', () => { /* ... Unchanged ... */ });
 
 // --- Graceful Shutdown ---
 const gracefulShutdown = async (signal) => { /* ... Unchanged ... */ };
