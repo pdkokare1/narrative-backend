@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.7 - BLOCK_NONE, 4096 tokens, retry, component prompt)
+// services/geminiService.js (FINAL v2.8 - BLOCK_NONE, 8192 tokens, retry, component prompt)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -13,16 +13,12 @@ class GeminiService {
     this.currentKeyIndex = 0;
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
-
-    // Initialize trackers
-    this.apiKeys.forEach(key => {
-      this.keyUsageCount.set(key, 0);
-      this.keyErrorCount.set(key, 0);
+    this.apiKeys.forEach(key => { // Initialize trackers
+      this.keyUsageCount.set(key, 0); this.keyErrorCount.set(key, 0);
     });
     console.log(`🤖 Gemini Service Initialized: ${this.apiKeys.length} API keys loaded.`);
   }
 
-  // Load API keys from environment variables
   loadApiKeys() {
     const keys = [];
     for (let i = 1; i <= 20; i++) {
@@ -39,7 +35,6 @@ class GeminiService {
     return keys;
   }
 
-  // Get next available API key with rotation and error skipping
   getNextApiKey() {
     if (!this.apiKeys || this.apiKeys.length === 0) throw new Error('No Gemini API keys available.');
     const numKeys = this.apiKeys.length;
@@ -51,7 +46,7 @@ class GeminiService {
       const errorCount = this.keyErrorCount.get(key) || 0;
       this.currentKeyIndex = (this.currentKeyIndex + 1) % numKeys; // Cycle index
       if (errorCount < maxErrorsPerKey) return key; // Usable key
-      if (errorCount === maxErrorsPerKey) console.warn(`⚠️ Temporarily skipping Gemini key ...${key.slice(-4)}`);
+      if (errorCount === maxErrorsPerKey) console.warn(`⚠️ Temporarily skipping Gemini key ...${key.slice(-4)} (Index ${keyIndex}) due to ${errorCount} errors.`);
       attempts++;
     }
     // All keys skipped
@@ -61,7 +56,6 @@ class GeminiService {
     return this.apiKeys[0]; // Use first key after reset
   }
 
-  // Record success and reset error count
   recordSuccess(apiKey, apiName = "Gemini") {
     if (apiKey && this.keyUsageCount.has(apiKey)) {
         this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
@@ -69,7 +63,6 @@ class GeminiService {
     }
   }
 
-  // Record error for a key
   recordError(apiKey, apiName = "Gemini") {
     if (apiKey && this.keyErrorCount.has(apiKey)) {
         const currentErrors = (this.keyErrorCount.get(apiKey) || 0) + 1;
@@ -77,12 +70,12 @@ class GeminiService {
         console.warn(`📈 Error count for ${apiName} key ...${apiKey.slice(-4)} is now ${currentErrors}`);
     } else if (!apiKey) {
          console.warn(`📈 Tried to record ${apiName} error, but API key was missing.`);
-    } // Don't warn for unknown keys, they might be invalid and removed later
+    } // Don't warn for unknown keys
   }
 
   // --- Main Analysis Function with Retries ---
   async analyzeArticle(article, maxRetries = 3) {
-    if (!this.apiKeys || this.apiKeys.length === 0) throw new Error("Analysis failed: No Gemini keys.");
+    if (!this.apiKeys || this.apiKeys.length === 0) throw new Error("Analysis failed: No Gemini keys configured.");
     let lastError = null;
     let apiKeyUsed = '';
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -123,7 +116,11 @@ class GeminiService {
         url,
         { // Request Body
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.4, topK: 32, topP: 0.95, maxOutputTokens: 4096 }, // Increased tokens
+          generationConfig: {
+            temperature: 0.4, topK: 32, topP: 0.95,
+            // --- INCREASED TOKEN LIMIT ---
+            maxOutputTokens: 8192 // Maximize output tokens
+          },
           safetySettings: [ // BLOCK_NONE settings
             { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
             { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
@@ -132,7 +129,7 @@ class GeminiService {
           ]
         },
         { // Axios Config
-            timeout: 75000, // 75 second timeout
+            timeout: 90000, // 90 second timeout
             responseType: 'json',
             validateStatus: (status) => status >= 200 && status < 300,
         }
@@ -141,20 +138,19 @@ class GeminiService {
       if (!response.data || typeof response.data !== 'object') {
           throw new Error("Invalid/empty response data despite 2xx status.");
       }
-      return this.parseAnalysisResponse(response.data); // Parse component estimates
+      return this.parseAnalysisResponse(response.data);
 
-    } catch (error) {
-        if (error.response) { // Handle HTTP errors
+    } catch (error) { // Error Handling
+        if (error.response) {
             console.error(`❌ Gemini HTTP Error: Status ${error.response.status}`, error.response.data);
             if (error.response.status === 503 || error.response.status === 429) {
-                error.message = `Gemini API returned ${error.response.status}`; // For retry
-                throw error;
+                error.message = `Gemini API returned status ${error.response.status}`; throw error;
             }
             throw new Error(`Gemini request failed (HTTP ${error.response.status})`);
-        } else if (error.request) { // Handle network errors
+        } else if (error.request) {
             console.error('❌ Gemini Network Error:', error.message);
             throw new Error(`Gemini request failed: No response (check network/timeout).`);
-        } else { // Handle setup errors
+        } else {
             console.error('❌ Gemini Setup Error:', error.message);
             throw new Error(`Gemini request setup failed: ${error.message}`);
         }
@@ -167,6 +163,7 @@ class GeminiService {
     const description = article?.description || "No Description";
     const currentDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
 
+    // Prompt asking for component scores
     return `Analyze the article (Title: "${title}", Desc: "${description}") on ${currentDate}. Base analysis *only* on provided text. Return ONLY a valid JSON object.
 
 INSTRUCTIONS:
@@ -225,63 +222,46 @@ JSON Structure (Return ONLY this object):
         // 2. Check Candidate Finish Reason
         if (candidate.finishReason && candidate.finishReason !== 'STOP') {
             console.warn(`⚠️ Parser Warning: Candidate finishReason: ${candidate.finishReason}. Content may be partial.`, candidate.safetyRatings);
-            // Allow MAX_TOKENS etc., but check content exists
-            if (!candidate.content?.parts?.[0]?.text) {
-                 throw new Error(`Candidate stopped for ${candidate.finishReason} and has no text.`);
-            }
-             // If SAFETY, we should have already been caught by the promptFeedback check, but double-check
-             if (candidate.finishReason === 'SAFETY') {
-                 throw new Error(`API Response Blocked: Candidate stopped for SAFETY`);
-            }
+            if (candidate.finishReason === 'SAFETY') throw new Error(`API Response Blocked: Candidate stopped for SAFETY`);
+            if (!candidate.content?.parts?.[0]?.text) throw new Error(`Candidate stopped for ${candidate.finishReason} and has no text.`);
         }
 
         // 3. Safely Extract Text
         const text = candidate.content?.parts?.[0]?.text;
-        if (typeof text !== 'string' || !text.trim()) {
-            throw new Error('Response candidate missing valid text content');
-        }
+        if (typeof text !== 'string' || !text.trim()) throw new Error('Response candidate missing valid text content');
 
-        // 4. Extract JSON Object (Handles potential markdown/extra text)
-        // Regex looks for { ... } potentially wrapped in ```json ... ```
+        // 4. Extract JSON Object (Handles potential markdown)
         const jsonMatch = text.trim().match(/(?:```json)?\s*(\{[\s\S]*\})\s*(?:```)?/);
-        if (!jsonMatch?.[1]) { // Check if capture group 1 exists
-           console.error("❌ Parser Error: Could not extract valid JSON object from text:", text);
+        if (!jsonMatch?.[1]) { // Check capture group 1 exists
+           console.error("❌ Parser Error: Could not extract valid JSON object from text:", text.substring(0, 500) + '...');
            throw new Error('No valid JSON object found in response text');
         }
-        const jsonString = jsonMatch[1]; // The captured JSON string {}
+        const jsonString = jsonMatch[1];
 
-        // 5. Parse the Extracted JSON
+        // 5. Parse JSON
         let parsed;
         try {
             parsed = JSON.parse(jsonString);
-            if (typeof parsed !== 'object' || parsed === null) {
-                throw new Error('Parsed content is not a valid object');
-            }
+            if (typeof parsed !== 'object' || parsed === null) throw new Error('Parsed content is not a valid object');
         } catch (parseError) {
             console.error("❌ Parser Error: Failed to parse extracted JSON string:", parseError.message);
-            // Log the problematic string for debugging
-            console.error("--- JSON String Attempted ---");
-            console.error(jsonString.substring(0, 500) + (jsonString.length > 500 ? '...' : '')); // Log start of string
+            console.error("--- JSON String Attempted (truncated) ---");
+            console.error(jsonString.substring(0, 500) + (jsonString.length > 500 ? '...' : ''));
             console.error("--- End JSON String ---");
-            throw new Error(`Failed to parse JSON: ${parseError.message}`);
+            // Add MAX_TOKENS context if relevant
+            const reason = candidate.finishReason === 'MAX_TOKENS' ? ' (MAX_TOKENS likely caused incomplete response)' : '';
+            throw new Error(`Failed to parse JSON${reason}: ${parseError.message}`);
         }
 
-        // 6. Basic Validation & Return Structure
-        if (!parsed.summary || typeof parsed.summary !== 'string') {
-             console.warn("Parsed object missing or invalid 'summary'. Using default.");
-             parsed.summary = "Summary unavailable"; // Add default instead of throwing
-        }
+        // 6. Basic Validation & Defaults
+        parsed.summary = (typeof parsed.summary === 'string' && parsed.summary.trim()) ? parsed.summary.trim() : 'Summary unavailable';
         if (!parsed.estimated_components || typeof parsed.estimated_components !== 'object') {
-             console.error("❌ Parser Error: Missing 'estimated_components' object in parsed JSON.");
-             throw new Error('Missing estimated_components object');
+             console.error("❌ Parser Error: Missing 'estimated_components' object."); throw new Error('Missing estimated_components');
         }
-         // Ensure nested component objects exist, even if empty
-         parsed.estimated_components.credibility = typeof parsed.estimated_components.credibility === 'object' && parsed.estimated_components.credibility !== null ? parsed.estimated_components.credibility : {};
-         parsed.estimated_components.reliability = typeof parsed.estimated_components.reliability === 'object' && parsed.estimated_components.reliability !== null ? parsed.estimated_components.reliability : {};
-         parsed.estimated_components.bias = typeof parsed.estimated_components.bias === 'object' && parsed.estimated_components.bias !== null ? parsed.estimated_components.bias : {};
+        parsed.estimated_components.credibility = typeof parsed.estimated_components.credibility === 'object' ? parsed.estimated_components.credibility : {};
+        parsed.estimated_components.reliability = typeof parsed.estimated_components.reliability === 'object' ? parsed.estimated_components.reliability : {};
+        parsed.estimated_components.bias = typeof parsed.estimated_components.bias === 'object' ? parsed.estimated_components.bias : {};
 
-
-        // Add defaults for top-level qualitative fields if missing
         parsed.category = parsed.category || 'General';
         parsed.analysisType = ['Full', 'SentimentOnly'].includes(parsed.analysisType) ? parsed.analysisType : 'Full';
         parsed.sentiment = ['Positive', 'Negative', 'Neutral'].includes(parsed.sentiment) ? parsed.sentiment : 'Neutral';
@@ -290,18 +270,15 @@ JSON Structure (Return ONLY this object):
         parsed.keyFindings = Array.isArray(parsed.keyFindings) ? parsed.keyFindings : [];
         parsed.recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
 
-        // Return the parsed object containing the (potentially incomplete but structured) estimated components
-        return parsed;
+        return parsed; // Return object with estimates
 
     } catch (error) {
         console.error(`❌ Error during Gemini response parsing/validation stage: ${error.message}`);
-        // Log raw data in dev for debugging parsing issues
         if (process.env.NODE_ENV !== 'production') {
-             console.error("--- Raw Response Data ---");
+             console.error("--- Raw Response Data (if available) ---");
              try { console.error(JSON.stringify(data, null, 2)); } catch { console.error("Could not stringify raw data."); }
              console.error("--- End Raw Data ---");
         }
-        // Re-throw a cleaner error message
         throw new Error(`Failed to process Gemini response: ${error.message}`);
     }
   }
