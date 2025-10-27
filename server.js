@@ -483,7 +483,7 @@ mongoose.connection.once('open', () => {
         console.log(`🧠 AI Article Processor scheduled: Every 45 seconds (Rate-Limited Worker)`);
         console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
 
-    }, 5000); // 5-second delay for cron job initialization
+    }, 30000); // 30-second delay for cron job initialization
 
 });
 // --- End Server Startup ---
