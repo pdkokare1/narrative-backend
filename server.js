@@ -1,4 +1,4 @@
-// server.js (FINAL v2.11 - Final UI/Filter Tweaks)
+// server.js (FINAL v2.11 - NOW WITH FIREBASE AUTH)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -8,9 +8,27 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
+// --- ADD THIS (1 of 3) ---
+// Import Firebase Admin
+const admin = require('firebase-admin');
+
 // --- Services ---
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService'); // Assumes newsService.js has focused fetching
+
+// --- ADD THIS (2 of 3) ---
+// Initialize Firebase Admin
+try {
+  // This path works because Render's Secret File is at the root
+  const serviceAccount = require('./serviceAccountKey.json');
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+  });
+  console.log('✅ Firebase Admin SDK Initialized');
+} catch (error) {
+  console.error('❌ Firebase Admin Init Error:', error.message);
+}
+// --- END ---
 
 const app = express();
 
@@ -30,6 +48,31 @@ const apiLimiter = rateLimit({
   legacyHeaders: false, // Disable X-RateLimit-* headers
 });
 app.use('/api/', apiLimiter); // Apply limiter specifically to API routes
+
+// --- ADD THIS (3 of 3) ---
+// This is the "Token Verification" function (middleware)
+const checkAuth = async (req, res, next) => {
+  const token = req.headers.authorization?.split('Bearer ')[1]; // Get token
+
+  if (!token) {
+    return res.status(401).json({ error: 'Unauthorized: No token provided' });
+  }
+
+  try {
+    // Firebase Admin checks if the token is valid
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.user = decodedToken; // Add user info to the request
+    next(); // Token is valid, proceed to the API route
+  } catch (error) {
+    console.warn('⚠️ Auth Error:', error.code, error.message);
+    return res.status(403).json({ error: 'Forbidden: Invalid or expired token' });
+  }
+};
+
+// Apply the token check to ALL routes that start with /api/
+// This "locks" your entire API behind the login.
+app.use('/api/', checkAuth);
+// --- END ---
 
 // --- Database Connection ---
 mongoose.connect(process.env.MONGODB_URI)
@@ -94,7 +137,7 @@ const Article = mongoose.model('Article', articleSchema);
 
 // --- API Routes ---
 
-// GET / - Health Check
+// GET / - Health Check (This is NOT protected, which is good)
 app.get('/', (req, res) => {
   res.status(200).json({
     message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
@@ -112,8 +155,10 @@ app.get('/', (req, res) => {
   });
 });
 
-// GET /api/articles - Fetch articles (UPDATED for Review Filter)
+// GET /api/articles - Fetch articles (This route is now PROTECTED)
 app.get('/api/articles', async (req, res, next) => {
+  // You can optionally see which user is making the request
+  // console.log('API called by user:', req.user.uid); 
   try {
     const category = req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null;
     const lean = req.query.lean && req.query.lean !== 'All Leans' ? String(req.query.lean) : null;
@@ -174,7 +219,7 @@ app.get('/api/articles', async (req, res, next) => {
   }
 });
 
-// GET /api/articles/:id - Fetch single article (No change)
+// GET /api/articles/:id - Fetch single article (This route is now PROTECTED)
 app.get('/api/articles/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -191,7 +236,7 @@ app.get('/api/articles/:id', async (req, res, next) => {
   }
 });
 
-// GET /api/cluster/:clusterId - Fetch cluster data (No change)
+// GET /api/cluster/:clusterId - Fetch cluster data (This route is now PROTECTED)
 app.get('/api/cluster/:clusterId', async (req, res, next) => {
   try {
     const clusterIdNum = parseInt(req.params.clusterId);
@@ -225,7 +270,7 @@ app.get('/api/cluster/:clusterId', async (req, res, next) => {
   }
 });
 
-// GET /api/stats - Fetch overall stats (No change)
+// GET /api/stats - Fetch overall stats (This route is now PROTECTED)
 app.get('/api/stats', async (req, res, next) => {
   try {
     const [statsData, leanDistribution, categoryDistribution] = await Promise.all([
@@ -262,7 +307,7 @@ app.get('/api/stats', async (req, res, next) => {
   }
 });
 
-// GET /api/stats/keys - Fetch API key usage stats (No change)
+// GET /api/stats/keys - Fetch API key usage stats (This route is now PROTECTED)
 app.get('/api/stats/keys', (req, res, next) => {
   try {
     const geminiStats = geminiService.getStatistics ? geminiService.getStatistics() : { error: "Stats unavailable" };
@@ -274,7 +319,7 @@ app.get('/api/stats/keys', (req, res, next) => {
   }
 });
 
-// POST /api/fetch-news - Trigger background news fetch (No change)
+// POST /api/fetch-news - Trigger background news fetch (This route is now PROTECTED)
 let isFetchRunning = false; // Simple lock
 app.post('/api/fetch-news', (req, res) => {
   if (isFetchRunning) {
