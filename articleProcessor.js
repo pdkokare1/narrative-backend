@@ -1,22 +1,20 @@
-// articleProcessor.js (CORRECTED v2.12 - Ensures Mongoose Model is Loaded)
+// articleProcessor.js (FINAL CORRECTED v2.13)
 const mongoose = require('mongoose');
+const geminiService = require('./services/geminiService');
 
-// --- CRITICAL FIX: Ensure the Article model is defined ---
-// We require server.js to run its model definition, but only if it hasn't run already.
-// Since server.js exports nothing, we just require it to execute its Mongoose model logic.
+// --- Import the Article Model ---
+// This relies on articleModel.js being defined first.
+let Article;
 try {
-    // Check if the Article model is already defined by Mongoose
-    Article = mongoose.model('Article');
+    Article = require('./articleModel'); // Should succeed now
 } catch (error) {
-    // If not, explicitly load/execute the file that defines it (server.js)
-    require('./server'); 
-    Article = mongoose.model('Article'); // Now it should be available
-    console.log("✅ Article model successfully registered via worker fix.");
+    // This is a last resort error, but keeps the application from crashing immediately.
+    console.error('❌ Article model dependency failed to load:', error.message);
 }
+
 
 // --- Sleep Function ---
 function sleep(ms) {
-  // console.log(`😴 Sleeping for ${ms / 1000} seconds...`); // Uncomment for debugging delay
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
@@ -41,31 +39,36 @@ async function getMaxClusterId() {
  * @returns {Promise<boolean>} True if an article was processed, false otherwise.
  */
 async function processNextArticle() {
+    // Check if Mongoose connection is still establishing before running a query
+    if (mongoose.connection.readyState !== 1) { 
+        console.warn('🧠 Worker: Skipping cycle. MongoDB not connected (State: ' + mongoose.connection.readyState + ')');
+        return false;
+    }
+
     if (!Article) {
-        // This check should ideally never be reached now, but is a safe fallback
         console.error("Worker aborted: Article model is undefined.");
         return false;
     }
 
-    // 1. Find the oldest, unanalyzed article (no clusterTopic yet means it's raw)
+    // 1. Find the oldest, unanalyzed article
     const rawArticle = await Article.findOne({
-        // Filter: Article has been fetched (has a URL) but analysis data is missing (or incomplete/old version)
-        url: { $exists: true }, // Must have a URL
+        // Article has been ingested (has a URL) but is marked 'Pending' or missing topic
+        url: { $exists: true },
         $or: [
-            { clusterTopic: { $exists: false } }, // Doesn't have clusterTopic field (meaning it hasn't been processed by the AI)
-            { clusterTopic: null }, // Explicitly check for null
-            { analysisVersion: { $ne: Article.schema.path('analysisVersion').defaultValue } } // Or needs reprocessing
+            { analysisType: 'Pending' }, // Explicitly check for Pending
+            { clusterTopic: { $exists: false } }, 
+            { clusterTopic: null },
+            { analysisVersion: { $ne: Article.schema.path('analysisVersion').defaultValue } }
         ]
     })
-    .sort({ publishedAt: 1 }) // Process oldest first
-    .lean(); // Use lean for speed
+    .sort({ publishedAt: 1 })
+    .lean();
 
     if (!rawArticle) {
-        // console.log("🏁 No raw articles awaiting analysis.");
         return false;
     }
     
-    // Convert Mongoose document back to a plain object for passing to analysis
+    // Convert to plain object for analysis input
     const articleForAnalysis = {
         title: rawArticle.headline,
         description: rawArticle.summary,
@@ -151,6 +154,8 @@ async function processNextArticle() {
 
     } catch (error) {
         console.error(`❌ Worker Error processing article "${rawArticle?.headline?.substring(0,60)}...": ${error.message}`);
+        // Log the error but proceed to the next cycle (still count as true to trigger sleep)
+        // If the error was due to rate-limiting, the geminiService handles backoff/retries.
         return true; 
     }
 }
