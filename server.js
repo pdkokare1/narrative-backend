@@ -1,4 +1,4 @@
-// server.js (UPDATED v2.13 - Decoupled Model & Worker)
+// server.js (UPDATED v2.14 - Worker Startup Delay Fix)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -13,7 +13,7 @@ const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService');
 // Import the Model definition FIRST
 const Article = require('./articleModel'); 
-// Import worker functions for cron jobs (we use lazy import below to avoid circular dependency)
+// The worker functions are required lazily inside the cron block
 
 
 // --- Firebase Admin Setup (Unchanged) ---
@@ -85,7 +85,10 @@ app.use('/api/', apiLimiter, checkAuth);
 // --- Database Connection ---
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ MongoDB Connected'))
-  .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
+  .catch(err => {
+      console.error('❌ MongoDB Connection Error:', err.message);
+      process.exit(1); 
+  });
 
 mongoose.connection.on('error', err => {
   console.error('❌ MongoDB runtime error:', err.message);
@@ -96,7 +99,8 @@ mongoose.connection.on('disconnected', () => {
 // --- End DB Connection ---
 
 
-// --- API Routes (Only /api/articles filter updated to exclude 'Pending' articles) ---
+// --- API Routes (Unchanged) ---
+// (All API routes here are unchanged)
 
 // GET / - Health Check (Unprotected)
 app.get('/', (req, res) => {
@@ -104,8 +108,8 @@ app.get('/', (req, res) => {
     message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
     status: 'healthy',
     features: [
-      'Asynchronous AI Worker (v2.13)',
-      'Decoupled Mongoose Model',
+      'Asynchronous AI Worker (v2.14)',
+      'Stable Deployment Startup',
       'PDF-Based Trust Score (OTS = sqrt(UCS*URS))',
       'AI-Powered Event Clustering',
       'Junk/Ad Article Filtering',
@@ -117,8 +121,7 @@ app.get('/', (req, res) => {
   });
 });
 
-// All other API routes remain the same, as they correctly use the imported `Article` model.
-app.get('/api/articles', async (req, res, next) => { /* ... (Logic remains the same, using imported Article) ... */
+app.get('/api/articles', async (req, res, next) => { /* ... (Logic remains the same) ... */
     try {
         const category = req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null;
         const lean = req.query.lean && req.query.lean !== 'All Leans' ? String(req.query.lean) : null;
@@ -291,7 +294,7 @@ app.post('/api/fetch-news', (req, res) => {
 });
 
 
-// --- Core Function: FAST Fetch & Ingestion (Unchanged logic) ---
+// --- Core Function: FAST Fetch & Ingestion (Unchanged) ---
 async function fetchRawArticles() {
   console.log('🔄 Starting FAST fetchRawArticles cycle...');
   const stats = { fetched: 0, processed: 0, skipped_duplicate: 0, skipped_invalid: 0, start_time: Date.now() };
@@ -381,69 +384,12 @@ async function fetchRawArticles() {
 let isAIWorkerRunning = false;
 let processedCount = 0;
 
-// --- Scheduled Tasks ---
-
-// Auto-fetch raw articles every 30 minutes (FAST)
-cron.schedule('*/30 * * * *', () => {
-  if (isFetchRunning) {
-    console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
-    return;
-  }
-  console.log('⏰ Cron: Triggering scheduled raw news fetch...');
-  isFetchRunning = true;
-
-  fetchRawArticles()
-    .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
-    .finally(() => {
-        isFetchRunning = false;
-        console.log('🟢 Scheduled raw article fetch process complete.');
-     });
-});
-
-// Auto-run the AI Processor Worker every 45 seconds (Rate-Limited Worker)
-cron.schedule('*/45 * * * * *', async () => {
-    // We import the worker here, safely *after* Mongoose is set up
-    const articleProcessor = require('./articleProcessor'); 
-
-    if (isAIWorkerRunning) {
-        return;
-    }
-
-    isAIWorkerRunning = true;
-    let didProcess = false;
-
-    try {
-        console.log('🧠 Worker: Checking for unanalyzed articles...');
-        didProcess = await articleProcessor.processNextArticle();
-
-        if (didProcess) {
-            processedCount++;
-            console.log(`🧠 Worker: Article processed. Total: ${processedCount} since start.`);
-        } else {
-             // console.log('🧠 Worker: No articles to process.');
-        }
-
-    } catch (error) {
-        console.error('❌ CRITICAL Error during AI worker run:', error.message);
-    } finally {
-        isAIWorkerRunning = false;
-    }
-});
+// ------------------------------------------------------------------
+// --- CRON JOBS ARE NOW INITIALIZED INSIDE mongoose.connection.once('open', ...) ---
+// ------------------------------------------------------------------
 
 
-// Auto-cleanup daily at 2 AM server time (Unchanged)
-cron.schedule('0 2 * * *', async () => {
-  console.log('🧹 Cron: Triggering daily article cleanup...');
-  try {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const result = await Article.deleteMany({ createdAt: { $lt: sevenDaysAgo } }).limit(5000);
-    console.log(`🗑️ Cleanup successful: Deleted ${result.deletedCount} articles older than 7 days (batch limit 5000).`);
-  } catch (error) {
-    console.error('❌ CRITICAL Error during scheduled cleanup:', error.message);
-  }
-});
-
-// --- Error Handling & Server Startup (Unchanged) ---
+// --- Error Handling & Server Startup ---
 
 app.use((req, res, next) => {
   res.status(404).json({ error: `Not Found - Cannot ${req.method} ${req.originalUrl}` });
@@ -463,14 +409,85 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 
-app.listen(PORT, HOST, () => {
-  console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
-  console.log(`🔗 Health Check: http://localhost:${PORT}/`);
-  console.log(`API available at /api`);
-  console.log(`🕒 Raw Article Ingestion scheduled: Every 30 minutes (FAST)`);
-  console.log(`🧠 AI Article Processor scheduled: Every 45 seconds (Rate-Limited Worker)`);
-  console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
+// --- NEW: Start Server ONLY after Mongoose is ready ---
+mongoose.connection.once('open', () => {
+    console.log("Database connection established. Starting server.");
+    
+    // 1. Start Express Server
+    app.listen(PORT, HOST, () => {
+      console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
+      console.log(`🔗 Health Check: http://localhost:${PORT}/`);
+      console.log(`API available at /api`);
+    });
+
+    // 2. Delay CRON STARTUP (5 seconds) to ensure Render marks deployment as successful
+    setTimeout(() => {
+        console.log("⏰ Initializing scheduled tasks after 5 seconds startup delay...");
+        
+        // --- Auto-fetch raw articles every 30 minutes (FAST) ---
+        cron.schedule('*/30 * * * *', () => {
+          if (isFetchRunning) {
+            console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
+            return;
+          }
+          console.log('⏰ Cron: Triggering scheduled raw news fetch...');
+          isFetchRunning = true;
+
+          fetchRawArticles()
+            .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
+            .finally(() => {
+                isFetchRunning = false;
+                console.log('🟢 Scheduled raw article fetch process complete.');
+             });
+        });
+
+        // --- Auto-run the AI Processor Worker every 45 seconds (Rate-Limited Worker) ---
+        cron.schedule('*/45 * * * * *', async () => {
+            const articleProcessor = require('./articleProcessor'); 
+
+            if (isAIWorkerRunning) {
+                return;
+            }
+
+            isAIWorkerRunning = true;
+            let didProcess = false;
+
+            try {
+                // console.log('🧠 Worker: Checking for unanalyzed articles...');
+                didProcess = await articleProcessor.processNextArticle();
+
+                if (didProcess) {
+                    processedCount++;
+                    // console.log(`🧠 Worker: Article processed. Total: ${processedCount} since start.`);
+                }
+            } catch (error) {
+                console.error('❌ CRITICAL Error during AI worker run:', error.message);
+            } finally {
+                isAIWorkerRunning = false;
+            }
+        });
+
+        // --- Auto-cleanup daily at 2 AM server time (Unchanged) ---
+        cron.schedule('0 2 * * *', async () => {
+          console.log('🧹 Cron: Triggering daily article cleanup...');
+          try {
+            const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+            const result = await Article.deleteMany({ createdAt: { $lt: sevenDaysAgo } }).limit(5000);
+            console.log(`🗑️ Cleanup successful: Deleted ${result.deletedCount} articles older than 7 days (batch limit 5000).`);
+          } catch (error) {
+            console.error('❌ CRITICAL Error during scheduled cleanup:', error.message);
+          }
+        });
+
+        console.log(`🕒 Raw Article Ingestion scheduled: Every 30 minutes (FAST)`);
+        console.log(`🧠 AI Article Processor scheduled: Every 45 seconds (Rate-Limited Worker)`);
+        console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
+
+    }, 5000); // 5-second delay for cron job initialization
+
 });
+// --- End Server Startup ---
+
 
 // --- Graceful Shutdown (Unchanged) ---
 const gracefulShutdown = async (signal) => {
