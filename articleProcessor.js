@@ -1,14 +1,12 @@
-// articleProcessor.js (FINAL CORRECTED v2.13)
+// articleProcessor.js (FINAL CORRECTED v2.14 - Loop Fix)
 const mongoose = require('mongoose');
 const geminiService = require('./services/geminiService');
 
 // --- Import the Article Model ---
-// This relies on articleModel.js being defined first.
 let Article;
 try {
-    Article = require('./articleModel'); // Should succeed now
+    Article = require('./articleModel'); 
 } catch (error) {
-    // This is a last resort error, but keeps the application from crashing immediately.
     console.error('❌ Article model dependency failed to load:', error.message);
 }
 
@@ -50,15 +48,21 @@ async function processNextArticle() {
         return false;
     }
 
-    // 1. Find the oldest, unanalyzed article
+    // 1. Find the oldest, *unanalyzed or old-version* article
+    const currentVersion = Article.schema.path('analysisVersion').defaultValue;
+    
+    // We look for:
+    // A) Articles still marked 'Pending'.
+    // B) Articles processed with an old version.
     const rawArticle = await Article.findOne({
-        // Article has been ingested (has a URL) but is marked 'Pending' or missing topic
         url: { $exists: true },
         $or: [
-            { analysisType: 'Pending' }, // Explicitly check for Pending
-            { clusterTopic: { $exists: false } }, 
-            { clusterTopic: null },
-            { analysisVersion: { $ne: Article.schema.path('analysisVersion').defaultValue } }
+            // Condition 1: Still pending (most raw articles fall here)
+            { analysisType: 'Pending' }, 
+            // Condition 2: Version mismatch (reprocessing required)
+            { analysisVersion: { $ne: currentVersion } }
+            // Note: We no longer rely on clusterTopic:null because SentimentOnly articles will
+            // naturally have a null topic. We rely on analysisType != Pending to mark completion.
         ]
     })
     .sort({ publishedAt: 1 })
@@ -96,7 +100,7 @@ async function processNextArticle() {
               summary: analysis.summary || rawArticle.summary || 'Summary unavailable',
               category: analysis.category || rawArticle.category || 'General',
               politicalLean: analysis.politicalLean || (analysis.analysisType === 'SentimentOnly' ? 'Not Applicable' : 'Center'),
-              analysisType: analysis.analysisType || 'Full',
+              analysisType: analysis.analysisType || 'Full', // CRITICAL: This is no longer 'Pending'
               sentiment: analysis.sentiment || 'Neutral',
               biasScore: analysis.biasScore,
               biasLabel: analysis.biasLabel,
@@ -112,14 +116,14 @@ async function processNextArticle() {
               coverageLeft: analysis.coverageLeft || 0,
               coverageCenter: analysis.coverageCenter || 0,
               coverageRight: analysis.coverageRight || 0,
-              clusterTopic: analysis.clusterTopic, // CRITICAL: This marks it as processed
+              clusterTopic: analysis.clusterTopic || null, // Ensure topic is set, even if null
               keyFindings: analysis.keyFindings || [],
               recommendations: analysis.recommendations || [],
-              analysisVersion: Article.schema.path('analysisVersion').defaultValue
+              analysisVersion: currentVersion // Mark with current version
           }
         };
 
-        // Clustering Logic
+        // Clustering Logic (Only if it's a Full analysis and has a topic)
         let clusterIdToUse = null;
         if (updateData.$set.clusterTopic && updateData.$set.analysisType === 'Full') {
             const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
@@ -154,8 +158,7 @@ async function processNextArticle() {
 
     } catch (error) {
         console.error(`❌ Worker Error processing article "${rawArticle?.headline?.substring(0,60)}...": ${error.message}`);
-        // Log the error but proceed to the next cycle (still count as true to trigger sleep)
-        // If the error was due to rate-limiting, the geminiService handles backoff/retries.
+        // Log the error but proceed to the next cycle
         return true; 
     }
 }
