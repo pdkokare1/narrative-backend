@@ -1,14 +1,17 @@
-// articleProcessor.js (NEW - The Asynchronous Worker)
+// articleProcessor.js (CORRECTED v2.12 - Ensures Mongoose Model is Loaded)
 const mongoose = require('mongoose');
-const geminiService = require('./services/geminiService');
 
-// Retrieve the Article Model (Ensure it's loaded from server.js for consistency)
-let Article;
+// --- CRITICAL FIX: Ensure the Article model is defined ---
+// We require server.js to run its model definition, but only if it hasn't run already.
+// Since server.js exports nothing, we just require it to execute its Mongoose model logic.
 try {
+    // Check if the Article model is already defined by Mongoose
     Article = mongoose.model('Article');
 } catch (error) {
-    // If the model hasn't been defined yet (e.g., if this runs before server.js defines it)
-    console.error('❌ Article model not found. Ensure server.js loads the model first.');
+    // If not, explicitly load/execute the file that defines it (server.js)
+    require('./server'); 
+    Article = mongoose.model('Article'); // Now it should be available
+    console.log("✅ Article model successfully registered via worker fix.");
 }
 
 // --- Sleep Function ---
@@ -39,6 +42,7 @@ async function getMaxClusterId() {
  */
 async function processNextArticle() {
     if (!Article) {
+        // This check should ideally never be reached now, but is a safe fallback
         console.error("Worker aborted: Article model is undefined.");
         return false;
     }
@@ -48,7 +52,8 @@ async function processNextArticle() {
         // Filter: Article has been fetched (has a URL) but analysis data is missing (or incomplete/old version)
         url: { $exists: true }, // Must have a URL
         $or: [
-            { clusterTopic: { $exists: false } }, // NEW: Doesn't have clusterTopic field (meaning it hasn't been processed by the AI)
+            { clusterTopic: { $exists: false } }, // Doesn't have clusterTopic field (meaning it hasn't been processed by the AI)
+            { clusterTopic: null }, // Explicitly check for null
             { analysisVersion: { $ne: Article.schema.path('analysisVersion').defaultValue } } // Or needs reprocessing
         ]
     })
@@ -61,10 +66,9 @@ async function processNextArticle() {
     }
     
     // Convert Mongoose document back to a plain object for passing to analysis
-    // We only need the key news fields for Gemini
     const articleForAnalysis = {
         title: rawArticle.headline,
-        description: rawArticle.summary, // Use summary as description for analysis input
+        description: rawArticle.summary,
         url: rawArticle.url,
         urlToImage: rawArticle.imageUrl,
         publishedAt: rawArticle.publishedAt,
@@ -76,17 +80,17 @@ async function processNextArticle() {
         console.log(`🤖 Analyzing: ${rawArticle.headline.substring(0, 60)}...`);
         const analysis = await geminiService.analyzeArticle(articleForAnalysis);
 
-        // 2.5. Check for Junk Articles (Should be handled during initial fetch, but double-check)
+        // 2.5. Check for Junk Articles
         if (analysis.isJunk) {
             console.log(`🚮 Deleting junk/ad: ${rawArticle.headline.substring(0, 50)}...`);
             await Article.deleteOne({ _id: rawArticle._id });
-            return true; // Count as processed, move on
+            return true;
         }
 
         // 3. Prepare Update Data & Clustering
         const updateData = {
           $set: {
-              summary: analysis.summary || rawArticle.summary || 'Summary unavailable', // Use AI summary if present
+              summary: analysis.summary || rawArticle.summary || 'Summary unavailable',
               category: analysis.category || rawArticle.category || 'General',
               politicalLean: analysis.politicalLean || (analysis.analysisType === 'SentimentOnly' ? 'Not Applicable' : 'Center'),
               analysisType: analysis.analysisType || 'Full',
@@ -108,7 +112,7 @@ async function processNextArticle() {
               clusterTopic: analysis.clusterTopic, // CRITICAL: This marks it as processed
               keyFindings: analysis.keyFindings || [],
               recommendations: analysis.recommendations || [],
-              analysisVersion: Article.schema.path('analysisVersion').defaultValue // Update version
+              analysisVersion: Article.schema.path('analysisVersion').defaultValue
           }
         };
 
@@ -117,21 +121,17 @@ async function processNextArticle() {
         if (updateData.$set.clusterTopic && updateData.$set.analysisType === 'Full') {
             const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
             
-            // Find a recent article with the same topic to get its clusterId
             const existingCluster = await Article.findOne({
                 clusterTopic: updateData.$set.clusterTopic,
                 publishedAt: { $gte: threeDaysAgo },
-                _id: { $ne: rawArticle._id } // Don't match the article being updated
+                _id: { $ne: rawArticle._id }
             }, { clusterId: 1 }).sort({ publishedAt: -1 }).lean();
 
             if (existingCluster && existingCluster.clusterId) {
                 clusterIdToUse = existingCluster.clusterId;
-                // console.log(`Assigning existing clusterId [${clusterIdToUse}] for topic: "${updateData.$set.clusterTopic}"`);
             } else {
-                // Fetch max ID if no existing cluster is found
                 const maxClusterId = await getMaxClusterId();
                 clusterIdToUse = maxClusterId + 1;
-                // console.log(`Assigning NEW clusterId [${clusterIdToUse}] for topic: "${updateData.$set.clusterTopic}"`);
             }
             updateData.$set.clusterId = clusterIdToUse;
         }
@@ -151,14 +151,12 @@ async function processNextArticle() {
 
     } catch (error) {
         console.error(`❌ Worker Error processing article "${rawArticle?.headline?.substring(0,60)}...": ${error.message}`);
-        // Log the error but continue. Don't re-throw to keep the worker running.
-        // Optional: Could add an 'errorCount' field to the article to skip problematic ones after N tries.
-        return true; // Still return true to proceed to the next cycle immediately after error
+        return true; 
     }
 }
 
 
 module.exports = {
     processNextArticle,
-    getMaxClusterId, // Export for cron job stats
+    getMaxClusterId,
 };
