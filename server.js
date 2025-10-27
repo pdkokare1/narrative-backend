@@ -16,6 +16,10 @@ const admin = require('firebase-admin');
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService'); // Assumes newsService.js has focused fetching
 
+// --- ADDED: Import the new Profile model ---
+const Profile = require('./models/profileModel'); 
+// --- END ADDED ---
+
 // --- ADD THIS (2 of 3) ---
 // Initialize Firebase Admin
 try {
@@ -73,6 +77,98 @@ const checkAuth = async (req, res, next) => {
 // This "locks" your entire API behind the login.
 app.use('/api/', checkAuth);
 // --- END ---
+
+// --- ADDED: USER PROFILE ROUTES ---
+
+// GET /api/profile/me - Checks if a profile exists for the logged-in user
+app.get('/api/profile/me', async (req, res) => {
+  try {
+    const profile = await Profile.findOne({ userId: req.user.uid }).lean();
+
+    if (!profile) {
+      // This is not an "error", it just means they need to create one.
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    // Profile found, send it
+    res.status(200).json(profile);
+  } catch (error) {
+    console.error('Error in GET /api/profile/me:', error.message);
+    res.status(500).json({ error: 'Error fetching profile' });
+  }
+});
+
+// POST /api/profile - Creates a new profile
+app.post('/api/profile', async (req, res) => {
+  try {
+    const { username } = req.body;
+    const { uid, email } = req.user; // Get from Firebase token
+
+    if (!username || username.trim().length < 3) {
+      return res.status(400).json({ error: 'Username must be at least 3 characters' });
+    }
+
+    const cleanUsername = username.trim();
+
+    // Check if username is already taken
+    const existingUsername = await Profile.findOne({ username: cleanUsername }).lean();
+    if (existingUsername) {
+      return res.status(409).json({ error: 'Username already taken' });
+    }
+
+    // Check if they already have a profile
+    const existingProfile = await Profile.findOne({ userId: uid }).lean();
+    if (existingProfile) {
+      return res.status(409).json({ error: 'Profile already exists' });
+    }
+
+    // Create and save the new profile
+    const newProfile = new Profile({
+      userId: uid,
+      email: email,
+      username: cleanUsername,
+    });
+
+    await newProfile.save();
+    res.status(201).json(newProfile); // Send back the new profile
+
+  } catch (error) {
+    console.error('Error in POST /api/profile:', error.message);
+    // Handle duplicate key errors (for email or userId)
+    if (error.code === 11000) {
+      return res.status(409).json({ error: 'A profile for this user or email already exists.' });
+    }
+    res.status(500).json({ error: 'Error creating profile' });
+  }
+});
+
+// --- ADDED: USER STATS ROUTE ---
+
+// POST /api/activity/log-view - Logs that a user viewed an article
+app.post('/api/activity/log-view', async (req, res) => {
+  try {
+    // Find the user's profile and increment the count by 1
+    const updatedProfile = await Profile.findOneAndUpdate(
+      { userId: req.user.uid }, // Find this user
+      { $inc: { articlesViewedCount: 1 } }, // Increment this field
+      { new: true } // Return the updated document
+    );
+
+    if (!updatedProfile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    res.status(200).json({ 
+      message: 'Activity logged', 
+      articlesViewedCount: updatedProfile.articlesViewedCount 
+    });
+  } catch (error) {
+    console.error('Error in POST /api/activity/log-view:', error.message);
+    res.status(500).json({ error: 'Error logging activity' });
+  }
+});
+
+// --- END OF ADDED ROUTES ---
 
 // --- Database Connection ---
 mongoose.connect(process.env.MONGODB_URI)
