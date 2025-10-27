@@ -1,4 +1,4 @@
-// server.js (UPDATED v2.12 - Async Worker & Env Security)
+// server.js (UPDATED v2.13 - Decoupled Model & Worker)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -11,17 +11,19 @@ require('dotenv').config();
 // --- Services & Worker ---
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService');
-const articleProcessor = require('./articleProcessor'); // NEW: Import the worker
+// Import the Model definition FIRST
+const Article = require('./articleModel'); 
+// Import worker functions for cron jobs (we use lazy import below to avoid circular dependency)
 
-// --- Firebase Admin Setup (Using Environment Variables) ---
+
+// --- Firebase Admin Setup (Unchanged) ---
 const admin = require('firebase-admin');
 try {
-  // Check for environment variables, otherwise fallback to file for local testing simplicity
   if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_PRIVATE_KEY) {
     admin.initializeApp({
       credential: admin.credential.cert({
         projectId: process.env.FIREBASE_PROJECT_ID,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'), // Handle key newline formatting
+        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
       })
     });
@@ -42,14 +44,14 @@ try {
 
 const app = express();
 
-// --- Middleware ---
+// --- Middleware (Unchanged) ---
 app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
-// --- Rate Limiter ---
+// --- Rate Limiter (Unchanged) ---
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -58,7 +60,7 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// --- Auth Middleware ---
+// --- Auth Middleware (Unchanged) ---
 const checkAuth = async (req, res, next) => {
   const token = req.headers.authorization?.split('Bearer ')[1];
 
@@ -72,7 +74,6 @@ const checkAuth = async (req, res, next) => {
     next();
   } catch (error) {
     console.warn('⚠️ Auth Error:', error.code, error.message);
-    // Use 403 Forbidden for invalid/expired tokens (Frontend logs out on 403)
     return res.status(403).json({ error: 'Forbidden: Invalid or expired token' });
   }
 };
@@ -81,7 +82,7 @@ const checkAuth = async (req, res, next) => {
 app.use('/api/', apiLimiter, checkAuth);
 
 
-// --- Database Connection & Schema (Unchanged) ---
+// --- Database Connection ---
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
@@ -92,54 +93,7 @@ mongoose.connection.on('error', err => {
 mongoose.connection.on('disconnected', () => {
   console.warn('⚠️ MongoDB disconnected.');
 });
-
-// --- Mongoose Schema (Kept simple, the worker will update it later) ---
-const articleSchema = new mongoose.Schema({
-  headline: { type: String, required: true, trim: true },
-  summary: { type: String, required: true, trim: true },
-  source: { type: String, required: true, trim: true },
-  category: { type: String, default: 'General' }, // Add default for raw articles
-  politicalLean: { type: String, default: 'Center' }, // Add default for raw articles
-  url: { type: String, required: true, unique: true, trim: true, index: true },
-  imageUrl: { type: String, trim: true },
-  publishedAt: { type: Date, default: Date.now, index: true },
-  // These fields will be populated by the ArticleProcessor worker later
-  analysisType: { type: String, default: 'Pending', enum: ['Full', 'SentimentOnly', 'Pending'] }, 
-  sentiment: { type: String, default: 'Neutral', enum: ['Positive', 'Negative', 'Neutral'] },
-  biasScore: { type: Number, default: 0, min: 0, max: 100 },
-  biasLabel: String,
-  biasComponents: mongoose.Schema.Types.Mixed,
-  credibilityScore: { type: Number, default: 0, min: 0, max: 100 },
-  credibilityGrade: String,
-  reliabilityScore: { type: Number, default: 0, min: 0, max: 100 },
-  reliabilityGrade: String,
-  reliabilityComponents: mongoose.Schema.Types.Mixed,
-  trustScore: { type: Number, default: 0, min: 0, max: 100 },
-  trustLevel: String,
-  coverageLeft: { type: Number, default: 0 },
-  coverageCenter: { type: Number, default: 0 },
-  coverageRight: { type: Number, default: 0 },
-  clusterId: { type: Number, index: true },
-  clusterTopic: { type: String, index: true, trim: true }, // Presence of this indicates processing is complete
-  keyFindings: [String],
-  recommendations: [String],
-  analysisVersion: { type: String, default: '2.12' } // Version bump
-}, {
-  timestamps: true,
-  autoIndex: process.env.NODE_ENV !== 'production',
-});
-
-articleSchema.index({ category: 1, publishedAt: -1 });
-articleSchema.index({ politicalLean: 1, publishedAt: -1 });
-articleSchema.index({ clusterId: 1, trustScore: -1 });
-articleSchema.index({ trustScore: -1, publishedAt: -1 });
-articleSchema.index({ biasScore: 1, publishedAt: -1 });
-articleSchema.index({ createdAt: 1 });
-articleSchema.index({ clusterTopic: 1, publishedAt: -1 });
-articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
-articleSchema.index({ analysisType: 1, publishedAt: -1 });
-
-const Article = mongoose.model('Article', articleSchema);
+// --- End DB Connection ---
 
 
 // --- API Routes (Only /api/articles filter updated to exclude 'Pending' articles) ---
@@ -150,7 +104,8 @@ app.get('/', (req, res) => {
     message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
     status: 'healthy',
     features: [
-      'Asynchronous AI Worker (v2.12)',
+      'Asynchronous AI Worker (v2.13)',
+      'Decoupled Mongoose Model',
       'PDF-Based Trust Score (OTS = sqrt(UCS*URS))',
       'AI-Powered Event Clustering',
       'Junk/Ad Article Filtering',
@@ -162,68 +117,64 @@ app.get('/', (req, res) => {
   });
 });
 
-// GET /api/articles - Fetch articles (PROTECTED)
-app.get('/api/articles', async (req, res, next) => {
-  try {
-    const category = req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null;
-    const lean = req.query.lean && req.query.lean !== 'All Leans' ? String(req.query.lean) : null;
-    const quality = req.query.quality && req.query.quality !== 'All Quality Levels' ? String(req.query.quality) : null;
-    const sort = String(req.query.sort || 'Latest First');
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 200);
-    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+// All other API routes remain the same, as they correctly use the imported `Article` model.
+app.get('/api/articles', async (req, res, next) => { /* ... (Logic remains the same, using imported Article) ... */
+    try {
+        const category = req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null;
+        const lean = req.query.lean && req.query.lean !== 'All Leans' ? String(req.query.lean) : null;
+        const quality = req.query.quality && req.query.quality !== 'All Quality Levels' ? String(req.query.quality) : null;
+        const sort = String(req.query.sort || 'Latest First');
+        const limit = Math.min(Math.max(parseInt(req.query.limit) || 100, 1), 200);
+        const offset = Math.max(parseInt(req.query.offset) || 0, 0);
 
-    let query = {
-        // --- NEW: ONLY show processed articles ---
-        clusterTopic: { $exists: true, $ne: null },
-    };
-    if (category) query.category = category;
-    if (lean) query.politicalLean = lean;
+        let query = {
+            clusterTopic: { $exists: true, $ne: null },
+        };
+        if (category) query.category = category;
+        if (lean) query.politicalLean = lean;
 
-    // --- Quality Filter Logic (Only applies to non-'Pending' articles which is now default) ---
-    if (quality) {
-      if (quality === 'Review / Opinion') {
-          query.analysisType = 'SentimentOnly';
-      } else {
-        query.analysisType = 'Full';
-        query.trustScore = query.trustScore || {};
-        const rangeMatch = quality.match(/(\d+)-(\d+)/);
-        if (rangeMatch) {
-            query.trustScore.$gte = parseInt(rangeMatch[1]);
-            query.trustScore.$lt = parseInt(rangeMatch[2]) + 1;
-        } else if (quality.includes('0-59')) {
-             query.trustScore = { $lt: 60 };
+        if (quality) {
+          if (quality === 'Review / Opinion') {
+              query.analysisType = 'SentimentOnly';
+          } else {
+            query.analysisType = 'Full';
+            query.trustScore = query.trustScore || {};
+            const rangeMatch = quality.match(/(\d+)-(\d+)/);
+            if (rangeMatch) {
+                query.trustScore.$gte = parseInt(rangeMatch[1]);
+                query.trustScore.$lt = parseInt(rangeMatch[2]) + 1;
+            } else if (quality.includes('0-59')) {
+                 query.trustScore = { $lt: 60 };
+            }
+          }
+        } else {
+            query.analysisType = { $ne: 'Pending' };
         }
+
+        let sortOption = { publishedAt: -1, createdAt: -1 };
+        switch(sort) {
+            case 'Highest Quality': sortOption = { trustScore: -1, publishedAt: -1 }; break;
+            case 'Most Covered': sortOption = { clusterId: 1, trustScore: -1, publishedAt: -1 }; break;
+            case 'Lowest Bias': sortOption = { biasScore: 1, publishedAt: -1 }; break;
+        }
+
+        const [articles, total] = await Promise.all([
+          Article.find(query).sort(sortOption).limit(limit).skip(offset).lean(),
+          Article.countDocuments(query)
+        ]);
+
+        res.status(200).json({
+          articles,
+          pagination: { total, limit, offset, hasMore: (offset + articles.length) < total }
+        });
+
+      } catch (error) {
+        console.error('❌ Error in GET /api/articles:', error.message);
+        next(error);
       }
-    } else {
-        // If no quality filter, ensure we exclude 'Pending' articles from the results
-        query.analysisType = { $ne: 'Pending' };
-    }
-
-    let sortOption = { publishedAt: -1, createdAt: -1 };
-    switch(sort) {
-        case 'Highest Quality': sortOption = { trustScore: -1, publishedAt: -1 }; break;
-        case 'Most Covered': sortOption = { clusterId: 1, trustScore: -1, publishedAt: -1 }; break;
-        case 'Lowest Bias': sortOption = { biasScore: 1, publishedAt: -1 }; break;
-    }
-
-    const [articles, total] = await Promise.all([
-      Article.find(query).sort(sortOption).limit(limit).skip(offset).lean(),
-      Article.countDocuments(query)
-    ]);
-
-    res.status(200).json({
-      articles,
-      pagination: { total, limit, offset, hasMore: (offset + articles.length) < total }
-    });
-
-  } catch (error) {
-    console.error('❌ Error in GET /api/articles:', error.message);
-    next(error);
-  }
 });
 
-// GET /api/articles/:id, /api/cluster/:clusterId, /api/stats, /api/stats/keys (Unchanged logic)
-app.get('/api/articles/:id', async (req, res, next) => { /* ... (Logic remains the same) ... */ 
+app.get('/api/articles/:id', async (req, res, next) => { /* ... (Logic remains the same) ... */
     try {
         const { id } = req.params;
         if (!mongoose.Types.ObjectId.isValid(id)) {
@@ -276,7 +227,7 @@ app.get('/api/stats', async (req, res, next) => { /* ... (Logic remains the same
         const [statsData, leanDistribution, categoryDistribution] = await Promise.all([
             Article.aggregate([
                 { $facet: {
-                    totalArticles: [{ $match: { clusterTopic: { $exists: true } } }, { $count: "count" }], // Count only processed articles
+                    totalArticles: [{ $match: { clusterTopic: { $exists: true } } }, { $count: "count" }],
                     sources: [{ $match: { source: { $ne: null }}}, { $group: { _id: "$source" } }, { $count: "count" }],
                     categories: [{ $match: { category: { $ne: null }}}, { $group: { _id: "$category" } }, { $count: "count" }],
                     avgBiasResult: [ { $match: { analysisType: 'Full', biasScore: { $exists: true } } }, { $group: { _id: null, avg: { $avg: '$biasScore' } } } ],
@@ -331,7 +282,7 @@ app.post('/api/fetch-news', (req, res) => {
 
   res.status(202).json({ message: 'Fetch acknowledged. Raw article ingestion starting background.', timestamp: new Date().toISOString() });
 
-  fetchRawArticles() // Call the FAST fetch function
+  fetchRawArticles()
     .catch(err => { console.error('❌ FATAL Error during manually triggered fetch:', err.message); })
     .finally(() => {
         isFetchRunning = false;
@@ -340,13 +291,13 @@ app.post('/api/fetch-news', (req, res) => {
 });
 
 
-// --- NEW: Core Function: FAST Fetch & Ingestion (No AI, No Delay) ---
+// --- Core Function: FAST Fetch & Ingestion (Unchanged logic) ---
 async function fetchRawArticles() {
   console.log('🔄 Starting FAST fetchRawArticles cycle...');
   const stats = { fetched: 0, processed: 0, skipped_duplicate: 0, skipped_invalid: 0, start_time: Date.now() };
 
   try {
-    const rawArticles = await newsService.fetchNews(); // Fetches US/IN/World news
+    const rawArticles = await newsService.fetchNews();
     stats.fetched = rawArticles.length;
     console.log(`📰 Fetched ${stats.fetched} raw articles.`);
     if (stats.fetched === 0) {
@@ -354,11 +305,9 @@ async function fetchRawArticles() {
       return stats;
     }
 
-    // --- DB EFFICIENCY: Bulk Duplicate Check ---
     const allUrls = rawArticles.map(a => a.url);
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     
-    // Find articles that match by URL OR by (headline, source, recent date)
     const existingArticles = await Article.find({
         $or: [
             { url: { $in: allUrls } },
@@ -378,41 +327,34 @@ async function fetchRawArticles() {
 
     const articlesToInsert = [];
     for (const article of rawArticles) {
-        // 1. Validate Structure
         if (!article?.url || !article?.title || !article?.description || article.description.length < 30) {
             stats.skipped_invalid++;
             continue;
         }
 
-        // 2. Check Duplicates (using bulk map)
         if (existingMap.has(article.url) || existingMap.has(`${article.title}::${article.source?.name}`)) {
             stats.skipped_duplicate++;
             continue;
         }
 
-        // 3. Prepare Data for Initial Ingestion
         articlesToInsert.push({
             headline: article.title,
             summary: article.description,
             source: article.source?.name || 'Unknown Source',
-            category: 'General', // Default, to be updated by AI
-            politicalLean: 'Pending', // Mark as pending
+            category: 'General',
+            politicalLean: 'Pending',
             url: article.url,
             imageUrl: article.urlToImage,
             publishedAt: article.publishedAt ? new Date(article.publishedAt) : new Date(),
-            analysisType: 'Pending', // Mark as pending
+            analysisType: 'Pending',
             sentiment: 'Neutral',
-            // All scores/components remain 0/null until processed by the worker
             analysisVersion: Article.schema.path('analysisVersion').defaultValue
         });
     }
 
-    // 4. Bulk Save to DB
     if (articlesToInsert.length > 0) {
-        // Use insertMany with ordered: false to skip duplicates found during write
         const result = await Article.insertMany(articlesToInsert, { ordered: false })
             .catch(err => {
-                // Ignore MongoWriteConcernError (E11000 duplicate key error)
                 if (err.code !== 11000) throw err;
                 return err.result;
             });
@@ -438,7 +380,6 @@ async function fetchRawArticles() {
 // --- NEW: AI Worker Status ---
 let isAIWorkerRunning = false;
 let processedCount = 0;
-let maxClusterId = 0; // Cache for efficiency
 
 // --- Scheduled Tasks ---
 
@@ -459,23 +400,20 @@ cron.schedule('*/30 * * * *', () => {
      });
 });
 
-// Auto-run the AI Processor Worker every 45 seconds (To manage rate limit + delay)
-cron.schedule('*/45 * * * * *', async () => { // Every 45 seconds (gives buffer beyond 31s)
+// Auto-run the AI Processor Worker every 45 seconds (Rate-Limited Worker)
+cron.schedule('*/45 * * * * *', async () => {
+    // We import the worker here, safely *after* Mongoose is set up
+    const articleProcessor = require('./articleProcessor'); 
+
     if (isAIWorkerRunning) {
-        // console.log('🧠 Worker: Skipping cycle - previous AI job still active.');
         return;
     }
 
     isAIWorkerRunning = true;
     let didProcess = false;
 
-    // Run the worker repeatedly until it runs out of articles or time (optional)
-    // For now, let's run it once per schedule to ensure max 1 article is processed per cycle.
     try {
         console.log('🧠 Worker: Checking for unanalyzed articles...');
-        // Cache the max cluster ID for efficiency if needed in the future
-        // maxClusterId = await articleProcessor.getMaxClusterId(); 
-        
         didProcess = await articleProcessor.processNextArticle();
 
         if (didProcess) {
@@ -489,7 +427,6 @@ cron.schedule('*/45 * * * * *', async () => { // Every 45 seconds (gives buffer 
         console.error('❌ CRITICAL Error during AI worker run:', error.message);
     } finally {
         isAIWorkerRunning = false;
-        // console.log('🧠 Worker: Cycle finished.');
     }
 });
 
@@ -506,7 +443,7 @@ cron.schedule('0 2 * * *', async () => {
   }
 });
 
-// --- Error Handling & Server Startup ---
+// --- Error Handling & Server Startup (Unchanged) ---
 
 app.use((req, res, next) => {
   res.status(404).json({ error: `Not Found - Cannot ${req.method} ${req.originalUrl}` });
@@ -535,7 +472,7 @@ app.listen(PORT, HOST, () => {
   console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
 });
 
-// --- Graceful Shutdown ---
+// --- Graceful Shutdown (Unchanged) ---
 const gracefulShutdown = async (signal) => {
   console.log(`\n👋 ${signal} received. Initiating graceful shutdown...`);
   try {
