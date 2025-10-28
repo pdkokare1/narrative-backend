@@ -17,9 +17,9 @@ const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService'); // Assumes newsService.js has focused fetching
 
 // --- ADDED: Import the new Profile model ---
-const Profile = require('./models/profileModel'); 
+const Profile = require('./models/profileModel');
 // --- ADDED: Import the new ActivityLog model ---
-const ActivityLog = require('./models/activityLogModel'); 
+const ActivityLog = require('./models/activityLogModel');
 
 // --- ADD THIS (2 of 3) ---
 // Initialize Firebase Admin
@@ -159,7 +159,7 @@ app.post('/api/activity/log-view', async (req, res) => {
       articleId: articleId,
       action: 'view_analysis'
     });
-    
+
     // --- We keep this for now so the simple profile page doesn't break ---
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid }, // Find this user
@@ -167,9 +167,9 @@ app.post('/api/activity/log-view', async (req, res) => {
       { new: true, upsert: true } // Return updated doc, create field if !exists
     );
 
-    res.status(200).json({ 
-      message: 'Activity logged', 
-      articlesViewedCount: updatedProfile.articlesViewedCount 
+    res.status(200).json({
+      message: 'Activity logged',
+      articlesViewedCount: updatedProfile.articlesViewedCount
     });
   } catch (error) {
     console.error('Error in POST /api/activity/log-view:', error.message);
@@ -192,17 +192,17 @@ app.post('/api/activity/log-compare', async (req, res) => {
       articleId: articleId,
       action: 'view_comparison'
     });
-    
+
     // --- We keep this for now ---
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid },
       { $inc: { comparisonsViewedCount: 1 } }, // Increment the new field
-      { new: true, upsert: true } 
+      { new: true, upsert: true }
     );
-    
-    res.status(200).json({ 
-      message: 'Compare activity logged', 
-      comparisonsViewedCount: updatedProfile.comparisonsViewedCount 
+
+    res.status(200).json({
+      message: 'Compare activity logged',
+      comparisonsViewedCount: updatedProfile.comparisonsViewedCount
     });
   } catch (error) {
     console.error('Error in POST /api/activity/log-compare:', error.message);
@@ -232,10 +232,10 @@ app.post('/api/activity/log-share', async (req, res) => {
       { $inc: { articlesSharedCount: 1 } }, // Increment the new field
       { new: true, upsert: true }
     );
-    
-    res.status(200).json({ 
-      message: 'Share activity logged', 
-      articlesSharedCount: updatedProfile.articlesSharedCount 
+
+    res.status(200).json({
+      message: 'Share activity logged',
+      articlesSharedCount: updatedProfile.articlesSharedCount
     });
   } catch (error) {
     console.error('Error in POST /api/activity/log-share:', error.message);
@@ -244,7 +244,93 @@ app.post('/api/activity/log-share', async (req, res) => {
 });
 
 
+// --- NEW ENDPOINT TO GET AGGREGATED STATS ---
+app.get('/api/profile/stats', async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const days = parseInt(req.query.days) || 90; // Default to 90 days
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(endDate.getDate() - days);
+
+    const stats = await ActivityLog.aggregate([
+      // 1. Filter logs for the current user and timeframe
+      {
+        $match: {
+          userId: userId,
+          timestamp: { $gte: startDate, $lte: endDate },
+          action: 'view_analysis' // Only count article views for now
+        }
+      },
+      // 2. Lookup the article details for each log
+      {
+        $lookup: {
+          from: 'articles', // The name of the articles collection
+          localField: 'articleId',
+          foreignField: '_id',
+          as: 'articleDetails'
+        }
+      },
+      // 3. Deconstruct the articleDetails array (it will usually have 1 item)
+      {
+        $unwind: {
+          path: '$articleDetails',
+          preserveNullAndEmptyArrays: true // Keep logs even if article was deleted
+        }
+      },
+      // 4. Group by multiple criteria (daily counts and lean counts)
+      {
+        $facet: {
+          // --- Calculate daily counts ---
+          dailyCounts: [
+            {
+              $group: {
+                _id: {
+                  $dateToString: { format: '%Y-%m-%d', date: '$timestamp', timezone: 'UTC' } // Group by YYYY-MM-DD
+                },
+                count: { $sum: 1 }
+              }
+            },
+            { $sort: { '_id': 1 } }, // Sort by date ascending
+             { $project: { _id: 0, date: '$_id', count: 1 } } // Rename _id to date
+          ],
+          // --- Calculate political lean distribution ---
+          leanDistribution: [
+             {
+               $match: { 'articleDetails.politicalLean': { $exists: true } } // Only include if lean exists
+             },
+            {
+              $group: {
+                _id: '$articleDetails.politicalLean', // Group by the article's lean
+                count: { $sum: 1 }
+              }
+            },
+            { $project: { _id: 0, lean: '$_id', count: 1 } } // Rename _id to lean
+          ]
+        }
+      }
+    ]);
+
+    // Format the results
+    const results = {
+      timeframeDays: days,
+      startDate: startDate.toISOString().split('T')[0],
+      endDate: endDate.toISOString().split('T')[0],
+      dailyCounts: stats[0]?.dailyCounts || [],
+      leanDistribution: stats[0]?.leanDistribution || [],
+      // We can add more facets here later (e.g., sourceDistribution)
+    };
+
+    res.status(200).json(results);
+
+  } catch (error) {
+    console.error('Error in GET /api/profile/stats:', error.message);
+    res.status(500).json({ error: 'Error fetching profile statistics' });
+  }
+});
+
 // --- END OF ADDED ROUTES ---
+
 
 // --- Database Connection ---
 mongoose.connect(process.env.MONGODB_URI)
@@ -330,7 +416,7 @@ app.get('/', (req, res) => {
 // GET /api/articles - Fetch articles (This route is now PROTECTED)
 app.get('/api/articles', async (req, res, next) => {
   // You can optionally see which user is making the request
-  // console.log('API called by user:', req.user.uid); 
+  // console.log('API called by user:', req.user.uid);
   try {
     const category = req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null;
     const lean = req.query.lean && req.query.lean !== 'All Leans' ? String(req.query.lean) : null;
