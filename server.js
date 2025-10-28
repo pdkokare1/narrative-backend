@@ -657,7 +657,8 @@ function sleep(ms) {
 // --- Scheduled Tasks ---
 
 // Auto-fetch every 30 minutes
-cron.schedule('*/30 * * * *', (). => {
+// --- THIS LINE IS FIXED ---
+cron.schedule('*/30 * * * *', () => {
   if (isFetchRunning) {
     console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
     return;
