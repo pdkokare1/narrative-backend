@@ -151,7 +151,7 @@ app.post('/api/activity/log-view', async (req, res) => {
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid }, // Find this user
       { $inc: { articlesViewedCount: 1 } }, // Increment this field
-      { new: true } // Return the updated document
+      { new: true, upsert: true } // Return updated doc, create field if !exists
     );
 
     if (!updatedProfile) {
@@ -167,6 +167,47 @@ app.post('/api/activity/log-view', async (req, res) => {
     res.status(500).json({ error: 'Error logging activity' });
   }
 });
+
+// --- ADD THIS NEW ENDPOINT ---
+// POST /api/activity/log-compare - Logs that a user clicked "compare"
+app.post('/api/activity/log-compare', async (req, res) => {
+  try {
+    const updatedProfile = await Profile.findOneAndUpdate(
+      { userId: req.user.uid },
+      { $inc: { comparisonsViewedCount: 1 } }, // Increment the new field
+      { new: true, upsert: true } 
+    );
+    if (!updatedProfile) return res.status(404).json({ error: 'Profile not found' });
+    res.status(200).json({ 
+      message: 'Compare activity logged', 
+      comparisonsViewedCount: updatedProfile.comparisonsViewedCount 
+    });
+  } catch (error) {
+    console.error('Error in POST /api/activity/log-compare:', error.message);
+    res.status(500).json({ error: 'Error logging activity' });
+  }
+});
+
+// --- ADD THIS NEW ENDPOINT ---
+// POST /api/activity/log-share - Logs that a user clicked "share"
+app.post('/api/activity/log-share', async (req, res) => {
+  try {
+    const updatedProfile = await Profile.findOneAndUpdate(
+      { userId: req.user.uid },
+      { $inc: { articlesSharedCount: 1 } }, // Increment the new field
+      { new: true, upsert: true }
+    );
+    if (!updatedProfile) return res.status(404).json({ error: 'Profile not found' });
+    res.status(200).json({ 
+      message: 'Share activity logged', 
+      articlesSharedCount: updatedProfile.articlesSharedCount 
+    });
+  } catch (error) {
+    console.error('Error in POST /api/activity/log-share:', error.message);
+    res.status(500).json({ error: 'Error logging activity' });
+  }
+});
+
 
 // --- END OF ADDED ROUTES ---
 
