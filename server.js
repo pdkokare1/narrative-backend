@@ -18,7 +18,8 @@ const newsService = require('./services/newsService'); // Assumes newsService.js
 
 // --- ADDED: Import the new Profile model ---
 const Profile = require('./models/profileModel'); 
-// --- END ADDED ---
+// --- ADDED: Import the new ActivityLog model ---
+const ActivityLog = require('./models/activityLogModel'); 
 
 // --- ADD THIS (2 of 3) ---
 // Initialize Firebase Admin
@@ -147,16 +148,24 @@ app.post('/api/profile', async (req, res) => {
 // POST /api/activity/log-view - Logs that a user viewed an article
 app.post('/api/activity/log-view', async (req, res) => {
   try {
-    // Find the user's profile and increment the count by 1
+    const { articleId } = req.body;
+    if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
+      return res.status(400).json({ error: 'Valid articleId is required' });
+    }
+
+    // --- NEW: Create a detailed log entry ---
+    await ActivityLog.create({
+      userId: req.user.uid,
+      articleId: articleId,
+      action: 'view_analysis'
+    });
+    
+    // --- We keep this for now so the simple profile page doesn't break ---
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid }, // Find this user
       { $inc: { articlesViewedCount: 1 } }, // Increment this field
       { new: true, upsert: true } // Return updated doc, create field if !exists
     );
-
-    if (!updatedProfile) {
-      return res.status(404).json({ error: 'Profile not found' });
-    }
 
     res.status(200).json({ 
       message: 'Activity logged', 
@@ -168,16 +177,29 @@ app.post('/api/activity/log-view', async (req, res) => {
   }
 });
 
-// --- ADD THIS NEW ENDPOINT ---
+// --- UPDATED THIS ENDPOINT ---
 // POST /api/activity/log-compare - Logs that a user clicked "compare"
 app.post('/api/activity/log-compare', async (req, res) => {
   try {
+    const { articleId } = req.body; // Expect the ID of the article they clicked "compare" on
+    if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
+      return res.status(400).json({ error: 'Valid articleId is required' });
+    }
+
+    // --- NEW: Create a detailed log entry ---
+    await ActivityLog.create({
+      userId: req.user.uid,
+      articleId: articleId,
+      action: 'view_comparison'
+    });
+    
+    // --- We keep this for now ---
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid },
       { $inc: { comparisonsViewedCount: 1 } }, // Increment the new field
       { new: true, upsert: true } 
     );
-    if (!updatedProfile) return res.status(404).json({ error: 'Profile not found' });
+    
     res.status(200).json({ 
       message: 'Compare activity logged', 
       comparisonsViewedCount: updatedProfile.comparisonsViewedCount 
@@ -188,16 +210,29 @@ app.post('/api/activity/log-compare', async (req, res) => {
   }
 });
 
-// --- ADD THIS NEW ENDPOINT ---
+// --- UPDATED THIS ENDPOINT ---
 // POST /api/activity/log-share - Logs that a user clicked "share"
 app.post('/api/activity/log-share', async (req, res) => {
   try {
+    const { articleId } = req.body;
+    if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
+      return res.status(400).json({ error: 'Valid articleId is required' });
+    }
+
+    // --- NEW: Create a detailed log entry ---
+    await ActivityLog.create({
+      userId: req.user.uid,
+      articleId: articleId,
+      action: 'share_article'
+    });
+
+    // --- We keep this for now ---
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid },
       { $inc: { articlesSharedCount: 1 } }, // Increment the new field
       { new: true, upsert: true }
     );
-    if (!updatedProfile) return res.status(404).json({ error: 'Profile not found' });
+    
     res.status(200).json({ 
       message: 'Share activity logged', 
       articlesSharedCount: updatedProfile.articlesSharedCount 
@@ -622,7 +657,7 @@ function sleep(ms) {
 // --- Scheduled Tasks ---
 
 // Auto-fetch every 30 minutes
-cron.schedule('*/30 * * * *', () => {
+cron.schedule('*/30 * * * *', (). => {
   if (isFetchRunning) {
     console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
     return;
