@@ -24,6 +24,15 @@ const profileSchema = new mongoose.Schema({
   articlesViewedCount: { 
     type: Number, 
     default: 0 
+  },
+  // --- ADD THESE TWO LINES ---
+  comparisonsViewedCount: {
+    type: Number,
+    default: 0
+  },
+  articlesSharedCount: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true // Adds createdAt and updatedAt
