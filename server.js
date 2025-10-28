@@ -1,4 +1,4 @@
-// server.js (FINAL v2.11 - NOW WITH FIREBASE AUTH)
+// server.js (FINAL v2.12 - Unlocked Stats)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -243,23 +243,54 @@ app.post('/api/activity/log-share', async (req, res) => {
   }
 });
 
+// --- *** NEW ENDPOINT *** ---
+// POST /api/activity/log-read - Logs that a user clicked "Read Article"
+app.post('/api/activity/log-read', async (req, res) => {
+  try {
+    const { articleId } = req.body;
+    if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
+      return res.status(400).json({ error: 'Valid articleId is required' });
+    }
 
-// --- NEW ENDPOINT TO GET AGGREGATED STATS ---
+    // Create a detailed log entry for 'read_external'
+    await ActivityLog.create({
+      userId: req.user.uid,
+      articleId: articleId,
+      action: 'read_external'
+    });
+
+    // Note: We don't increment a simple counter in the Profile model for this one
+    // We will aggregate it in the /stats endpoint instead.
+
+    res.status(200).json({
+      message: 'Read activity logged'
+    });
+  } catch (error) {
+    console.error('Error in POST /api/activity/log-read:', error.message);
+    res.status(500).json({ error: 'Error logging activity' });
+  }
+});
+
+
+// --- *** HEAVILY MODIFIED ENDPOINT *** ---
+// GET /api/profile/stats - Fetch ALL aggregated stats for a user
 app.get('/api/profile/stats', async (req, res) => {
   try {
     const userId = req.user.uid;
-    const days = parseInt(req.query.days) || 90; // Default to 90 days
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setDate(endDate.getDate() - days);
+    // const days = parseInt(req.query.days) || 90; // Default to 90 days
+    // const endDate = new Date();
+    // const startDate = new Date();
+    // startDate.setDate(endDate.getDate() - days);
+    
+    // We are fetching ALL-TIME stats, so no date range is needed in $match
+    // If we want to re-add timeframes, we just add the $match (timestamp:...)
+    // back into the $facet pipelines.
 
     const stats = await ActivityLog.aggregate([
-      // 1. Filter logs for the current user and timeframe
+      // 1. Filter logs for the current user
       {
         $match: {
-          userId: userId,
-          timestamp: { $gte: startDate, $lte: endDate },
-          action: 'view_analysis' // Only count article views for now
+          userId: userId
         }
       },
       // 2. Lookup the article details for each log
@@ -271,7 +302,7 @@ app.get('/api/profile/stats', async (req, res) => {
           as: 'articleDetails'
         }
       },
-      // 3. Deconstruct the articleDetails array (it will usually have 1 item)
+      // 3. Deconstruct the articleDetails array
       {
         $unwind: {
           path: '$articleDetails',
@@ -281,44 +312,117 @@ app.get('/api/profile/stats', async (req, res) => {
       // 4. Group by multiple criteria (daily counts and lean counts)
       {
         $facet: {
-          // --- Calculate daily counts ---
+          // --- Calculate daily counts (for 'view_analysis') ---
           dailyCounts: [
+            { $match: { action: 'view_analysis' } },
             {
               $group: {
                 _id: {
-                  $dateToString: { format: '%Y-%m-%d', date: '$timestamp', timezone: 'UTC' } // Group by YYYY-MM-DD
+                  $dateToString: { format: '%Y-%m-%d', date: '$timestamp', timezone: 'UTC' }
                 },
                 count: { $sum: 1 }
               }
             },
-            { $sort: { '_id': 1 } }, // Sort by date ascending
-             { $project: { _id: 0, date: '$_id', count: 1 } } // Rename _id to date
+            { $sort: { '_id': 1 } },
+            { $project: { _id: 0, date: '$_id', count: 1 } }
           ],
-          // --- Calculate political lean distribution ---
-          leanDistribution: [
+
+          // --- Calculate political lean distribution (for 'view_analysis') ---
+          leanDistribution_read: [
              {
-               $match: { 'articleDetails.politicalLean': { $exists: true } } // Only include if lean exists
+               $match: { 
+                 'action': 'view_analysis',
+                 'articleDetails.politicalLean': { $exists: true } 
+                }
              },
             {
               $group: {
-                _id: '$articleDetails.politicalLean', // Group by the article's lean
+                _id: '$articleDetails.politicalLean',
                 count: { $sum: 1 }
               }
             },
-            { $project: { _id: 0, lean: '$_id', count: 1 } } // Rename _id to lean
+            { $project: { _id: 0, lean: '$_id', count: 1 } }
+          ],
+          
+          // --- *** NEW FACETS START HERE *** ---
+          
+          // --- Calculate political lean distribution (for 'share_article') ---
+          leanDistribution_shared: [
+             {
+               $match: { 
+                 'action': 'share_article',
+                 'articleDetails.politicalLean': { $exists: true } 
+                }
+             },
+            {
+              $group: {
+                _id: '$articleDetails.politicalLean',
+                count: { $sum: 1 }
+              }
+            },
+            { $project: { _id: 0, lean: '$_id', count: 1 } }
+          ],
+
+          // --- Calculate Category distribution (for 'view_analysis') ---
+          categoryDistribution_read: [
+             {
+               $match: { 
+                 'action': 'view_analysis',
+                 'articleDetails.category': { $exists: true } 
+                }
+             },
+            {
+              $group: {
+                _id: '$articleDetails.category',
+                count: { $sum: 1 }
+              }
+            },
+             { $sort: { count: -1 } }, // Sort by most read
+            { $project: { _id: 0, category: '$_id', count: 1 } }
+          ],
+          
+          // --- Calculate Quality distribution (for 'view_analysis') ---
+          qualityDistribution_read: [
+             {
+               $match: { 
+                 'action': 'view_analysis',
+                 'articleDetails.credibilityGrade': { $exists: true, $ne: null } 
+                }
+             },
+            {
+              $group: {
+                _id: '$articleDetails.credibilityGrade',
+                count: { $sum: 1 }
+              }
+            },
+            { $project: { _id: 0, grade: '$_id', count: 1 } }
+          ],
+
+          // --- Calculate Total Counts for all actions ---
+          totalCounts: [
+            {
+              $group: {
+                _id: '$action', // Group by action type
+                count: { $sum: 1 }
+              }
+            },
+            { $project: { _id: 0, action: '$_id', count: 1 } }
           ]
+          
+          // --- *** NEW FACETS END HERE *** ---
         }
       }
     ]);
 
     // Format the results
     const results = {
-      timeframeDays: days,
-      startDate: startDate.toISOString().split('T')[0],
-      endDate: endDate.toISOString().split('T')[0],
+      timeframeDays: 'All Time', // Hardcoded to 'All Time'
       dailyCounts: stats[0]?.dailyCounts || [],
-      leanDistribution: stats[0]?.leanDistribution || [],
-      // We can add more facets here later (e.g., sourceDistribution)
+      leanDistribution_read: stats[0]?.leanDistribution_read || [],
+      leanDistribution_shared: stats[0]?.leanDistribution_shared || [],
+      categoryDistribution_read: stats[0]?.categoryDistribution_read || [],
+      qualityDistribution_read: stats[0]?.qualityDistribution_read || [],
+      totalCounts: stats[0]?.totalCounts || [],
     };
 
     res.status(200).json(results);
