@@ -186,23 +186,27 @@ class GeminiService {
   buildEnhancedPrompt(article) {
     const title = article?.title || "No Title";
     const description = article?.description || "No Description";
+    // --- ** CHANGE 1: Add content snippet ** ---
+    const contentSnippet = (article?.content || "").substring(0, 1000); // Get first 1000 chars
 
     // --- CRITICAL CONTEXT INJECTION ---
     const currentDate = "October 24, 2025";
     const currentUSPresident = "Donald Trump";
     // ---------------------------------
 
+    // --- ** CHANGE 2: Update prompt text to include content ** ---
     return `CURRENT_CONTEXT: Today's date is ${currentDate}. The current President of the United States is ${currentUSPresident}. All analysis must reflect this present reality, not outdated information.
 
-Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
+Analyze the news article (Title: "${title}", Description: "${description}", Content: "${contentSnippet}..."). Return ONLY a valid JSON object.
 
 INSTRUCTIONS:
 1. 'analysisType': 'Full' for hard news (politics, economy, justice, etc.). Use 'SentimentOnly' for opinions, reviews, sports results, or tech product announcements.
 2. 'sentiment': 'Positive', 'Negative', or 'Neutral' (Reflecting the article's overall sentiment towards the main *subject* or *topic* of the news, not just the language tone).
 3. 'isJunk': 'Yes' if the article is purely promotional, sponsored content, an ad, or not a real news story. Otherwise, 'No'.
-4. 'clusterTopic': A 3-5 word descriptive name for the core news event (e.g., 'US Election Polls Q3', 'Ukraine Peace Summit', 'New iPhone Launch'). Null if not a news event.
-5. If 'Full': Provide scores (0-100) for bias, credibility, reliability, and all components. Assign labels/grades.
-6. If 'SentimentOnly': Set ALL numerical scores (biasScore, credibilityScore, reliabilityScore, ALL component scores) strictly to 0. Set politicalLean to 'Not Applicable'.
+4. 'clusterTopic': A 5-7 word generic, neutral topic for the core news event (e.g., 'US Climate Policy Announcement', 'Ukraine Peace Summit'). Null if not a news event.
+5. 'country': The primary country this event is about (e.g., 'USA', 'UK', 'India', 'International'). Use 'International' for global events.
+6. If 'Full': Provide scores (0-100) for bias, credibility, reliability, and all components. Assign labels/grades.
+7. If 'SentimentOnly': Set ALL numerical scores (biasScore, credibilityScore, reliabilityScore, ALL component scores) strictly to 0. Set politicalLean to 'Not Applicable'.
 
 JSON Structure:
 {
@@ -213,6 +217,7 @@ JSON Structure:
   "sentiment": "Neutral",
   "isJunk": "No",
   "clusterTopic": "US-China Trade Talks",
+  "country": "USA",
   "biasScore": 50, "biasLabel": "Moderate",
   "biasComponents": {"linguistic": {"sentimentPolarity": 50,...}, "sourceSelection": {...}, "demographic": {...}, "framing": {...}},
   "credibilityScore": 75, "credibilityGrade": "B",
@@ -251,113 +256,4 @@ Output ONLY the JSON object.`;
         if (typeof text !== 'string' || !text.trim()) throw new Error('Response candidate missing valid text content');
 
         // 4. Extract JSON (Handles potential markdown)
-        const jsonMatch = text.trim().match(/(?:```json)?\s*(\{[\s\S]*\})\s*(?:```)?/);
-        if (!jsonMatch?.[1]) throw new Error('No valid JSON object found in response text');
-        const jsonString = jsonMatch[1];
-
-        // 5. Parse JSON
-        let parsed = JSON.parse(jsonString); // Will throw on invalid JSON
-
-        // 6. Validate & Apply Defaults
-        if (typeof parsed !== 'object' || parsed === null) throw new Error('Parsed content is not a valid object');
-
-        // Required fields with defaults
-        parsed.summary = (typeof parsed.summary === 'string' && parsed.summary.trim()) ? parsed.summary.trim() : 'Summary unavailable';
-        parsed.analysisType = ['Full', 'SentimentOnly'].includes(parsed.analysisType) ? parsed.analysisType : 'Full';
-        const isSentimentOnly = parsed.analysisType === 'SentimentOnly';
-        parsed.sentiment = ['Positive', 'Negative', 'Neutral'].includes(parsed.sentiment) ? parsed.sentiment : 'Neutral';
-        const defaultLean = isSentimentOnly ? 'Not Applicable' : 'Center';
-        parsed.politicalLean = ['Left', 'Left-Leaning', 'Center', 'Right-Leaning', 'Right', 'Not Applicable'].includes(parsed.politicalLean) ? parsed.politicalLean : defaultLean;
-        parsed.category = (typeof parsed.category === 'string' && parsed.category.trim()) ? parsed.category.trim() : 'General';
-        
-        // New fields
-        parsed.isJunk = (parsed.isJunk === 'Yes' || parsed.isJunk === true); // Coerce to boolean
-        parsed.clusterTopic = (typeof parsed.clusterTopic === 'string' && parsed.clusterTopic.trim()) ? parsed.clusterTopic.trim() : null;
-
-
-        // Function to safely parse score (0-100), returns 0 if invalid or SentimentOnly
-        const parseScore = (score) => {
-             if (isSentimentOnly) return 0;
-             const num = Number(score);
-             return !isNaN(num) && num >= 0 && num <= 100 ? Math.round(num) : 0;
-        };
-
-        // Scores
-        parsed.biasScore = parseScore(parsed.biasScore);
-        parsed.credibilityScore = parseScore(parsed.credibilityScore);
-        parsed.reliabilityScore = parseScore(parsed.reliabilityScore);
-        
-        // --- TRUST SCORE CALCULATION (from PDF) ---
-        parsed.trustScore = 0; // Default
-        if (!isSentimentOnly && parsed.credibilityScore > 0 && parsed.reliabilityScore > 0) {
-            // OTS = sqrt(UCS * URS)
-            parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
-        }
-        // --- End Trust Score Calculation ---
-
-        // Components (ensure objects exist, parse nested scores)
-        const ensureObject = (obj) => typeof obj === 'object' && obj !== null ? obj : {};
-        const parseComponentScores = (compObj) => {
-            if (!compObj) return {};
-            for (const key in compObj) {
-                if (Object.hasOwnProperty.call(compObj, key)) {
-                     compObj[key] = parseScore(compObj[key]); // Apply score parsing to all component values
-                }
-            }
-            return compObj;
-        };
-
-        parsed.biasComponents = ensureObject(parsed.biasComponents);
-        parsed.biasComponents.linguistic = parseComponentScores(ensureObject(parsed.biasComponents.linguistic));
-        parsed.biasComponents.sourceSelection = parseComponentScores(ensureObject(parsed.biasComponents.sourceSelection));
-        parsed.biasComponents.demographic = parseComponentScores(ensureObject(parsed.biasComponents.demographic));
-        parsed.biasComponents.framing = parseComponentScores(ensureObject(parsed.biasComponents.framing));
-
-        parsed.credibilityComponents = parseComponentScores(ensureObject(parsed.credibilityComponents));
-        parsed.reliabilityComponents = parseComponentScores(ensureObject(parsed.reliabilityComponents));
-
-        // Ensure arrays exist
-        parsed.keyFindings = Array.isArray(parsed.keyFindings) ? parsed.keyFindings.map(String) : []; // Ensure strings
-        parsed.recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations.map(String) : [];
-
-        // Optional fields - ensure correct type or set to undefined
-        parsed.biasLabel = typeof parsed.biasLabel === 'string' ? parsed.biasLabel : undefined;
-        parsed.credibilityGrade = typeof parsed.credibilityGrade === 'string' ? parsed.credibilityGrade : undefined;
-        parsed.reliabilityGrade = typeof parsed.reliabilityGrade === 'string' ? parsed.reliabilityGrade : undefined;
-        parsed.trustLevel = typeof parsed.trustLevel === 'string' ? parsed.trustLevel : undefined;
-        parsed.coverageLeft = typeof parsed.coverageLeft === 'number' ? parsed.coverageLeft : undefined;
-        parsed.coverageCenter = typeof parsed.coverageCenter === 'number' ? parsed.coverageCenter : undefined;
-        parsed.coverageRight = typeof parsed.coverageRight === 'number' ? parsed.coverageRight : undefined;
-        // clusterId is now handled by server.js
-        
-        return parsed; // Return validated object
-
-    } catch (error) {
-        console.error(`❌ Error during Gemini response parsing/validation: ${error.message}`);
-        // Log the raw data only if not in production for security/privacy
-        if (process.env.NODE_ENV !== 'production') {
-             console.error("--- Raw Response Data ---");
-             console.error(JSON.stringify(data, null, 2)); // Log formatted full data
-             console.error("--- End Raw Data ---");
-        }
-        throw new Error(`Failed to process Gemini response: ${error.message}`);
-    }
-  }
-
-  // --- Get Statistics ---
-  getStatistics() {
-    const loadedKeys = this.apiKeys || [];
-    return {
-      totalKeysLoaded: loadedKeys.length,
-      currentKeyIndex: this.currentKeyIndex,
-      keyStatus: loadedKeys.map((key, index) => ({
-        index: index,
-        keyLast4: key ? `...${key.slice(-4)}` : 'N/A', // Handle potentially null keys
-        usage: key ? (this.keyUsageCount.get(key) || 0) : 0,
-        consecutiveErrors: key ? (this.keyErrorCount.get(key) || 0) : 0
-      }))
-    };
-  }
-}
-
-module.exports = new GeminiService();
+        const jsonMatch = text.trim().match(/(?:
