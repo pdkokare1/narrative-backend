@@ -1,4 +1,4 @@
-// server.js (FINAL v2.14 - 5-Field Clustering)
+// server.js (FINAL v2.14.1 - Syntax Fix)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -959,8 +959,8 @@ cron.schedule('*/30 * * * *', () => {
 
   fetchAndAnalyzeNews()
     .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
-    .finally((). => {
-        isFetchRunning = false; // --- FIX: Set to false ---
+    .finally(() => { // --- THIS IS THE FIX ---
+        isFetchRunning = false; 
         console.log('🟢 Scheduled fetch process complete.');
      });
 });
