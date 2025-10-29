@@ -1,4 +1,4 @@
-// server.js (FINAL v2.13b - Unlocked Admin Fetch)
+// server.js (FINAL v2.14 - 5-Field Clustering)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -509,10 +509,14 @@ const articleSchema = new mongoose.Schema({
   coverageRight: { type: Number, default: 0 },
   clusterId: { type: Number, index: true },
   clusterTopic: { type: String, index: true, trim: true }, 
-  country: { type: String, index: true, trim: true, default: 'Global' }, // --- NEW: COUNTRY FIELD ---
+  country: { type: String, index: true, trim: true, default: 'Global' }, 
+  // --- NEW FIELDS FOR 5-FIELD CLUSTERING ---
+  primaryNoun: { type: String, index: true, trim: true, default: null },
+  secondaryNoun: { type: String, index: true, trim: true, default: null },
+  // --- END NEW FIELDS ---
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.13' } // Version bump
+  analysisVersion: { type: String, default: '2.14' } // Version bump
 }, {
   timestamps: true, // Adds createdAt and updatedAt
   autoIndex: process.env.NODE_ENV !== 'production',
@@ -527,8 +531,10 @@ articleSchema.index({ biasScore: 1, publishedAt: -1 });
 articleSchema.index({ createdAt: 1 }); // For cleanup
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
-// --- NEW: 3-PART CLUSTER INDEX ---
-articleSchema.index({ clusterTopic: 1, country: 1, category: 1, publishedAt: -1 });
+// --- UPDATED 5-PART CLUSTER INDEX ---
+articleSchema.index({ clusterTopic: 1, category: 1, country: 1, primaryNoun: 1, secondaryNoun: 1, publishedAt: -1 }, {
+  name: "5_Field_Cluster_Index"
+});
 // --- NEW: REGION/TYPE FILTER INDEX ---
 articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
 
@@ -543,7 +549,7 @@ app.get('/', (req, res) => {
     message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
     status: 'healthy',
     features: [
-      '3-Part Smart Clustering (Topic, Country, Category)',
+      '5-Field Smart Clustering (Topic, Category, Country, Nouns)',
       '7-Day Cluster Window',
       'Smart Feed De-duplication w/ Cluster Count',
       'Region & Article Type Filters'
@@ -573,7 +579,8 @@ app.get('/api/articles', async (req, res, next) => {
     const matchStage = {};
     if (filters.category) matchStage.category = filters.category;
     if (filters.lean) matchStage.politicalLean = filters.lean;
-    if (filters.region) matchStage.country = filters.region; // Filter by 'India' or 'Global'
+    // --- UPDATED: Region filter now uses 'country' field ---
+    if (filters.region) matchStage.country = filters.region; 
     
     // Article Type Filter
     if (filters.articleType === 'Hard News') {
@@ -866,22 +873,28 @@ async function fetchAndAnalyzeNews() {
               coverageRight: analysis.coverageRight || 0,
               clusterId: null, // Will be set below
               clusterTopic: analysis.clusterTopic,
-              country: analysis.country, // --- ADDED: Save country
+              country: analysis.country, // --- Save 'USA', 'India', or 'Global'
+              // --- SAVE NEW FIELDS ---
+              primaryNoun: analysis.primaryNoun,
+              secondaryNoun: analysis.secondaryNoun,
+              // --- END ---
               keyFindings: analysis.keyFindings || [],
               recommendations: analysis.recommendations || [],
               analysisVersion: Article.schema.path('analysisVersion').defaultValue
             };
             
-            // --- 4.5. Handle Smart Clustering (NEW LOGIC) ---
+            // --- 4.5. Handle Smart Clustering (5-FIELD LOGIC) ---
             if (newArticleData.clusterTopic) {
                 // --- Use 7-day window ---
                 const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
                 
-                // --- Find cluster matching ALL 3 keys ---
+                // --- Find cluster matching ALL 5 keys ---
                 const existingCluster = await Article.findOne({
                     clusterTopic: newArticleData.clusterTopic,
-                    country: newArticleData.country,
                     category: newArticleData.category,
+                    country: newArticleData.country,
+                    primaryNoun: newArticleData.primaryNoun,
+                    secondaryNoun: newArticleData.secondaryNoun,
                     publishedAt: { $gte: sevenDaysAgo } // Look in last 7 days
                 }, { clusterId: 1 }).sort({ publishedAt: -1 }).lean();
 
@@ -946,8 +959,8 @@ cron.schedule('*/30 * * * *', () => {
 
   fetchAndAnalyzeNews()
     .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
-    .finally(() => {
-        isFetchRunning = false;
+    .finally((). => {
+        isFetchRunning = false; // --- FIX: Set to false ---
         console.log('🟢 Scheduled fetch process complete.');
      });
 });
