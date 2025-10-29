@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.13 - Country Tagging)
+// services/geminiService.js (FINAL v2.14 - 5-Field Clustering)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -131,7 +131,7 @@ class GeminiService {
     if (!apiKey) throw new Error("Internal error: apiKey missing for makeAnalysisRequest");
 
     const prompt = this.buildEnhancedPrompt(article);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${apiKey}`;
 
     try {
       const response = await axios.post(
@@ -139,10 +139,11 @@ class GeminiService {
         { // Request Body
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
+            responseMimeType: "application/json", // --- NEW: Force JSON output ---
             temperature: 0.4,
             topK: 32,
             topP: 0.95,
-            maxOutputTokens: 4096 // Increased limit
+            maxOutputTokens: 4096 
           },
           // --- SAFETY SETTINGS: BLOCK_NONE ---
           safetySettings: [
@@ -162,6 +163,7 @@ class GeminiService {
       if (!response.data || typeof response.data !== 'object') {
           throw new Error("Received invalid response data from Gemini API despite 2xx status.");
       }
+      // --- MODIFIED: Pass data directly to parser ---
       return this.parseAnalysisResponse(response.data);
 
     } catch (error) {
@@ -186,25 +188,32 @@ class GeminiService {
   buildEnhancedPrompt(article) {
     const title = article?.title || "No Title";
     const description = article?.description || "No Description";
-    const sourceCountry = article?.source?.country || "unknown"; // from newsService
 
     // --- CRITICAL CONTEXT INJECTION ---
-    const currentDate = "October 29, 2025"; // Updated date
+    const currentDate = "October 30, 2025"; // Updated date
     const currentUSPresident = "Donald Trump";
     // ---------------------------------
 
-    return `CURRENT_CONTEXT: Today's date is ${currentDate}. The current President of the United States is ${currentUSPresident}. All analysis must reflect this present reality, not outdated information.
+    return `CURRENT_CONTEXT: Today's date is ${currentDate}. The current President of the United States is ${currentUSPresident}. All analysis must reflect this present reality.
 
 Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
 
 INSTRUCTIONS:
-1. 'analysisType': 'Full' for hard news (politics, economy, justice, etc.). Use 'SentimentOnly' for opinions, reviews, sports results, or tech product announcements.
-2. 'sentiment': 'Positive', 'Negative', or 'Neutral' (Reflecting the article's overall sentiment towards the main *subject* or *topic* of the news, not just the language tone).
-3. 'isJunk': 'Yes' if the article is purely promotional, sponsored content, an ad, or not a real news story. Otherwise, 'No'.
-4. 'clusterTopic': A 5-7 word generic topic for the core news event (e.g., 'US Election Polls Q3', 'Ukraine Peace Summit', 'New iPhone Launch'). Null if not a news event.
-5. 'country': The primary country the event *takes place in* or is *about* (e.g., "USA", "India", "Ukraine"). Use "Global" for widespread international events.
-6. If 'Full': Provide scores (0-100) for bias, credibility, reliability, and all components. Assign labels/grades.
-7. If 'SentimentOnly': Set ALL numerical scores (biasScore, credibilityScore, reliabilityScore, ALL component scores) strictly to 0. Set politicalLean to 'Not Applicable'.
+1. 'analysisType': 'Full' for hard news (politics, economy, justice). 'SentimentOnly' for opinions, reviews, sports, or product announcements.
+2. 'sentiment': 'Positive', 'Negative', or 'Neutral' (Reflecting the article's overall sentiment towards the main *subject*).
+3. 'isJunk': 'Yes' if the article is promotional, sponsored content, an ad, or not a real news story. Otherwise, 'No'.
+
+**--- CLUSTERING FIELDS (CRITICAL) ---**
+4. 'clusterTopic' (Event): A 5-7 word generic topic for the core news event (e.g., 'US Election Polls Q3', 'Ukraine Peace Summit', 'New iPhone Launch'). Null if not a news event.
+5. 'country' (Primary Country): 
+   - If the story is primarily about the USA, return "USA".
+   - If the story is primarily about India, return "India".
+   - For ALL other countries or global events, return "Global".
+6. 'primaryNoun' (Main Noun): The single, most important proper noun (person, organization, or place) in the article. If none, return null.
+7. 'secondaryNoun' (Second Noun): The second most important proper noun. This can be a person, organization, or a country name (e.g., "Japan", "Cambodia"). If none, return null.
+
+8. If 'Full': Provide scores (0-100) for bias, credibility, reliability, and all components. Assign labels/grades.
+9. If 'SentimentOnly': Set ALL numerical scores (biasScore, credibilityScore, reliabilityScore, ALL component scores) strictly to 0. Set politicalLean to 'Not Applicable'.
 
 JSON Structure:
 {
@@ -216,6 +225,8 @@ JSON Structure:
   "isJunk": "No",
   "clusterTopic": "US-China Trade Talks",
   "country": "Global",
+  "primaryNoun": "Donald Trump",
+  "secondaryNoun": "Xi Jinping",
   "biasScore": 50, "biasLabel": "Moderate",
   "biasComponents": {"linguistic": {"sentimentPolarity": 50,...}, "sourceSelection": {...}, "demographic": {...}, "framing": {...}},
   "credibilityScore": 75, "credibilityGrade": "B",
@@ -249,19 +260,21 @@ Output ONLY the JSON object.`;
             if (!candidate.content?.parts?.[0]?.text) throw new Error(`Candidate stopped for ${candidate.finishReason} and has no text.`);
         }
 
-        // 3. Extract Text
-        const text = candidate.content?.parts?.[0]?.text;
-        if (typeof text !== 'string' || !text.trim()) throw new Error('Response candidate missing valid text content');
-
-        // 4. Extract JSON (Handles potential markdown)
-        const jsonMatch = text.trim().match(/(?:```json)?\s*(\{[\s\S]*\})\s*(?:```)?/);
-        if (!jsonMatch?.[1]) throw new Error('No valid JSON object found in response text');
-        const jsonString = jsonMatch[1];
-
-        // 5. Parse JSON
-        let parsed = JSON.parse(jsonString); // Will throw on invalid JSON
-
-        // 6. Validate & Apply Defaults
+        // 3. Extract Text (This is now the JSON object itself)
+        const parsed = candidate.content?.parts?.[0]?.text;
+        if (typeof parsed !== 'object' || parsed === null) {
+             // Fallback for older models that might still wrap in text/markdown
+             const text = candidate.content?.parts?.[0]?.text;
+             if (typeof text === 'string' && text.trim()) {
+                 const jsonMatch = text.trim().match(/(?:```json)?\s*(\{[\s\S]*\})\s*(?:```)?/);
+                 if (!jsonMatch?.[1]) throw new Error('No valid JSON object found in response text');
+                 parsed = JSON.parse(jsonMatch[1]); // Will throw on invalid JSON
+             } else {
+                 throw new Error('Response candidate missing valid JSON content');
+             }
+        }
+        
+        // 4. Validate & Apply Defaults
         if (typeof parsed !== 'object' || parsed === null) throw new Error('Parsed content is not a valid object');
 
         // Required fields with defaults
@@ -273,11 +286,15 @@ Output ONLY the JSON object.`;
         parsed.politicalLean = ['Left', 'Left-Leaning', 'Center', 'Right-Leaning', 'Right', 'Not Applicable'].includes(parsed.politicalLean) ? parsed.politicalLean : defaultLean;
         parsed.category = (typeof parsed.category === 'string' && parsed.category.trim()) ? parsed.category.trim() : 'General';
         
-        // New fields
+        // --- NEW CLUSTERING FIELDS ---
         parsed.isJunk = (parsed.isJunk === 'Yes' || parsed.isJunk === true); // Coerce to boolean
         parsed.clusterTopic = (typeof parsed.clusterTopic === 'string' && parsed.clusterTopic.trim()) ? parsed.clusterTopic.trim() : null;
-        // --- NEW: Parse 'country' field ---
-        parsed.country = (typeof parsed.country === 'string' && parsed.country.trim()) ? parsed.country.trim() : 'Global';
+        // Apply Country rule
+        parsed.country = ['USA', 'India'].includes(parsed.country) ? parsed.country : 'Global';
+        // Parse Nouns (set to null if empty string)
+        parsed.primaryNoun = (typeof parsed.primaryNoun === 'string' && parsed.primaryNoun.trim()) ? parsed.primaryNoun.trim() : null;
+        parsed.secondaryNoun = (typeof parsed.secondaryNoun === 'string' && parsed.secondaryNoun.trim()) ? parsed.secondaryNoun.trim() : null;
+        // --- END NEW FIELDS ---
 
 
         // Function to safely parse score (0-100), returns 0 if invalid or SentimentOnly
@@ -333,7 +350,6 @@ Output ONLY the JSON object.`;
         parsed.coverageLeft = typeof parsed.coverageLeft === 'number' ? parsed.coverageLeft : undefined;
         parsed.coverageCenter = typeof parsed.coverageCenter === 'number' ? parsed.coverageCenter : undefined;
         parsed.coverageRight = typeof parsed.coverageRight === 'number' ? parsed.coverageRight : undefined;
-        // clusterId is now handled by server.js
         
         return parsed; // Return validated object
 
