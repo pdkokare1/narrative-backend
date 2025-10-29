@@ -256,5 +256,6 @@ Output ONLY the JSON object.`;
         if (typeof text !== 'string' || !text.trim()) throw new Error('Response candidate missing valid text content');
 
         // 4. Extract JSON (Handles potential markdown)
+        // --- ** THIS IS THE FIX ** ---
         const jsonMatch = text.trim().match(/(?:
 
