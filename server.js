@@ -1,4 +1,4 @@
-// server.js (FINAL v2.13 - Smart Cluster, Feed Aggregation, New Stats)
+// server.js (FINAL v2.13b - Unlocked Admin Fetch)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -48,7 +48,34 @@ const apiLimiter = rateLimit({
   standardHeaders: true, 
   legacyHeaders: false, 
 });
-app.use('/api/', apiLimiter); // Apply limiter to API routes
+// --- Apply limiter to all API routes ---
+app.use('/api/', apiLimiter); 
+
+// --- *** MOVED THIS ENDPOINT *** ---
+// POST /api/fetch-news - Trigger background news fetch (UNPROTECTED)
+// This endpoint is moved *before* the checkAuth middleware
+// It is safe because it has its own 'isFetchRunning' lock
+let isFetchRunning = false; // Simple lock
+app.post('/api/fetch-news', (req, res) => {
+  if (isFetchRunning) {
+    console.warn('⚠️ Manual fetch trigger ignored: Fetch already running.');
+    return res.status(429).json({ message: 'Fetch process already running. Please wait.' });
+  }
+  console.log('📰 Manual fetch triggered via API...');
+  isFetchRunning = true;
+
+  // Respond to the user immediately
+  res.status(202).json({ message: 'Fetch acknowledged. Analysis starting in background.', timestamp: new Date().toISOString() });
+
+  // Run the fetch in the background
+  fetchAndAnalyzeNews()
+    .catch(err => { console.error('❌ FATAL Error during manually triggered fetch:', err.message); })
+    .finally(() => {
+        isFetchRunning = false;
+        console.log('🟢 Manual fetch background process finished.');
+     });
+});
+
 
 // --- Token Verification Middleware ---
 const checkAuth = async (req, res, next) => {
@@ -69,11 +96,11 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
-// Apply token check to ALL API routes
+// --- Apply token check to ALL OTHER API routes ---
 app.use('/api/', checkAuth);
 // --- END ---
 
-// --- USER PROFILE ROUTES ---
+// --- USER PROFILE ROUTES (PROTECTED) ---
 
 // GET /api/profile/me - Checks if a profile exists
 app.get('/api/profile/me', async (req, res) => {
@@ -133,7 +160,7 @@ app.post('/api/profile', async (req, res) => {
   }
 });
 
-// --- USER ACTIVITY LOGGING ---
+// --- USER ACTIVITY LOGGING (PROTECTED) ---
 
 // POST /api/activity/log-view
 app.post('/api/activity/log-view', async (req, res) => {
@@ -249,7 +276,7 @@ app.post('/api/activity/log-read', async (req, res) => {
 });
 
 
-// --- *** NEW: USER STATS ENDPOINT (v2) *** ---
+// --- USER STATS ENDPOINT (PROTECTED) ---
 // GET /api/profile/stats - Fetch ALL aggregated stats for a user
 app.get('/api/profile/stats', async (req, res) => {
   try {
@@ -379,7 +406,7 @@ app.get('/api/profile/stats', async (req, res) => {
             { $project: { _id: 0, action: '$_id', count: 1 } }
           ],
 
-          // --- *** NEW: Top Sources (Analyzed) *** ---
+          // --- Top Sources (Analyzed) ---
           topSources_read: [
             {
               $match: {
@@ -398,7 +425,7 @@ app.get('/api/profile/stats', async (req, res) => {
             { $project: { _id: 0, source: '$_id', count: 1 } }
           ],
           
-          // --- *** NEW: Sentiment Breakdown (Analyzed) *** ---
+          // --- Sentiment Breakdown (Analyzed) ---
           sentimentDistribution_read: [
             {
               $match: {
@@ -427,7 +454,6 @@ app.get('/api/profile/stats', async (req, res) => {
       categoryDistribution_read: stats[0]?.categoryDistribution_read || [],
       qualityDistribution_read: stats[0]?.qualityDistribution_read || [],
       totalCounts: stats[0]?.totalCounts || [],
-      // --- NEW: Add new stats to response ---
       topSources_read: stats[0]?.topSources_read || [],
       sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
     };
@@ -527,8 +553,8 @@ app.get('/', (req, res) => {
   });
 });
 
-// --- *** NEW: SMART FEED ENDPOINT (v2) *** ---
-// GET /api/articles - Fetch articles (PROTECTED)
+// --- SMART FEED ENDPOINT (PROTECTED) ---
+// GET /api/articles - Fetch articles
 app.get('/api/articles', async (req, res, next) => {
   try {
     // --- Parse and Validate Filters ---
@@ -539,7 +565,6 @@ app.get('/api/articles', async (req, res, next) => {
       sort: String(req.query.sort || 'Latest First'),
       limit: Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50), // Clamp limit 1-50
       offset: Math.max(parseInt(req.query.offset) || 0, 0),
-      // --- NEW FILTERS ---
       region: req.query.region && req.query.region !== 'All' ? String(req.query.region) : null,
       articleType: req.query.articleType && req.query.articleType !== 'All Types' ? String(req.query.articleType) : null,
     };
@@ -571,9 +596,7 @@ app.get('/api/articles', async (req, res, next) => {
     }
 
     // --- 2. Build the $sort (Sorting) stage ---
-    // This sort is applied *before* grouping to find the "newest" in each group
     let sortStage = { publishedAt: -1, createdAt: -1 }; 
-    // This sort is applied *after* grouping
     let postGroupSortStage = { "latestArticle.publishedAt": -1, "latestArticle.createdAt": -1 }; 
     
     switch(filters.sort) {
@@ -582,7 +605,6 @@ app.get('/api/articles', async (req, res, next) => {
             postGroupSortStage = { "latestArticle.trustScore": -1, "latestArticle.publishedAt": -1 };
             break;
         case 'Most Covered': 
-            // 'clusterId: 1' doesn't make sense here, we sort by the count
             postGroupSortStage = { clusterCount: -1, "latestArticle.publishedAt": -1 };
             break;
         case 'Lowest Bias': 
@@ -603,7 +625,7 @@ app.get('/api/articles', async (req, res, next) => {
       {
         $group: {
           _id: '$clusterId', // Group by the story
-          latestArticle: { $first: '$$ROOT' }, // Get the *first* article (which is the newest/highest quality due to $sort)
+          latestArticle: { $first: '$$ROOT' }, // Get the *first* article
           clusterCount: { $sum: 1 } // Count how many articles are in this group
         }
       },
@@ -685,13 +707,11 @@ app.get('/api/cluster/:clusterId', async (req, res, next) => {
       if (['Left', 'Left-Leaning'].includes(lean)) acc.left.push(article);
       else if (lean === 'Center') acc.center.push(article);
       else if (['Right-Leaning', 'Right'].includes(lean)) acc.right.push(article);
-      // --- NEW: Group 'Not Applicable' (reviews) separately ---
       else if (lean === 'Not Applicable') acc.reviews.push(article);
       return acc;
-    }, { left: [], center: [], right: [], reviews: [] }); // --- Added 'reviews' array
+    }, { left: [], center: [], right: [], reviews: [] }); 
 
     const totalArticles = articles.length;
-    // Calculate stats only on 'Full' analysis articles
     const fullAnalysisArticles = articles.filter(a => a.analysisType === 'Full');
     const fullCount = fullAnalysisArticles.length;
     
@@ -704,7 +724,7 @@ app.get('/api/cluster/:clusterId', async (req, res, next) => {
       leftCount: grouped.left.length, 
       centerCount: grouped.center.length, 
       rightCount: grouped.right.length,
-      reviewCount: grouped.reviews.length, // --- Added review count
+      reviewCount: grouped.reviews.length, 
       averageBias: calculateAverage('biasScore'), 
       averageTrust: calculateAverage('trustScore')
     };
@@ -765,25 +785,6 @@ app.get('/api/stats/keys', (req, res, next) => {
   }
 });
 
-// POST /api/fetch-news - Trigger background news fetch (PROTECTED)
-let isFetchRunning = false; // Simple lock
-app.post('/api/fetch-news', (req, res) => {
-  if (isFetchRunning) {
-    console.warn('⚠️ Manual fetch trigger ignored: Fetch already running.');
-    return res.status(429).json({ message: 'Fetch process already running. Please wait.' });
-  }
-  console.log('📰 Manual fetch triggered via API...');
-  isFetchRunning = true;
-
-  res.status(202).json({ message: 'Fetch acknowledged. Analysis starting background.', timestamp: new Date().toISOString() });
-
-  fetchAndAnalyzeNews()
-    .catch(err => { console.error('❌ FATAL Error during manually triggered fetch:', err.message); })
-    .finally(() => {
-        isFetchRunning = false;
-        console.log('🟢 Manual fetch background process finished.');
-     });
-});
 
 // --- Core Fetch/Analyze Function ---
 async function fetchAndAnalyzeNews() {
