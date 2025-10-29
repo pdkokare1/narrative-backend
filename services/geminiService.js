@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.7 - Current Context Fix, PDF Formulas)
+// services/geminiService.js (FINAL v2.13 - Country Tagging)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -186,13 +186,13 @@ class GeminiService {
   buildEnhancedPrompt(article) {
     const title = article?.title || "No Title";
     const description = article?.description || "No Description";
+    const sourceCountry = article?.source?.country || "unknown"; // from newsService
 
     // --- CRITICAL CONTEXT INJECTION ---
-    const currentDate = "October 24, 2025";
+    const currentDate = "October 29, 2025"; // Updated date
     const currentUSPresident = "Donald Trump";
     // ---------------------------------
 
-    // --- *** MODIFIED PROMPT *** ---
     return `CURRENT_CONTEXT: Today's date is ${currentDate}. The current President of the United States is ${currentUSPresident}. All analysis must reflect this present reality, not outdated information.
 
 Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
@@ -201,8 +201,8 @@ INSTRUCTIONS:
 1. 'analysisType': 'Full' for hard news (politics, economy, justice, etc.). Use 'SentimentOnly' for opinions, reviews, sports results, or tech product announcements.
 2. 'sentiment': 'Positive', 'Negative', or 'Neutral' (Reflecting the article's overall sentiment towards the main *subject* or *topic* of the news, not just the language tone).
 3. 'isJunk': 'Yes' if the article is purely promotional, sponsored content, an ad, or not a real news story. Otherwise, 'No'.
-4. 'clusterTopic': A 5-7 word generic topic name for the core news event (e.g., 'US Election Polls Q3', 'Ukraine Peace Summit', 'New iPhone Launch'). Null if not a news event.
-5. 'country': The primary country this event is happening in (e.g., 'USA', 'Ukraine', 'Global'). Use 'Global' for events with no specific country.
+4. 'clusterTopic': A 5-7 word generic topic for the core news event (e.g., 'US Election Polls Q3', 'Ukraine Peace Summit', 'New iPhone Launch'). Null if not a news event.
+5. 'country': The primary country the event *takes place in* or is *about* (e.g., "USA", "India", "Ukraine"). Use "Global" for widespread international events.
 6. If 'Full': Provide scores (0-100) for bias, credibility, reliability, and all components. Assign labels/grades.
 7. If 'SentimentOnly': Set ALL numerical scores (biasScore, credibilityScore, reliabilityScore, ALL component scores) strictly to 0. Set politicalLean to 'Not Applicable'.
 
@@ -215,7 +215,7 @@ JSON Structure:
   "sentiment": "Neutral",
   "isJunk": "No",
   "clusterTopic": "US-China Trade Talks",
-  "country": "USA",
+  "country": "Global",
   "biasScore": 50, "biasLabel": "Moderate",
   "biasComponents": {"linguistic": {"sentimentPolarity": 50,...}, "sourceSelection": {...}, "demographic": {...}, "framing": {...}},
   "credibilityScore": 75, "credibilityGrade": "B",
@@ -229,7 +229,6 @@ JSON Structure:
 }
 
 Output ONLY the JSON object.`;
-    // --- *** END OF MODIFIED PROMPT *** ---
   }
 
   // --- Parse and Validate Response ---
@@ -277,9 +276,8 @@ Output ONLY the JSON object.`;
         // New fields
         parsed.isJunk = (parsed.isJunk === 'Yes' || parsed.isJunk === true); // Coerce to boolean
         parsed.clusterTopic = (typeof parsed.clusterTopic === 'string' && parsed.clusterTopic.trim()) ? parsed.clusterTopic.trim() : null;
-        // --- *** NEW FIELD VALIDATION *** ---
+        // --- NEW: Parse 'country' field ---
         parsed.country = (typeof parsed.country === 'string' && parsed.country.trim()) ? parsed.country.trim() : 'Global';
-        // --- *** END NEW FIELD VALIDATION *** ---
 
 
         // Function to safely parse score (0-100), returns 0 if invalid or SentimentOnly
