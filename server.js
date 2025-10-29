@@ -476,6 +476,10 @@ const articleSchema = new mongoose.Schema({
   coverageRight: { type: Number, default: 0 },
   clusterId: { type: Number, index: true },
   clusterTopic: { type: String, index: true, trim: true }, // NEW FIELD FOR CLUSTERING
+  // --- *** NEW FIELDS START *** ---
+  country: { type: String, index: true, trim: true }, // NEW: AI-generated country of event
+  region: { type: String, index: true, trim: true }, // NEW: 'Global' or 'India'
+  // --- *** NEW FIELDS END *** ---
   keyFindings: [String],
   recommendations: [String],
   analysisVersion: { type: String, default: '2.11' } // Version bump
@@ -492,6 +496,10 @@ articleSchema.index({ trustScore: -1, publishedAt: -1 });
 articleSchema.index({ biasScore: 1, publishedAt: -1 });
 articleSchema.index({ createdAt: 1 }); // For cleanup
 articleSchema.index({ clusterTopic: 1, publishedAt: -1 }); // Index for new field
+// --- *** NEW INDEXES START *** ---
+articleSchema.index({ country: 1, publishedAt: -1 }); // NEW: Index for country
+articleSchema.index({ region: 1, publishedAt: -1 }); // NEW: Index for region
+// --- *** NEW INDEXES END *** ---
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 }); // NEW: For duplicate check
 articleSchema.index({ analysisType: 1, publishedAt: -1 }); // NEW: For review filter
 
