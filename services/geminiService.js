@@ -257,3 +257,4 @@ Output ONLY the JSON object.`;
 
         // 4. Extract JSON (Handles potential markdown)
         const jsonMatch = text.trim().match(/(?:
+
