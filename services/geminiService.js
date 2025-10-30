@@ -131,7 +131,7 @@ class GeminiService {
     if (!apiKey) throw new Error("Internal error: apiKey missing for makeAnalysisRequest");
 
     const prompt = this.buildEnhancedPrompt(article);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent?key=${apiKey}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${apiKey}`;
 
     try {
       const response = await axios.post(
