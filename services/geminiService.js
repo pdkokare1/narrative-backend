@@ -261,7 +261,7 @@ Output ONLY the JSON object.`;
         }
 
         // 3. Extract Text (This is now the JSON object itself)
-        const parsed = candidate.content?.parts?.[0]?.text;
+        let parsed = candidate.content?.parts?.[0]?.text;
         if (typeof parsed !== 'object' || parsed === null) {
              // Fallback for older models that might still wrap in text/markdown
              const text = candidate.content?.parts?.[0]?.text;
