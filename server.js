@@ -1,4 +1,4 @@
-// server.js (FINAL v2.14.3 - Feed Grouping Fix)
+// server.js (FINAL v2.14.3 - Feed Grouping Fix & ENV VAR FIX)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -21,7 +21,15 @@ const ActivityLog = require('./models/activityLogModel');
 
 // --- Initialize Firebase Admin ---
 try {
-  const serviceAccount = require('./serviceAccountKey.json');
+  // --- MODIFICATION: Read from Environment Variable ---
+  // We check for the environment variable 'FIREBASE_SERVICE_ACCOUNT'
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is not set.');
+  }
+  // We parse the variable, which will contain the JSON text
+  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  // --- END MODIFICATION ---
+
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
   });
