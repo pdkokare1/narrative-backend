@@ -1,4 +1,5 @@
-// server.js (FINAL v2.14.3 - Feed Grouping Fix & ENV VAR FIX)
+// In file: server.js
+// --- FIX: Moved the unprotected /api/fetch-news route to be *after* checkAuth ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -59,32 +60,6 @@ const apiLimiter = rateLimit({
 // --- Apply limiter to all API routes ---
 app.use('/api/', apiLimiter); 
 
-// --- *** MOVED THIS ENDPOINT *** ---
-// POST /api/fetch-news - Trigger background news fetch (UNPROTECTED)
-// This endpoint is moved *before* the checkAuth middleware
-// It is safe because it has its own 'isFetchRunning' lock
-let isFetchRunning = false; // Simple lock
-app.post('/api/fetch-news', (req, res) => {
-  if (isFetchRunning) {
-    console.warn('⚠️ Manual fetch trigger ignored: Fetch already running.');
-    return res.status(429).json({ message: 'Fetch process already running. Please wait.' });
-  }
-  console.log('📰 Manual fetch triggered via API...');
-  isFetchRunning = true;
-
-  // Respond to the user immediately
-  res.status(202).json({ message: 'Fetch acknowledged. Analysis starting in background.', timestamp: new Date().toISOString() });
-
-  // Run the fetch in the background
-  fetchAndAnalyzeNews()
-    .catch(err => { console.error('❌ FATAL Error during manually triggered fetch:', err.message); })
-    .finally(() => {
-        isFetchRunning = false;
-        console.log('🟢 Manual fetch background process finished.');
-     });
-});
-
-
 // --- Token Verification Middleware ---
 const checkAuth = async (req, res, next) => {
   const token = req.headers.authorization?.split('Bearer ')[1]; // Get token
@@ -106,7 +81,34 @@ const checkAuth = async (req, res, next) => {
 
 // --- Apply token check to ALL OTHER API routes ---
 app.use('/api/', checkAuth);
-// --- END ---
+// --- *** ALL ROUTES BELOW THIS LINE ARE NOW PROTECTED *** ---
+
+
+// --- *** MOVED THIS ENDPOINT *** ---
+// POST /api/fetch-news - Trigger background news fetch (NOW PROTECTED)
+// This endpoint is now *after* the checkAuth middleware
+let isFetchRunning = false; // Simple lock
+app.post('/api/fetch-news', (req, res) => {
+  // We are now protected, but we still use the lock as a best practice
+  if (isFetchRunning) {
+    console.warn('⚠️ Manual fetch trigger ignored: Fetch already running.');
+    return res.status(429).json({ message: 'Fetch process already running. Please wait.' });
+  }
+  console.log(`📰 Manual fetch triggered via API by user: ${req.user.uid}`);
+  isFetchRunning = true;
+
+  // Respond to the user immediately
+  res.status(202).json({ message: 'Fetch acknowledged. Analysis starting in background.', timestamp: new Date().toISOString() });
+
+  // Run the fetch in the background
+  fetchAndAnalyzeNews()
+    .catch(err => { console.error('❌ FATAL Error during manually triggered fetch:', err.message); })
+    .finally(() => {
+        isFetchRunning = false;
+        console.log('🟢 Manual fetch background process finished.');
+     });
+});
+
 
 // --- USER PROFILE ROUTES (PROTECTED) ---
 
