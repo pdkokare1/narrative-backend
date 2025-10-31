@@ -1,5 +1,5 @@
 // In file: server.js
-// --- UPDATED: Now uses hybrid semantic clustering ---
+// --- UPDATED: Awaits the async findBestMatch function ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -15,7 +15,7 @@ const admin = require('firebase-admin');
 // --- Services ---
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService');
-// --- NEW: Import the clustering service ---
+// --- Import the clustering service ---
 const clusteringService = require('./services/clusteringService');
 
 // --- Models ---
@@ -389,15 +389,13 @@ const articleSchema = new mongoose.Schema({
   coverageRight: { type: Number, default: 0 },
   clusterId: { type: Number, index: true },
   clusterTopic: { type: String, index: true, trim: true },
-  // --- NEW: FIELD FOR STORING THE VECTOR ---
-  clusterTopicVector: { type: [Number] },
-  // --- END NEW FIELD ---
+  clusterTopicVector: { type: [Number] }, // Field to store the vector
   country: { type: String, index: true, trim: true, default: 'Global' },
   primaryNoun: { type: String, index: true, trim: true, default: null },
   secondaryNoun: { type: String, index: true, trim: true, default: null },
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.20-hybrid' } // Version bump
+  analysisVersion: { type: String, default: '2.20-hybrid' }
 }, {
   timestamps: true,
   autoIndex: process.env.NODE_ENV !== 'production',
@@ -413,12 +411,7 @@ articleSchema.index({ createdAt: 1 });
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
 articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
-// --- UPDATED: 5-PART CLUSTER INDEX (REMOVED) ---
-// This is no longer the primary lookup method
-// articleSchema.index({ clusterTopic: 1, category: 1, country: 1, primaryNoun: 1, secondaryNoun: 1, publishedAt: -1 });
-
-// --- NEW: Index for vector clustering lookup ---
-// Simple index to find candidates for vector search
+// Index for vector clustering lookup
 articleSchema.index({ clusterTopicVector: 1, publishedAt: -1 });
 
 
@@ -829,7 +822,8 @@ async function fetchAndAnalyzeNews() {
                 }, { clusterId: 1, clusterTopicVector: 1 }).lean();
 
                 // 5.3. Find the best semantic match
-                const bestMatch = clusteringService.findBestMatch(newArticleData.clusterTopicVector, candidates);
+                // --- THIS IS THE FIX: Added 'await' ---
+                const bestMatch = await clusteringService.findBestMatch(newArticleData.clusterTopicVector, candidates);
 
                 if (bestMatch) {
                     // Found a strong match! Use its clusterId.
