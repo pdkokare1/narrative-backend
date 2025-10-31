@@ -260,7 +260,8 @@ Output ONLY the JSON object.`;
             if (!candidate.content?.parts?.[0]?.text) throw new Error(`Candidate stopped for ${candidate.finishReason} and has no text.`);
         }
 
-        // 3. Extract Text (This is now the JSON object itself)
+        // --- 3. Extract Text (This is now the JSON object itself) ---
+        // --- THIS IS THE FIX: 'const' changed to 'let' ---
         let parsed = candidate.content?.parts?.[0]?.text;
         if (typeof parsed !== 'object' || parsed === null) {
              // Fallback for older models that might still wrap in text/markdown
