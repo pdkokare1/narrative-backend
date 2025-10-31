@@ -1,4 +1,4 @@
-// server.js (FINAL v2.14.2 - Cluster ID Fix)
+// server.js (FINAL v2.14.3 - Feed Grouping Fix)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -631,7 +631,10 @@ app.get('/api/articles', async (req, res, next) => {
       // Stage 3: Group by clusterId to de-duplicate
       {
         $group: {
-          _id: '$clusterId', // Group by the story
+          // --- THIS IS THE FIX ---
+          // Group by clusterId, OR by the article's unique _id if clusterId is null
+          _id: { $ifNull: [ "$clusterId", "$_id" ] }, 
+          // --- END OF FIX ---
           latestArticle: { $first: '$$ROOT' }, // Get the *first* article
           clusterCount: { $sum: 1 } // Count how many articles are in this group
         }
