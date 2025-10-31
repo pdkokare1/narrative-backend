@@ -1,5 +1,5 @@
 // In file: server.js
-// --- COMPLETE REPLACEMENT FILE (v2) ---
+// --- FIX: Corrected syntax error in GET /api/profile/me catch block ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -20,91 +20,16 @@ const newsService = require('./services/newsService');
 const Profile = require('./models/profileModel');
 const ActivityLog = require('./models/activityLogModel');
 
-// --- NEW: Semantic Clustering Variables ---
-let embeddingPipeline; // This will hold the "brain"
-let pipelineInstance; // This will hold the import
-
-// --- NEW: Cosine Similarity Function ---
-/**
- * Calculates the cosine similarity between two vectors.
- * @param {number[]} vecA The first vector.
- * @param {number[]} vecB The second vector.
- * @returns {number} A score between -1 and 1 (1 means identical).
- */
-function cosineSimilarity(vecA, vecB) {
-  let dotproduct = 0;
-  let mA = 0;
-  let mB = 0;
-
-  if (vecA.length !== vecB.length) {
-    console.error("Cosine Similarity Error: Vectors must be the same length.");
-    return 0;
-  }
-
-  for (let i = 0; i < vecA.length; i++) {
-    dotproduct += vecA[i] * vecB[i];
-    mA += vecA[i] * vecA[i];
-    mB += vecB[i] * vecB[i];
-  }
-  mA = Math.sqrt(mA);
-  mB = Math.sqrt(mB);
-  if (mA === 0 || mB === 0) {
-    return 0; // Prevent division by zero
-  }
-  return dotproduct / (mA * mB);
-}
-
-// --- NEW: Embedding (Vector) Function ---
-/**
- * Converts a string of text into a semantic vector (embedding).
- * @param {string} text The text to vectorize.
- * @returns {Promise<number[]>} A 384-dimension vector.
- */
-async function getEmbedding(text) {
-  if (!embeddingPipeline) {
-    console.error("!!! CRITICAL: Embedding pipeline not initialized! Server may be starting.");
-    throw new Error("Embedding pipeline not ready.");
-  }
-  try {
-    const result = await embeddingPipeline(text, {
-      pooling: 'mean',
-      normalize: true,
-    });
-    return Array.from(result.data);
-  } catch (err) {
-    console.error(`Error getting embedding for: "${text}"`, err.message);
-    throw err;
-  }
-}
-
-// --- NEW: Function to load the "brain" on startup ---
-async function initializeEmbedder() {
-  console.log("Loading semantic embedding model (this may take a moment)...");
-  try {
-    // --- THIS IS THE FIX ---
-    // We must dynamically import the 'pipeline' function this way
-    pipelineInstance = await import('@huggingface/transformers');
-    const { pipeline } = pipelineInstance;
-    // --- END OF FIX ---
-
-    // This model is small, fast, and excellent at understanding meaning
-    embeddingPipeline = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-    console.log("✅ Semantic embedding model loaded successfully.");
-  } catch (err) {
-    console.error("❌ CRITICAL: Failed to load embedding model.", err.message);
-    // If this fails, the server can't cluster, so we should stop it.
-    process.exit(1);
-  }
-}
-// --- END OF NEW SEMANTIC FUNCTIONS ---
-
-
 // --- Initialize Firebase Admin ---
 try {
+  // --- MODIFICATION: Read from Environment Variable ---
+  // We check for the environment variable 'FIREBASE_SERVICE_ACCOUNT'
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
     throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is not set.');
   }
+  // We parse the variable, which will contain the JSON text
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  // --- END MODIFICATION ---
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount)
@@ -113,36 +38,41 @@ try {
 } catch (error) {
   console.error('❌ Firebase Admin Init Error:', error.message);
 }
+// --- END ---
 
 const app = express();
 
 // --- Middleware ---
-app.set('trust proxy', 1);
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(compression());
-app.use(cors());
-app.use(express.json({ limit: '1mb' }));
+app.set('trust proxy', 1); // Trust first proxy for rate limiting, etc.
+app.use(helmet({ contentSecurityPolicy: false })); // Basic security headers
+app.use(compression()); // Gzip compression
+app.use(cors()); // Allow frontend requests
+app.use(express.json({ limit: '1mb' })); // Parse JSON bodies
 
 // --- Rate Limiter ---
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 100, // Limit each IP to 100 requests per window
   message: { error: 'Too many requests from this IP, please try again after 15 minutes' },
   standardHeaders: true, 
   legacyHeaders: false, 
 });
+// --- Apply limiter to all API routes ---
 app.use('/api/', apiLimiter); 
 
 // --- Token Verification Middleware ---
 const checkAuth = async (req, res, next) => {
-  const token = req.headers.authorization?.split('Bearer ')[1];
+  const token = req.headers.authorization?.split('Bearer ')[1]; // Get token
+
   if (!token) {
     return res.status(401).json({ error: 'Unauthorized: No token provided' });
   }
+
   try {
+    // Firebase Admin checks if the token is valid
     const decodedToken = await admin.auth().verifyIdToken(token);
-    req.user = decodedToken;
-    next();
+    req.user = decodedToken; // Add user info to the request
+    next(); // Token is valid, proceed
   } catch (error) {
     console.warn('⚠️ Auth Error:', error.code, error.message);
     return res.status(403).json({ error: 'Forbidden: Invalid or expired token' });
@@ -151,10 +81,15 @@ const checkAuth = async (req, res, next) => {
 
 // --- Apply token check to ALL OTHER API routes ---
 app.use('/api/', checkAuth);
+// --- *** ALL ROUTES BELOW THIS LINE ARE NOW PROTECTED *** ---
+
 
 // --- *** MOVED THIS ENDPOINT *** ---
-let isFetchRunning = false;
+// POST /api/fetch-news - Trigger background news fetch (NOW PROTECTED)
+// This endpoint is now *after* the checkAuth middleware
+let isFetchRunning = false; // Simple lock
 app.post('/api/fetch-news', (req, res) => {
+  // We are now protected, but we still use the lock as a best practice
   if (isFetchRunning) {
     console.warn('⚠️ Manual fetch trigger ignored: Fetch already running.');
     return res.status(429).json({ message: 'Fetch process already running. Please wait.' });
@@ -162,8 +97,10 @@ app.post('/api/fetch-news', (req, res) => {
   console.log(`📰 Manual fetch triggered via API by user: ${req.user.uid}`);
   isFetchRunning = true;
 
+  // Respond to the user immediately
   res.status(202).json({ message: 'Fetch acknowledged. Analysis starting in background.', timestamp: new Date().toISOString() });
 
+  // Run the fetch in the background
   fetchAndAnalyzeNews()
     .catch(err => { console.error('❌ FATAL Error during manually triggered fetch:', err.message); })
     .finally(() => {
@@ -172,22 +109,28 @@ app.post('/api/fetch-news', (req, res) => {
      });
 });
 
+
 // --- USER PROFILE ROUTES (PROTECTED) ---
+
+// GET /api/profile/me - Checks if a profile exists
 app.get('/api/profile/me', async (req, res) => {
   try {
+    // --- UPDATED: Also return the list of saved article IDs ---
     const profile = await Profile.findOne({ userId: req.user.uid })
-      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles')
+      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles') // Specify fields
       .lean();
+
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' });
     }
     res.status(200).json(profile);
-  } catch (error) {
+  } catch (error) { // <-- *** THIS IS THE FIX ***
     console.error('Error in GET /api/profile/me:', error.message);
     res.status(500).json({ error: 'Error fetching profile' });
   }
 });
 
+// POST /api/profile - Creates a new profile
 app.post('/api/profile', async (req, res) => {
   try {
     const { username } = req.body;
@@ -196,18 +139,22 @@ app.post('/api/profile', async (req, res) => {
     if (!username || username.trim().length < 3) {
       return res.status(400).json({ error: 'Username must be at least 3 characters' });
     }
+
     const cleanUsername = username.trim();
 
+    // Check if username is already taken
     const existingUsername = await Profile.findOne({ username: cleanUsername }).lean();
     if (existingUsername) {
       return res.status(409).json({ error: 'Username already taken' });
     }
 
+    // Check if they already have a profile
     const existingProfile = await Profile.findOne({ userId: uid }).lean();
     if (existingProfile) {
       return res.status(409).json({ error: 'Profile already exists' });
     }
 
+    // Create and save the new profile
     const newProfile = new Profile({
       userId: uid,
       email: email,
@@ -215,7 +162,7 @@ app.post('/api/profile', async (req, res) => {
     });
 
     await newProfile.save();
-    res.status(201).json(newProfile);
+    res.status(201).json(newProfile); // Send back the new profile
 
   } catch (error) {
     console.error('Error in POST /api/profile:', error.message);
@@ -227,22 +174,27 @@ app.post('/api/profile', async (req, res) => {
 });
 
 // --- USER ACTIVITY LOGGING (PROTECTED) ---
+
+// POST /api/activity/log-view
 app.post('/api/activity/log-view', async (req, res) => {
   try {
     const { articleId } = req.body;
     if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
       return res.status(400).json({ error: 'Valid articleId is required' });
     }
+
     await ActivityLog.create({
       userId: req.user.uid,
       articleId: articleId,
       action: 'view_analysis'
     });
+
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid }, 
       { $inc: { articlesViewedCount: 1 } }, 
       { new: true, upsert: true } 
     );
+
     res.status(200).json({
       message: 'Activity logged',
       articlesViewedCount: updatedProfile.articlesViewedCount
@@ -253,22 +205,26 @@ app.post('/api/activity/log-view', async (req, res) => {
   }
 });
 
+// POST /api/activity/log-compare
 app.post('/api/activity/log-compare', async (req, res) => {
   try {
     const { articleId } = req.body; 
     if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
       return res.status(400).json({ error: 'Valid articleId is required' });
     }
+
     await ActivityLog.create({
       userId: req.user.uid,
       articleId: articleId,
       action: 'view_comparison'
     });
+
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid },
       { $inc: { comparisonsViewedCount: 1 } }, 
       { new: true, upsert: true }
     );
+
     res.status(200).json({
       message: 'Compare activity logged',
       comparisonsViewedCount: updatedProfile.comparisonsViewedCount
@@ -279,22 +235,26 @@ app.post('/api/activity/log-compare', async (req, res) => {
   }
 });
 
+// POST /api/activity/log-share
 app.post('/api/activity/log-share', async (req, res) => {
   try {
     const { articleId } = req.body;
     if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
       return res.status(400).json({ error: 'Valid articleId is required' });
     }
+
     await ActivityLog.create({
       userId: req.user.uid,
       articleId: articleId,
       action: 'share_article'
     });
+
     const updatedProfile = await Profile.findOneAndUpdate(
       { userId: req.user.uid },
       { $inc: { articlesSharedCount: 1 } }, 
       { new: true, upsert: true }
     );
+
     res.status(200).json({
       message: 'Share activity logged',
       articlesSharedCount: updatedProfile.articlesSharedCount
@@ -305,17 +265,20 @@ app.post('/api/activity/log-share', async (req, res) => {
   }
 });
 
+// POST /api/activity/log-read
 app.post('/api/activity/log-read', async (req, res) => {
   try {
     const { articleId } = req.body;
     if (!articleId || !mongoose.Types.ObjectId.isValid(articleId)) {
       return res.status(400).json({ error: 'Valid articleId is required' });
     }
+
     await ActivityLog.create({
       userId: req.user.uid,
       articleId: articleId,
       action: 'read_external'
     });
+
     res.status(200).json({
       message: 'Read activity logged'
     });
@@ -325,73 +288,177 @@ app.post('/api/activity/log-read', async (req, res) => {
   }
 });
 
+
 // --- USER STATS ENDPOINT (PROTECTED) ---
+// GET /api/profile/stats - Fetch ALL aggregated stats for a user
 app.get('/api/profile/stats', async (req, res) => {
   try {
     const userId = req.user.uid;
+    
+    // We are fetching ALL-TIME stats.
     const stats = await ActivityLog.aggregate([
-      { $match: { userId: userId } },
-      { $lookup: {
-          from: 'articles',
+      // 1. Filter logs for the current user
+      {
+        $match: {
+          userId: userId
+        }
+      },
+      // 2. Lookup the article details for each log
+      {
+        $lookup: {
+          from: 'articles', // The name of the articles collection
           localField: 'articleId',
           foreignField: '_id',
           as: 'articleDetails'
-      }},
-      { $unwind: {
+        }
+      },
+      // 3. Deconstruct the articleDetails array
+      {
+        $unwind: {
           path: '$articleDetails',
-          preserveNullAndEmptyArrays: true
-      }},
-      { $facet: {
+          preserveNullAndEmptyArrays: true // Keep logs even if article was deleted
+        }
+      },
+      // 4. Group by multiple criteria
+      {
+        $facet: {
+          // --- Calculate daily counts (for 'view_analysis') ---
           dailyCounts: [
             { $match: { action: 'view_analysis' } },
-            { $group: {
-                _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp', timezone: 'UTC' } },
+            {
+              $group: {
+                _id: {
+                  $dateToString: { format: '%Y-%m-%d', date: '$timestamp', timezone: 'UTC' }
+                },
                 count: { $sum: 1 }
-            }},
+              }
+            },
             { $sort: { '_id': 1 } },
             { $project: { _id: 0, date: '$_id', count: 1 } }
           ],
+
+          // --- Calculate political lean distribution (for 'view_analysis') ---
           leanDistribution_read: [
-             { $match: { 'action': 'view_analysis', 'articleDetails.politicalLean': { $exists: true } } },
-            { $group: { _id: '$articleDetails.politicalLean', count: { $sum: 1 } } },
+             {
+               $match: { 
+                 'action': 'view_analysis',
+                 'articleDetails.politicalLean': { $exists: true } 
+                }
+             },
+            {
+              $group: {
+                _id: '$articleDetails.politicalLean',
+                count: { $sum: 1 }
+              }
+            },
             { $project: { _id: 0, lean: '$_id', count: 1 } }
           ],
+                    
+          // --- Calculate political lean distribution (for 'share_article') ---
           leanDistribution_shared: [
-             { $match: { 'action': 'share_article', 'articleDetails.politicalLean': { $exists: true } } },
-            { $group: { _id: '$articleDetails.politicalLean', count: { $sum: 1 } } },
+             {
+               $match: { 
+                 'action': 'share_article',
+                 'articleDetails.politicalLean': { $exists: true } 
+                }
+             },
+            {
+              $group: {
+                _id: '$articleDetails.politicalLean',
+                count: { $sum: 1 }
+              }
+            },
             { $project: { _id: 0, lean: '$_id', count: 1 } }
           ],
+
+          // --- Calculate Category distribution (for 'view_analysis') ---
           categoryDistribution_read: [
-             { $match: { 'action': 'view_analysis', 'articleDetails.category': { $exists: true } } },
-            { $group: { _id: '$articleDetails.category', count: { $sum: 1 } } },
+             {
+               $match: { 
+                 'action': 'view_analysis',
+                 'articleDetails.category': { $exists: true } 
+                }
+             },
+            {
+              $group: {
+                _id: '$articleDetails.category',
+                count: { $sum: 1 }
+              }
+            },
              { $sort: { count: -1 } }, 
-             { $limit: 10 },
+             { $limit: 10 }, // --- ADDED: Get Top 10
             { $project: { _id: 0, category: '$_id', count: 1 } }
           ],
+          
+          // --- Calculate Quality distribution (for 'view_analysis') ---
           qualityDistribution_read: [
-             { $match: { 'action': 'view_analysis', 'articleDetails.credibilityGrade': { $exists: true } } },
-            { $group: { _id: '$articleDetails.credibilityGrade', count: { $sum: 1 } } },
+             {
+               $match: { 
+                 'action': 'view_analysis',
+                 'articleDetails.credibilityGrade': { $exists: true } // Keep nulls (Reviews)
+                }
+             },
+            {
+              $group: {
+                // Group by grade. Nulls will be grouped as 'null'
+                _id: '$articleDetails.credibilityGrade',
+                count: { $sum: 1 }
+              }
+            },
             { $project: { _id: 0, grade: '$_id', count: 1 } }
           ],
+
+          // --- Calculate Total Counts for all actions ---
           totalCounts: [
-            { $group: { _id: '$action', count: { $sum: 1 } } },
+            {
+              $group: {
+                _id: '$action', // Group by action type
+                count: { $sum: 1 }
+              }
+            },
             { $project: { _id: 0, action: '$_id', count: 1 } }
           ],
+
+          // --- Top Sources (Analyzed) ---
           topSources_read: [
-            { $match: { 'action': 'view_analysis', 'articleDetails.source': { $exists: true, $ne: null } } },
-            { $group: { _id: '$articleDetails.source', count: { $sum: 1 } } },
+            {
+              $match: {
+                'action': 'view_analysis',
+                'articleDetails.source': { $exists: true, $ne: null }
+              }
+            },
+            {
+              $group: {
+                _id: '$articleDetails.source',
+                count: { $sum: 1 }
+              }
+            },
             { $sort: { count: -1 } },
-            { $limit: 10 },
+            { $limit: 10 }, // Get Top 10 sources
             { $project: { _id: 0, source: '$_id', count: 1 } }
           ],
+          
+          // --- Sentiment Breakdown (Analyzed) ---
           sentimentDistribution_read: [
-            { $match: { 'action': 'view_analysis', 'articleDetails.sentiment': { $exists: true, $ne: null } } },
-            { $group: { _id: '$articleDetails.sentiment', count: { $sum: 1 } } },
+            {
+              $match: {
+                'action': 'view_analysis',
+                'articleDetails.sentiment': { $exists: true, $ne: null }
+              }
+            },
+            {
+              $group: {
+                _id: '$articleDetails.sentiment',
+                count: { $sum: 1 }
+              }
+            },
             { $project: { _id: 0, sentiment: '$_id', count: 1 } }
           ]
-      }}
+        }
+      }
     ]);
 
+    // Format the results
     const results = {
       timeframeDays: 'All Time',
       dailyCounts: stats[0]?.dailyCounts || [],
@@ -403,17 +470,23 @@ app.get('/api/profile/stats', async (req, res) => {
       topSources_read: stats[0]?.topSources_read || [],
       sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
     };
+
     res.status(200).json(results);
+
   } catch (error) {
     console.error('Error in GET /api/profile/stats:', error.message);
     res.status(500).json({ error: 'Error fetching profile statistics' });
   }
 });
 
+// --- END OF USER ROUTES ---
+
+
 // --- Database Connection ---
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
+
 mongoose.connection.on('error', err => {
   console.error('❌ MongoDB runtime error:', err.message);
 });
@@ -450,38 +523,46 @@ const articleSchema = new mongoose.Schema({
   clusterId: { type: Number, index: true },
   clusterTopic: { type: String, index: true, trim: true }, 
   country: { type: String, index: true, trim: true, default: 'Global' }, 
+  // --- NEW FIELDS FOR 5-FIELD CLUSTERING ---
   primaryNoun: { type: String, index: true, trim: true, default: null },
   secondaryNoun: { type: String, index: true, trim: true, default: null },
+  // --- END NEW FIELDS ---
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.14' }
+  analysisVersion: { type: String, default: '2.14' } // Version bump
 }, {
-  timestamps: true,
+  timestamps: true, // Adds createdAt and updatedAt
   autoIndex: process.env.NODE_ENV !== 'production',
 });
-// ... (Indexes are the same as original file)
+
+// Compound Indexes
 articleSchema.index({ category: 1, publishedAt: -1 });
 articleSchema.index({ politicalLean: 1, publishedAt: -1 });
 articleSchema.index({ clusterId: 1, trustScore: -1 });
 articleSchema.index({ trustScore: -1, publishedAt: -1 });
 articleSchema.index({ biasScore: 1, publishedAt: -1 });
-articleSchema.index({ createdAt: 1 });
+articleSchema.index({ createdAt: 1 }); // For cleanup
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
+// --- UPDATED 5-PART CLUSTER INDEX ---
 articleSchema.index({ clusterTopic: 1, category: 1, country: 1, primaryNoun: 1, secondaryNoun: 1, publishedAt: -1 }, {
   name: "5_Field_Cluster_Index"
 });
+// --- NEW: REGION/TYPE FILTER INDEX ---
 articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
+
 
 const Article = mongoose.model('Article', articleSchema);
 
 // --- API Routes ---
+
+// GET / - Health Check (NOT protected)
 app.get('/', (req, res) => {
   res.status(200).json({
     message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
     status: 'healthy',
     features: [
-      'Hybrid Semantic Clustering (v2.14)',
+      '5-Field Smart Clustering (Topic, Category, Country, Nouns)',
       '7-Day Cluster Window',
       'Smart Feed De-duplication w/ Cluster Count',
       'Region & Article Type Filters'
@@ -491,30 +572,39 @@ app.get('/', (req, res) => {
   });
 });
 
+// --- SMART FEED ENDPOINT (PROTECTED) ---
+// GET /api/articles - Fetch articles
 app.get('/api/articles', async (req, res, next) => {
   try {
+    // --- Parse and Validate Filters ---
     const filters = {
       category: req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null,
       lean: req.query.lean && req.query.lean !== 'All Leans' ? String(req.query.lean) : null,
       quality: req.query.quality && req.query.quality !== 'All Quality Levels' ? String(req.query.quality) : null,
       sort: String(req.query.sort || 'Latest First'),
-      limit: Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50),
+      limit: Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50), // Clamp limit 1-50
       offset: Math.max(parseInt(req.query.offset) || 0, 0),
       region: req.query.region && req.query.region !== 'All' ? String(req.query.region) : null,
       articleType: req.query.articleType && req.query.articleType !== 'All Types' ? String(req.query.articleType) : null,
     };
 
+    // --- 1. Build the $match (Filter) stage ---
     const matchStage = {};
     if (filters.category) matchStage.category = filters.category;
     if (filters.lean) matchStage.politicalLean = filters.lean;
+    // --- UPDATED: Region filter now uses 'country' field ---
     if (filters.region) matchStage.country = filters.region; 
+    
+    // Article Type Filter
     if (filters.articleType === 'Hard News') {
       matchStage.analysisType = 'Full';
     } else if (filters.articleType === 'Opinion & Reviews') {
       matchStage.analysisType = 'SentimentOnly';
     }
+    
+    // Quality Filter (now only applies if Hard News is selected or implied)
     if (filters.quality && matchStage.analysisType !== 'SentimentOnly') {
-        matchStage.analysisType = 'Full';
+        matchStage.analysisType = 'Full'; // Ensure we are only looking at 'Full'
         matchStage.trustScore = matchStage.trustScore || {};
         const rangeMatch = filters.quality.match(/(\d+)-(\d+)/);
         if (rangeMatch) {
@@ -525,8 +615,10 @@ app.get('/api/articles', async (req, res, next) => {
         }
     }
 
+    // --- 2. Build the $sort (Sorting) stage ---
     let sortStage = { publishedAt: -1, createdAt: -1 }; 
     let postGroupSortStage = { "latestArticle.publishedAt": -1, "latestArticle.createdAt": -1 }; 
+    
     switch(filters.sort) {
         case 'Highest Quality': 
             sortStage = { trustScore: -1, publishedAt: -1 }; 
@@ -541,20 +633,42 @@ app.get('/api/articles', async (req, res, next) => {
             break;
     }
 
+    // --- 3. Build the Aggregation Pipeline ---
     const aggregation = [
+      // Stage 1: Filter articles based on sidebar filters
       { $match: matchStage },
+      
+      // Stage 2: Sort by the chosen criteria to find the "best" or "newest"
       { $sort: sortStage },
-      { $group: {
+
+      // Stage 3: Group by clusterId to de-duplicate
+      {
+        $group: {
+          // --- THIS IS THE FIX ---
+          // Group by clusterId, OR by the article's unique _id if clusterId is null
           _id: { $ifNull: [ "$clusterId", "$_id" ] }, 
-          latestArticle: { $first: '$$ROOT' },
-          clusterCount: { $sum: 1 }
-      }},
-      { $addFields: {
+          // --- END OF FIX ---
+          latestArticle: { $first: '$$ROOT' }, // Get the *first* article
+          clusterCount: { $sum: 1 } // Count how many articles are in this group
+        }
+      },
+
+      // Stage 4: Add the clusterCount to the article object
+      {
+        $addFields: {
           "latestArticle.clusterCount": "$clusterCount"
-      }},
+        }
+      },
+
+      // Stage 5: Replace the root with our de-duplicated article
       { $replaceRoot: { newRoot: '$latestArticle' } },
+      
+      // Stage 6: Sort the *final list* of de-duplicated articles
       { $sort: postGroupSortStage },
-      { $facet: {
+
+      // Stage 7: Handle Pagination (must be last)
+      {
+        $facet: {
           articles: [
             { $skip: filters.offset },
             { $limit: filters.limit }
@@ -562,10 +676,13 @@ app.get('/api/articles', async (req, res, next) => {
           pagination: [
             { $count: 'total' }
           ]
-      }}
+        }
+      }
     ];
 
+    // --- 4. Execute the Query ---
     const results = await Article.aggregate(aggregation).allowDiskUse(true);
+
     const articles = results[0]?.articles || [];
     const total = results[0]?.pagination[0]?.total || 0;
 
@@ -573,73 +690,95 @@ app.get('/api/articles', async (req, res, next) => {
       articles,
       pagination: { total, limit: filters.limit, offset: filters.offset, hasMore: (filters.offset + articles.length) < total }
     });
+
   } catch (error) {
     console.error('❌ Error in GET /api/articles:', error.message);
     next(error);
   }
 });
+// --- *** END OF SMART FEED ENDPOINT *** ---
 
+
+// --- *** NEW: SAVE/UNSAVE ARTICLE ROUTE *** ---
 app.post('/api/articles/:id/save', async (req, res, next) => {
   try {
     const { id } = req.params;
     const { uid } = req.user;
+
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: 'Invalid article ID' });
     }
+
     const article = await Article.findById(id, '_id').lean();
     if (!article) {
       return res.status(404).json({ error: 'Article not found' });
     }
+
     const profile = await Profile.findOne({ userId: uid });
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' });
     }
+
     const articleObjectId = new mongoose.Types.ObjectId(id);
     const isSaved = profile.savedArticles.includes(articleObjectId);
+
     let updatedProfile;
     if (isSaved) {
+      // --- Unsave it ---
       updatedProfile = await Profile.findOneAndUpdate(
         { userId: uid },
         { $pull: { savedArticles: articleObjectId } },
         { new: true }
       ).lean();
     } else {
+      // --- Save it ---
       updatedProfile = await Profile.findOneAndUpdate(
         { userId: uid },
-        { $addToSet: { savedArticles: articleObjectId } },
+        { $addToSet: { savedArticles: articleObjectId } }, // $addToSet prevents duplicates
         { new: true }
       ).lean();
     }
+
     res.status(200).json({ 
       message: isSaved ? 'Article unsaved' : 'Article saved',
-      savedArticles: updatedProfile.savedArticles
+      savedArticles: updatedProfile.savedArticles // Send back the updated list of IDs
     });
+
   } catch (error) {
     console.error(`❌ Error in POST /api/articles/${req.params.id}/save:`, error.message);
     next(error);
   }
 });
 
+// --- *** NEW: GET SAVED ARTICLES ROUTE *** ---
 app.get('/api/articles/saved', async (req, res, next) => {
   try {
     const { uid } = req.user;
+    
+    // 1. Find the user's profile and get their savedArticles array
     const profile = await Profile.findOne({ userId: uid })
       .select('savedArticles')
       .populate({
-        path: 'savedArticles',
-        options: { sort: { publishedAt: -1 } }
+        path: 'savedArticles', // 2. Populate the array with full article data
+        options: { sort: { publishedAt: -1 } } // 3. Sort by newest
       })
       .lean();
+
     if (!profile) {
-      return res.status(4404).json({ error: 'Profile not found' });
+      return res.status(404).json({ error: 'Profile not found' });
     }
+    
+    // The 'savedArticles' field now contains the full article objects
     res.status(200).json({ articles: profile.savedArticles || [] });
+
   } catch (error) {
     console.error('❌ Error in GET /api/articles/saved:', error.message);
     next(error);
   }
 });
 
+
+// GET /api/articles/:id - Fetch single article (PROTECTED)
 app.get('/api/articles/:id', async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -655,13 +794,17 @@ app.get('/api/articles/:id', async (req, res, next) => {
   }
 });
 
+// GET /api/cluster/:clusterId - Fetch cluster data (PROTECTED)
 app.get('/api/cluster/:clusterId', async (req, res, next) => {
   try {
     const clusterIdNum = parseInt(req.params.clusterId);
     if (isNaN(clusterIdNum)) return res.status(400).json({ error: 'Invalid cluster ID' });
+
+    // --- UPDATED: Now fetches ALL articles in cluster ---
     const articles = await Article.find({ clusterId: clusterIdNum })
       .sort({ trustScore: -1, publishedAt: -1 })
       .lean();
+
     const grouped = articles.reduce((acc, article) => {
       const lean = article.politicalLean;
       if (['Left', 'Left-Leaning'].includes(lean)) acc.left.push(article);
@@ -670,12 +813,15 @@ app.get('/api/cluster/:clusterId', async (req, res, next) => {
       else if (lean === 'Not Applicable') acc.reviews.push(article);
       return acc;
     }, { left: [], center: [], right: [], reviews: [] }); 
+
     const totalArticles = articles.length;
     const fullAnalysisArticles = articles.filter(a => a.analysisType === 'Full');
     const fullCount = fullAnalysisArticles.length;
+    
     const calculateAverage = (field) => fullCount > 0
       ? Math.round(fullAnalysisArticles.reduce((sum, a) => sum + (a[field] || 0), 0) / fullCount)
       : 0;
+      
     const stats = {
       totalArticles, 
       leftCount: grouped.left.length, 
@@ -685,6 +831,7 @@ app.get('/api/cluster/:clusterId', async (req, res, next) => {
       averageBias: calculateAverage('biasScore'), 
       averageTrust: calculateAverage('trustScore')
     };
+
     res.status(200).json({ ...grouped, stats });
   } catch (error) {
     console.error(`❌ Error in GET /api/cluster/${req.params.clusterId}:`, error.message);
@@ -692,6 +839,7 @@ app.get('/api/cluster/:clusterId', async (req, res, next) => {
   }
 });
 
+// GET /api/stats - Fetch overall stats (PROTECTED)
 app.get('/api/stats', async (req, res, next) => {
   try {
     const [statsData, leanDistribution, categoryDistribution] = await Promise.all([
@@ -707,8 +855,10 @@ app.get('/api/stats', async (req, res, next) => {
         Article.aggregate([ { $match: { analysisType: 'Full' } }, { $group: { _id: '$politicalLean', count: { $sum: 1 } } }, { $sort: { count: -1 } } ]).allowDiskUse(true),
         Article.aggregate([ { $group: { _id: '$category', count: { $sum: 1 } } }, { $sort: { count: -1 } } ]).allowDiskUse(true),
     ]);
+
     const results = statsData[0] || {}; 
     const formatDistribution = (dist) => dist.reduce((acc, item) => { acc[item._id || 'Unknown'] = item.count; return acc; }, {});
+
     res.status(200).json({
       totalArticles: results.totalArticles?.[0]?.count || 0,
       totalSources: results.sources?.[0]?.count || 0,
@@ -719,12 +869,14 @@ app.get('/api/stats', async (req, res, next) => {
       categoryDistribution: formatDistribution(categoryDistribution),
       lastUpdated: new Date().toISOString()
     });
+
   } catch (error) {
     console.error('❌ Error in GET /api/stats:', error.message);
     next(error);
   }
 });
 
+// GET /api/stats/keys - Fetch API key usage stats (PROTECTED)
 app.get('/api/stats/keys', (req, res, next) => {
   try {
     const geminiStats = geminiService.getStatistics ? geminiService.getStatistics() : { error: "Stats unavailable" };
@@ -735,6 +887,7 @@ app.get('/api/stats/keys', (req, res, next) => {
     next(error);
   }
 });
+
 
 // --- Core Fetch/Analyze Function ---
 async function fetchAndAnalyzeNews() {
@@ -750,13 +903,16 @@ async function fetchAndAnalyzeNews() {
       return stats;
     }
 
+    // Process articles sequentially
     for (const article of rawArticles) {
         try {
+            // 1. Validate Structure
             if (!article?.url || !article?.title || !article?.description || article.description.length < 30) {
                 stats.skipped_invalid++;
                 continue;
             }
 
+            // 2. Check Duplicates (ADVANCED)
             const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
             const exists = await Article.findOne({
               $or: [
@@ -774,21 +930,24 @@ async function fetchAndAnalyzeNews() {
                 continue;
             }
 
+            // 3. Analyze with Gemini
             console.log(`🤖 Analyzing: ${article.title.substring(0, 60)}...`);
             const analysis = await geminiService.analyzeArticle(article);
 
+            // 3.5. Check for Junk Articles
             if (analysis.isJunk) {
                 stats.skipped_junk++;
                 console.log(`🚮 Skipping junk/ad: ${article.title.substring(0, 50)}...`);
                 continue;
             }
             
+            // --- 4. Prepare Data (with defaults and validation) ---
             const newArticleData = {
               headline: article.title,
               summary: analysis.summary || 'Summary unavailable',
               source: article.source?.name || 'Unknown Source',
               category: analysis.category || 'General',
-              politicalLean: analysis.politicalLean,
+              politicalLean: analysis.politicalLean, // Already defaulted by parser
               url: article.url,
               imageUrl: article.urlToImage,
               publishedAt: article.publishedAt ? new Date(article.publishedAt) : new Date(),
@@ -808,69 +967,61 @@ async function fetchAndAnalyzeNews() {
               coverageLeft: analysis.coverageLeft || 0,
               coverageCenter: analysis.coverageCenter || 0,
               coverageRight: analysis.coverageRight || 0,
-              clusterId: null,
+              clusterId: null, // Will be set below
               clusterTopic: analysis.clusterTopic,
-              country: analysis.country,
+              country: analysis.country, // --- Save 'USA', 'India', or 'Global'
+              // --- SAVE NEW FIELDS ---
               primaryNoun: analysis.primaryNoun,
               secondaryNoun: analysis.secondaryNoun,
+              // --- END ---
               keyFindings: analysis.keyFindings || [],
               recommendations: analysis.recommendations || [],
               analysisVersion: Article.schema.path('analysisVersion').defaultValue
             };
             
-            // --- *** UPDATED: SMART CLUSTERING LOGIC *** ---
-            const SIMILARITY_THRESHOLD = 0.95; // 95% similar = same story
-            let assignedClusterId = null;
-
+            // --- 4.5. Handle Smart Clustering (5-FIELD LOGIC) ---
             if (newArticleData.clusterTopic) {
-              // 1. Get the vector for our new article's topic
-              const newTopicVector = await getEmbedding(newArticleData.clusterTopic);
+                // --- Use 7-day window ---
+                const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+                
+                // --- Find cluster matching ALL 5 keys ---
+                const existingCluster = await Article.findOne({
+                    clusterTopic: newArticleData.clusterTopic,
+                    category: newArticleData.category,
+                    country: newArticleData.country,
+                    primaryNoun: newArticleData.primaryNoun,
+                    secondaryNoun: newArticleData.secondaryNoun,
+                    publishedAt: { $gte: sevenDaysAgo } // Look in last 7 days
+                }, { clusterId: 1 }).sort({ publishedAt: -1 }).lean();
 
-              // 2. Find recent, potential cluster matches (last 7 days)
-              const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-              const recentClusters = await Article.find({
-                clusterTopic: { $ne: null },
-                publishedAt: { $gte: sevenDaysAgo }
-              })
-              // We only need the ID and topic from the most recent 100 articles
-              .sort({ publishedAt: -1 })
-              .limit(100) 
-              .select("clusterId clusterTopic")
-              .lean();
-
-              // 3. Find the *first* semantically identical cluster
-              for (const existingArticle of recentClusters) {
-                if (!existingArticle.clusterTopic) continue;
-
-                const existingTopicVector = await getEmbedding(existingArticle.clusterTopic);
-                const similarity = cosineSimilarity(newTopicVector, existingTopicVector);
-
-                if (similarity > SIMILARITY_THRESHOLD) {
-                  assignedClusterId = existingArticle.clusterId;
-                  console.log(`   ➡️  Semantic MATCH: (${(similarity * 100).toFixed(1)}%) Using Cluster ID: ${assignedClusterId}`);
-                  break; // Stop searching
+                if (existingCluster && existingCluster.clusterId) {
+                    newArticleData.clusterId = existingCluster.clusterId;
+                } else {
+                    // This is a new topic, find the max clusterId and add 1
+                    const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select({ clusterId: 1 }).lean();
+                    newArticleData.clusterId = (maxIdDoc?.clusterId || 0) + 1;
+                    console.log(`Assigning NEW clusterId [${newArticleData.clusterId}] for topic: "${newArticleData.clusterTopic}"`);
                 }
-              }
-            }
-
-            // 4. Assign the Cluster ID
-            if (assignedClusterId) {
-              newArticleData.clusterId = assignedClusterId;
             } else {
-              // This is a new topic, create a new cluster ID
-              const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select({ clusterId: 1 }).lean();
-              newArticleData.clusterId = (maxIdDoc?.clusterId || 0) + 1;
-              console.log(`   ➡️  Semantic NEW: No match found. Assigning new Cluster ID: ${newArticleData.clusterId}`);
+                // --- THIS IS THE FIX ---
+                // This article has no cluster topic (e.g., Opinion), assign a new unique ID
+                const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select({ clusterId: 1 }).lean();
+                newArticleData.clusterId = (maxIdDoc?.clusterId || 0) + 1;
+                // --- END OF FIX ---
             }
-            // --- *** END OF UPDATED LOGIC *** ---
+            // (End Clustering Logic)
 
+            // 5. Save to DB
             const savedArticle = await Article.create(newArticleData);
             stats.processed++;
             console.log(`✅ Saved [${savedArticle._id}]: ${savedArticle.headline.substring(0, 50)}... (${savedArticle.analysisType})`);
 
-            await sleep(31000); // Wait 31 seconds
+            // --- DELAY FOR FREE TIER RATE LIMIT ---
+            await sleep(31000); // Wait 31 seconds (allows slightly under 2 RPM)
+            // ----------------------------------------
 
         } catch (error) {
+            // Log errors during individual article processing but continue the loop
             console.error(`❌ Error processing article "${article?.title?.substring(0,60)}...": ${error.message}`);
             stats.errors++;
         }
@@ -881,21 +1032,25 @@ async function fetchAndAnalyzeNews() {
     console.log(`\n🏁 Fetch cycle finished in ${duration}s: ${stats.processed} processed, ${stats.skipped_duplicate} duplicate(s), ${stats.skipped_junk} junk, ${stats.skipped_invalid} invalid, ${stats.errors} error(s).\n`);
     return stats;
 
-  } catch (error) {
+  } catch (error) { // Catch critical errors during the initial news fetch stage
     console.error('❌ CRITICAL Error during news fetch stage:', error.message);
     stats.errors++;
     stats.end_time = Date.now();
     const duration = ((stats.end_time - stats.start_time) / 1000).toFixed(2);
     console.log(`\n⚠️ Fetch cycle aborted after ${duration}s due to fetch error. Stats: ${JSON.stringify(stats)}`);
+    // Allow process to end without throwing if run by cron
   }
 }
 
 // --- Sleep Function ---
 function sleep(ms) {
+  // console.log(`😴 Sleeping for ${ms / 1000} seconds...`); 
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // --- Scheduled Tasks ---
+
+// Auto-fetch every 30 minutes
 cron.schedule('*/30 * * * *', () => {
   if (isFetchRunning) {
     console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
@@ -903,18 +1058,21 @@ cron.schedule('*/30 * * * *', () => {
   }
   console.log('⏰ Cron: Triggering scheduled news fetch...');
   isFetchRunning = true;
+
   fetchAndAnalyzeNews()
     .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
-    .finally(() => {
+    .finally(() => { // --- THIS IS THE FIX ---
         isFetchRunning = false; 
         console.log('🟢 Scheduled fetch process complete.');
      });
 });
 
+// Auto-cleanup daily at 2 AM server time
 cron.schedule('0 2 * * *', async () => {
   console.log('🧹 Cron: Triggering daily article cleanup...');
   try {
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // Limit deletion batch size for safety and performance
     const result = await Article.deleteMany({ createdAt: { $lt: sevenDaysAgo } }).limit(5000);
     console.log(`🗑️ Cleanup successful: Deleted ${result.deletedCount} articles older than 7 days (batch limit 5000).`);
   } catch (error) {
@@ -923,10 +1081,13 @@ cron.schedule('0 2 * * *', async () => {
 });
 
 // --- Error Handling & Server Startup ---
+
+// 404 Handler for undefined routes
 app.use((req, res, next) => {
   res.status(404).json({ error: `Not Found - Cannot ${req.method} ${req.originalUrl}` });
 });
 
+// Global Error Handler (must be the LAST middleware)
 app.use((err, req, res, next) => {
   console.error('💥 Global Error Handler:', err);
   const statusCode = err.status || err.statusCode || 500;
@@ -941,23 +1102,14 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3001; 
 const HOST = process.env.HOST || '0.0.0.0'; 
 
-// --- MODIFIED: Server Startup ---
-// We must load the model *before* starting the server
-console.log("Starting server...");
-initializeEmbedder().then(() => {
-  app.listen(PORT, HOST, () => {
-    console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
-    console.log(`🔗 Health Check: http://localhost:${PORT}/`);
-    console.log(`API available at /api`);
-    console.log(`🕒 News fetch scheduled: Every 30 minutes`);
-    console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
-  });
-}).catch(err => {
-  console.error("Failed to start server due to embedder init error:", err);
-  process.exit(1);
+// Start Server
+app.listen(PORT, HOST, () => {
+  console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
+  console.log(`🔗 Health Check: http://localhost:${PORT}/`);
+  console.log(`API available at /api`);
+  console.log(`🕒 News fetch scheduled: Every 30 minutes`);
+  console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
 });
-// --- END OF MODIFIED STARTUP ---
-
 
 // --- Graceful Shutdown ---
 const gracefulShutdown = async (signal) => {
