@@ -1,4 +1,4 @@
-// server.js (FINAL v2.14.1 - Syntax Fix)
+// server.js (FINAL v2.14.2 - Cluster ID Fix)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -906,6 +906,12 @@ async function fetchAndAnalyzeNews() {
                     newArticleData.clusterId = (maxIdDoc?.clusterId || 0) + 1;
                     console.log(`Assigning NEW clusterId [${newArticleData.clusterId}] for topic: "${newArticleData.clusterTopic}"`);
                 }
+            } else {
+                // --- THIS IS THE FIX ---
+                // This article has no cluster topic (e.g., Opinion), assign a new unique ID
+                const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select({ clusterId: 1 }).lean();
+                newArticleData.clusterId = (maxIdDoc?.clusterId || 0) + 1;
+                // --- END OF FIX ---
             }
             // (End Clustering Logic)
 
