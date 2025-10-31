@@ -25,7 +25,6 @@ const profileSchema = new mongoose.Schema({
     type: Number, 
     default: 0 
   },
-  // --- ADD THESE TWO LINES ---
   comparisonsViewedCount: {
     type: Number,
     default: 0
@@ -33,7 +32,13 @@ const profileSchema = new mongoose.Schema({
   articlesSharedCount: {
     type: Number,
     default: 0
-  }
+  },
+  // --- ADD THIS ---
+  savedArticles: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Article' // This links to your Article model
+  }]
+  // --- END ADD ---
 }, {
   timestamps: true // Adds createdAt and updatedAt
 });
