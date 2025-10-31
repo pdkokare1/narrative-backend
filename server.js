@@ -1,5 +1,6 @@
 // In file: server.js
-// --- FIX: Moved the unprotected /api/fetch-news route to be *after* checkAuth ---
+// --- UPDATED: Added /save and /saved routes ---
+// --- UPDATED: /profile/me now returns savedArticles ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -115,13 +116,16 @@ app.post('/api/fetch-news', (req, res) => {
 // GET /api/profile/me - Checks if a profile exists
 app.get('/api/profile/me', async (req, res) => {
   try {
-    const profile = await Profile.findOne({ userId: req.user.uid }).lean();
+    // --- UPDATED: Also return the list of saved article IDs ---
+    const profile = await Profile.findOne({ userId: req.user.uid })
+      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles') // Specify fields
+      .lean();
 
     if (!profile) {
       return res.status(404).json({ error: 'Profile not found' });
     }
     res.status(200).json(profile);
-  } catch (error) {
+  } catch (error {
     console.error('Error in GET /api/profile/me:', error.message);
     res.status(500).json({ error: 'Error fetching profile' });
   }
@@ -694,6 +698,86 @@ app.get('/api/articles', async (req, res, next) => {
   }
 });
 // --- *** END OF SMART FEED ENDPOINT *** ---
+
+
+// --- *** NEW: SAVE/UNSAVE ARTICLE ROUTE *** ---
+app.post('/api/articles/:id/save', async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { uid } = req.user;
+
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid article ID' });
+    }
+
+    const article = await Article.findById(id, '_id').lean();
+    if (!article) {
+      return res.status(404).json({ error: 'Article not found' });
+    }
+
+    const profile = await Profile.findOne({ userId: uid });
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+
+    const articleObjectId = new mongoose.Types.ObjectId(id);
+    const isSaved = profile.savedArticles.includes(articleObjectId);
+
+    let updatedProfile;
+    if (isSaved) {
+      // --- Unsave it ---
+      updatedProfile = await Profile.findOneAndUpdate(
+        { userId: uid },
+        { $pull: { savedArticles: articleObjectId } },
+        { new: true }
+      ).lean();
+    } else {
+      // --- Save it ---
+      updatedProfile = await Profile.findOneAndUpdate(
+        { userId: uid },
+        { $addToSet: { savedArticles: articleObjectId } }, // $addToSet prevents duplicates
+        { new: true }
+      ).lean();
+    }
+
+    res.status(200).json({ 
+      message: isSaved ? 'Article unsaved' : 'Article saved',
+      savedArticles: updatedProfile.savedArticles // Send back the updated list of IDs
+    });
+
+  } catch (error) {
+    console.error(`❌ Error in POST /api/articles/${req.params.id}/save:`, error.message);
+    next(error);
+  }
+});
+
+// --- *** NEW: GET SAVED ARTICLES ROUTE *** ---
+app.get('/api/articles/saved', async (req, res, next) => {
+  try {
+    const { uid } = req.user;
+    
+    // 1. Find the user's profile and get their savedArticles array
+    const profile = await Profile.findOne({ userId: uid })
+      .select('savedArticles')
+      .populate({
+        path: 'savedArticles', // 2. Populate the array with full article data
+        options: { sort: { publishedAt: -1 } } // 3. Sort by newest
+      })
+      .lean();
+
+    if (!profile) {
+      return res.status(404).json({ error: 'Profile not found' });
+    }
+    
+    // The 'savedArticles' field now contains the full article objects
+    res.status(200).json({ articles: profile.savedArticles || [] });
+
+  } catch (error) {
+    console.error('❌ Error in GET /api/articles/saved:', error.message);
+    next(error);
+  }
+});
+
 
 // GET /api/articles/:id - Fetch single article (PROTECTED)
 app.get('/api/articles/:id', async (req, res, next) => {
