@@ -1,6 +1,5 @@
 // In file: server.js
-// --- UPDATED: Added /save and /saved routes ---
-// --- UPDATED: /profile/me now returns savedArticles ---
+// --- FIX: Corrected syntax error in GET /api/profile/me catch block ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -125,7 +124,7 @@ app.get('/api/profile/me', async (req, res) => {
       return res.status(404).json({ error: 'Profile not found' });
     }
     res.status(200).json(profile);
-  } catch (error {
+  } catch (error) { // <-- *** THIS IS THE FIX ***
     console.error('Error in GET /api/profile/me:', error.message);
     res.status(500).json({ error: 'Error fetching profile' });
   }
