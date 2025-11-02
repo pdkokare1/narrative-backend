@@ -1,6 +1,5 @@
 // In file: server.js
-// --- FIX: Moved app.listen() inside the mongoose.connect().then() block ---
-// This ensures the server only starts *after* the database is connected.
+// --- FIX: Simplified the root '/' health check route to be the most basic route possible. ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -136,22 +135,12 @@ const Article = mongoose.model('Article', articleSchema);
 
 // --- API Routes ---
 
-// GET / - Health Check (NOT protected)
-// This route is NOT protected by checkAuth
+// --- *** THIS IS THE FIX *** ---
+// GET / - A super-simple health check route that cannot fail.
 app.get('/', (req, res) => {
-  res.status(200).json({
-    message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
-    status: 'healthy',
-    features: [
-      'Hybrid Semantic Clustering (Gemini Topic + Cosine Similarity)',
-      '7-Day Cluster Window',
-      'Smart Feed De-duplication w/ Cluster Count',
-      'Region & Article Type Filters'
-    ],
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime ? Math.floor(process.uptime()) : 'N/A'
-  });
+  res.status(200).send('Server is healthy and running.');
 });
+// --- *** END OF FIX *** ---
 
 
 // --- Apply token check to ALL OTHER API routes ---
