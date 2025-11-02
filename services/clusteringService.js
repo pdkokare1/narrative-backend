@@ -1,5 +1,7 @@
 // In file: services/clusteringService.js
-// --- FIX: Declare variables at the top, but do not await ---
+// --- FIX: Manually set the HF_ENDPOINT and HF_TOKEN for the library ---
+// This forces the library to use the correct CDN and token, bypassing any bugs.
+
 let pipeline;
 let cos_sim;
 let transformersLoaded = false; // Add a flag
@@ -22,6 +24,13 @@ async function initializeTransformers() {
   // Use 'await import' inside this async function
   const transformers = await import('@xenova/transformers');
   
+  // --- *** THIS IS THE FIX *** ---
+  // Manually tell the library to use our environment variables.
+  // This will force it to download from the correct CDN.
+  transformers.env.remoteHost = process.env.HF_ENDPOINT;
+  transformers.env.accessToken = process.env.HF_TOKEN;
+  // --- *** END OF FIX *** ---
+
   // Assign the imported functions to our top-level variables
   pipeline = transformers.pipeline;
   cos_sim = transformers.cos_sim;
