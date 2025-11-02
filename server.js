@@ -575,7 +575,7 @@ app.get('/api/articles/saved', async (req, res, next) => {
       .lean();
 
     if (!profile) {
-      return res.status(4404).json({ error: 'Profile not found' });
+      return res.status(404).json({ error: 'Profile not found' });
     }
     
     res.status(200).json({ articles: profile.savedArticles || [] });
@@ -918,7 +918,7 @@ mongoose.connect(process.env.MONGODB_URI)
     // Start the server *after* MongoDB is connected
     const server = app.listen(PORT, HOST, () => {
       console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
-      console.log(`🔗 Health Check: http://localhost:${PORT}/`);
+      // --- REMOVED this line: console.log(`🔗 Health Check: http://localhost:${PORT}/`); ---
       console.log(`API available at /api`);
       
       // Setup cron jobs now that server is live
