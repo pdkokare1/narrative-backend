@@ -1,5 +1,6 @@
 // In file: server.js
-// --- FIX: Simplified the root '/' health check route to be the most basic route possible. ---
+// --- FIX: Replaced clusteringService with 'string-similarity' to fix memory crashes. ---
+// --- FIX: Clustering now finds topics with > 0.9 similarity. ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -7,6 +8,7 @@ const cron = require('node-cron');
 const compression = require('compression');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const stringSimilarity = require('string-similarity'); // <-- NEW LIBRARY
 require('dotenv').config();
 
 // --- Import Firebase Admin ---
@@ -15,8 +17,8 @@ const admin = require('firebase-admin');
 // --- Services ---
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService');
-// --- Import the clustering service ---
-const clusteringService = require('./services/clusteringService');
+// --- clusteringService is no longer used ---
+// const clusteringService = require('./services/clusteringService'); 
 
 // --- Models ---
 const Profile = require('./models/profileModel');
@@ -105,13 +107,13 @@ const articleSchema = new mongoose.Schema({
   coverageRight: { type: Number, default: 0 },
   clusterId: { type: Number, index: true },
   clusterTopic: { type: String, index: true, trim: true },
-  clusterTopicVector: { type: [Number] }, // Field to store the vector
+  clusterTopicVector: { type: [Number] }, // <-- This field will no longer be used
   country: { type: String, index: true, trim: true, default: 'Global' },
   primaryNoun: { type: String, index: true, trim: true, default: null },
   secondaryNoun: { type: String, index: true, trim: true, default: null },
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.20-hybrid' }
+  analysisVersion: { type: String, default: '2.30-lightweight-cluster' } // <-- Updated version
 }, {
   timestamps: true,
   autoIndex: process.env.NODE_ENV !== 'production',
@@ -127,20 +129,18 @@ articleSchema.index({ createdAt: 1 });
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
 articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
-// Index for vector clustering lookup
-articleSchema.index({ clusterTopicVector: 1, publishedAt: -1 });
+// --- REMOVED vector index ---
+// articleSchema.index({ clusterTopicVector: 1, publishedAt: -1 });
 
 const Article = mongoose.model('Article', articleSchema);
 
 
 // --- API Routes ---
 
-// --- *** THIS IS THE FIX *** ---
 // GET / - A super-simple health check route that cannot fail.
 app.get('/', (req, res) => {
   res.status(200).send('Server is healthy and running.');
 });
-// --- *** END OF FIX *** ---
 
 
 // --- Apply token check to ALL OTHER API routes ---
@@ -699,8 +699,11 @@ app.get('/api/stats/keys', (req, res, next) => {
 
 // --- Core Fetch/Analyze Function ---
 async function fetchAndAnalyzeNews() {
-  console.log('🔄 Starting fetchAndAnalyzeNews cycle (Hybrid Clustering v2.20)...');
+  console.log('🔄 Starting fetchAndAnalyzeNews cycle (Lightweight Clustering v2.30)...'); // <-- VERSION BUMP
   const stats = { fetched: 0, processed: 0, skipped_duplicate: 0, skipped_invalid: 0, skipped_junk: 0, errors: 0, start_time: Date.now() };
+
+  // --- NEW CLUSTERING CONSTANT ---
+  const CLUSTER_SIMILARITY_THRESHOLD = 0.9; // 90% similar to cluster
 
   try {
     const rawArticles = await newsService.fetchNews();
@@ -710,6 +713,28 @@ async function fetchAndAnalyzeNews() {
       console.log("🏁 No articles fetched, ending cycle.");
       return stats;
     }
+
+    // --- NEW: Get all recent cluster topics *once* for comparison ---
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const recentClusters = await Article.find(
+      {
+        publishedAt: { $gte: sevenDaysAgo },
+        clusterTopic: { $ne: null } // Only get articles that have a topic
+      },
+      { clusterId: 1, clusterTopic: 1, _id: 0 } // Only get the fields we need
+    ).lean();
+    
+    // Create a unique map of topics { topicString: clusterId }
+    const topicMap = new Map();
+    for (const cluster of recentClusters) {
+      if (!topicMap.has(cluster.clusterTopic)) {
+        topicMap.set(cluster.clusterTopic, cluster.clusterId);
+      }
+    }
+    const existingTopics = Array.from(topicMap.keys());
+    console.log(`🧠 Found ${existingTopics.length} unique topics from the last 7 days for clustering.`);
+    // --- END NEW ---
+
 
     for (const article of rawArticles) {
         try {
@@ -775,7 +800,7 @@ async function fetchAndAnalyzeNews() {
               coverageRight: analysis.coverageRight || 0,
               clusterId: null, // Will be set below
               clusterTopic: analysis.clusterTopic,
-              clusterTopicVector: [], // Will be set below
+              clusterTopicVector: [], // This is no longer used
               country: analysis.country,
               primaryNoun: analysis.primaryNoun,
               secondaryNoun: analysis.secondaryNoun,
@@ -784,41 +809,38 @@ async function fetchAndAnalyzeNews() {
               analysisVersion: Article.schema.path('analysisVersion').defaultValue
             };
             
-            // --- 5. HYBRID CLUSTERING LOGIC ---
+            // --- 5. NEW LIGHTWEIGHT CLUSTERING LOGIC ---
             
             // Find the max clusterId ONCE for potential use
             const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select({ clusterId: 1 }).lean();
             const nextNewClusterId = (maxIdDoc?.clusterId || 0) + 1;
 
-            if (newArticleData.clusterTopic) {
-                // This is a "Hard News" article with a topic
+            if (newArticleData.clusterTopic && existingTopics.length > 0) {
+                // This is a "Hard News" article with a topic, and we have topics to compare against.
                 
-                // 5.1. Generate the vector for the topic
-                newArticleData.clusterTopicVector = await clusteringService.getEmbedding(newArticleData.clusterTopic);
+                // 5.1. Find the best "fuzzy" string match
+                const { bestMatch } = stringSimilarity.findBestMatch(newArticleData.clusterTopic, existingTopics);
 
-                // 5.2. Find candidate articles from the last 7 days
-                const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-                const candidates = await Article.find({
-                    publishedAt: { $gte: sevenDaysAgo },
-                    clusterTopicVector: { $exists: true, $ne: [] } // Find articles that HAVE a vector
-                }, { clusterId: 1, clusterTopicVector: 1 }).lean();
-
-                // 5.3. Find the best semantic match
-                // --- THIS IS THE FIX: Added 'await' ---
-                const bestMatch = await clusteringService.findBestMatch(newArticleData.clusterTopicVector, candidates);
-
-                if (bestMatch) {
+                if (bestMatch.rating >= CLUSTER_SIMILARITY_THRESHOLD) {
                     // Found a strong match! Use its clusterId.
-                    newArticleData.clusterId = bestMatch.clusterId;
+                    newArticleData.clusterId = topicMap.get(bestMatch.target);
+                    console.log(`✅ Found cluster match! Rating: ${bestMatch.rating.toFixed(2)} -> [${newArticleData.clusterId}]`);
                 } else {
                     // No strong match. This is a new cluster.
                     newArticleData.clusterId = nextNewClusterId;
-                    console.log(`Assigning NEW clusterId [${newArticleData.clusterId}] for topic: "${newArticleData.clusterTopic}"`);
+                    // Add this new topic to our list for this run
+                    existingTopics.push(newArticleData.clusterTopic);
+                    topicMap.set(newArticleData.clusterTopic, newArticleData.clusterId);
                 }
             } else {
-                // This is an Opinion, Review, or un-clusterable article.
-                // Give it its own unique clusterId so it doesn't group with anything.
+                // This is an Opinion, Review, or the very first article.
+                // Give it its own unique clusterId.
                 newArticleData.clusterId = nextNewClusterId;
+                if (newArticleData.clusterTopic) {
+                  // Add this new topic to our list for this run
+                  existingTopics.push(newArticleData.clusterTopic);
+                  topicMap.set(newArticleData.clusterTopic, newArticleData.clusterId);
+                }
             }
             // --- (End Clustering Logic) ---
 
