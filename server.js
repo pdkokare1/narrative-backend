@@ -918,7 +918,6 @@ mongoose.connect(process.env.MONGODB_URI)
     // Start the server *after* MongoDB is connected
     const server = app.listen(PORT, HOST, () => {
       console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
-      // --- REMOVED this line: console.log(`🔗 Health Check: http://localhost:${PORT}/`); ---
       console.log(`API available at /api`);
       
       // Setup cron jobs now that server is live
