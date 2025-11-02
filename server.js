@@ -575,7 +575,7 @@ app.get('/api/articles/saved', async (req, res, next) => {
       .lean();
 
     if (!profile) {
-      return res.status(404).json({ error: 'Profile not found' });
+      return res.status(4404).json({ error: 'Profile not found' });
     }
     
     res.status(200).json({ articles: profile.savedArticles || [] });
