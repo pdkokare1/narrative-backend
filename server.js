@@ -1,6 +1,6 @@
 // In file: server.js
-// --- UPDATED: Moved app.listen() inside the mongoose.connect().then() block ---
-// This ensures the server only starts *after* the database is connected, fixing health checks.
+// --- FIX: Moved app.listen() inside the mongoose.connect().then() block ---
+// This ensures the server only starts *after* the database is connected.
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
