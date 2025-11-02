@@ -1,5 +1,6 @@
 // In file: server.js
-// --- UPDATED: Awaits the async findBestMatch function ---
+// --- UPDATED: Moved app.listen() inside the mongoose.connect().then() block ---
+// This ensures the server only starts *after* the database is connected, fixing health checks.
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -75,9 +76,87 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
+
+// --- Mongoose Schema ---
+// We define the schema *before* the routes that use it.
+const articleSchema = new mongoose.Schema({
+  headline: { type: String, required: true, trim: true },
+  summary: { type: String, required: true, trim: true },
+  source: { type: String, required: true, trim: true },
+  category: { type: String, required: true, trim: true },
+  politicalLean: { type: String, required: true, trim: true },
+  url: { type: String, required: true, unique: true, trim: true, index: true },
+  imageUrl: { type: String, trim: true },
+  publishedAt: { type: Date, default: Date.now, index: true },
+  analysisType: { type: String, default: 'Full', enum: ['Full', 'SentimentOnly'] },
+  sentiment: { type: String, default: 'Neutral', enum: ['Positive', 'Negative', 'Neutral'] },
+  biasScore: { type: Number, default: 0, min: 0, max: 100 },
+  biasLabel: String,
+  biasComponents: mongoose.Schema.Types.Mixed,
+  credibilityScore: { type: Number, default: 0, min: 0, max: 100 },
+  credibilityGrade: String,
+  credibilityComponents: mongoose.Schema.Types.Mixed,
+  reliabilityScore: { type: Number, default: 0, min: 0, max: 100 },
+  reliabilityGrade: String,
+  reliabilityComponents: mongoose.Schema.Types.Mixed,
+  trustScore: { type: Number, default: 0, min: 0, max: 100 },
+  trustLevel: String,
+  coverageLeft: { type: Number, default: 0 },
+  coverageCenter: { type: Number, default: 0 },
+  coverageRight: { type: Number, default: 0 },
+  clusterId: { type: Number, index: true },
+  clusterTopic: { type: String, index: true, trim: true },
+  clusterTopicVector: { type: [Number] }, // Field to store the vector
+  country: { type: String, index: true, trim: true, default: 'Global' },
+  primaryNoun: { type: String, index: true, trim: true, default: null },
+  secondaryNoun: { type: String, index: true, trim: true, default: null },
+  keyFindings: [String],
+  recommendations: [String],
+  analysisVersion: { type: String, default: '2.20-hybrid' }
+}, {
+  timestamps: true,
+  autoIndex: process.env.NODE_ENV !== 'production',
+});
+
+// Compound Indexes
+articleSchema.index({ category: 1, publishedAt: -1 });
+articleSchema.index({ politicalLean: 1, publishedAt: -1 });
+articleSchema.index({ clusterId: 1, trustScore: -1 });
+articleSchema.index({ trustScore: -1, publishedAt: -1 });
+articleSchema.index({ biasScore: 1, publishedAt: -1 });
+articleSchema.index({ createdAt: 1 });
+articleSchema.index({ analysisType: 1, publishedAt: -1 });
+articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
+articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
+// Index for vector clustering lookup
+articleSchema.index({ clusterTopicVector: 1, publishedAt: -1 });
+
+const Article = mongoose.model('Article', articleSchema);
+
+
+// --- API Routes ---
+
+// GET / - Health Check (NOT protected)
+// This route is NOT protected by checkAuth
+app.get('/', (req, res) => {
+  res.status(200).json({
+    message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
+    status: 'healthy',
+    features: [
+      'Hybrid Semantic Clustering (Gemini Topic + Cosine Similarity)',
+      '7-Day Cluster Window',
+      'Smart Feed De-duplication w/ Cluster Count',
+      'Region & Article Type Filters'
+    ],
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime ? Math.floor(process.uptime()) : 'N/A'
+  });
+});
+
+
 // --- Apply token check to ALL OTHER API routes ---
+// All routes *after* this line are protected
 app.use('/api/', checkAuth);
-// --- *** ALL ROUTES BELOW THIS LINE ARE NOW PROTECTED *** ---
 
 
 // POST /api/fetch-news - Trigger background news fetch
@@ -348,92 +427,6 @@ app.get('/api/profile/stats', async (req, res) => {
 });
 // --- END OF USER ROUTES ---
 
-
-// --- Database Connection ---
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ MongoDB Connected'))
-  .catch(err => console.error('❌ MongoDB Connection Error:', err.message));
-
-mongoose.connection.on('error', err => {
-  console.error('❌ MongoDB runtime error:', err.message);
-});
-mongoose.connection.on('disconnected', () => {
-  console.warn('⚠️ MongoDB disconnected.');
-});
-
-// --- Mongoose Schema ---
-const articleSchema = new mongoose.Schema({
-  headline: { type: String, required: true, trim: true },
-  summary: { type: String, required: true, trim: true },
-  source: { type: String, required: true, trim: true },
-  category: { type: String, required: true, trim: true },
-  politicalLean: { type: String, required: true, trim: true },
-  url: { type: String, required: true, unique: true, trim: true, index: true },
-  imageUrl: { type: String, trim: true },
-  publishedAt: { type: Date, default: Date.now, index: true },
-  analysisType: { type: String, default: 'Full', enum: ['Full', 'SentimentOnly'] },
-  sentiment: { type: String, default: 'Neutral', enum: ['Positive', 'Negative', 'Neutral'] },
-  biasScore: { type: Number, default: 0, min: 0, max: 100 },
-  biasLabel: String,
-  biasComponents: mongoose.Schema.Types.Mixed,
-  credibilityScore: { type: Number, default: 0, min: 0, max: 100 },
-  credibilityGrade: String,
-  credibilityComponents: mongoose.Schema.Types.Mixed,
-  reliabilityScore: { type: Number, default: 0, min: 0, max: 100 },
-  reliabilityGrade: String,
-  reliabilityComponents: mongoose.Schema.Types.Mixed,
-  trustScore: { type: Number, default: 0, min: 0, max: 100 },
-  trustLevel: String,
-  coverageLeft: { type: Number, default: 0 },
-  coverageCenter: { type: Number, default: 0 },
-  coverageRight: { type: Number, default: 0 },
-  clusterId: { type: Number, index: true },
-  clusterTopic: { type: String, index: true, trim: true },
-  clusterTopicVector: { type: [Number] }, // Field to store the vector
-  country: { type: String, index: true, trim: true, default: 'Global' },
-  primaryNoun: { type: String, index: true, trim: true, default: null },
-  secondaryNoun: { type: String, index: true, trim: true, default: null },
-  keyFindings: [String],
-  recommendations: [String],
-  analysisVersion: { type: String, default: '2.20-hybrid' }
-}, {
-  timestamps: true,
-  autoIndex: process.env.NODE_ENV !== 'production',
-});
-
-// Compound Indexes
-articleSchema.index({ category: 1, publishedAt: -1 });
-articleSchema.index({ politicalLean: 1, publishedAt: -1 });
-articleSchema.index({ clusterId: 1, trustScore: -1 });
-articleSchema.index({ trustScore: -1, publishedAt: -1 });
-articleSchema.index({ biasScore: 1, publishedAt: -1 });
-articleSchema.index({ createdAt: 1 });
-articleSchema.index({ analysisType: 1, publishedAt: -1 });
-articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
-articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
-// Index for vector clustering lookup
-articleSchema.index({ clusterTopicVector: 1, publishedAt: -1 });
-
-
-const Article = mongoose.model('Article', articleSchema);
-
-// --- API Routes ---
-
-// GET / - Health Check (NOT protected)
-app.get('/', (req, res) => {
-  res.status(200).json({
-    message: `The Gamut API v${Article.schema.path('analysisVersion').defaultValue} - Running`,
-    status: 'healthy',
-    features: [
-      'Hybrid Semantic Clustering (Gemini Topic + Cosine Similarity)',
-      '7-Day Cluster Window',
-      'Smart Feed De-duplication w/ Cluster Count',
-      'Region & Article Type Filters'
-    ],
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime ? Math.floor(process.uptime()) : 'N/A'
-  });
-});
 
 // GET /api/articles - Fetch articles (SMART FEED)
 app.get('/api/articles', async (req, res, next) => {
@@ -875,35 +868,37 @@ function sleep(ms) {
 }
 
 // --- Scheduled Tasks ---
+// We will set these up *after* the server is live
+function setupCronJobs() {
+  console.log('🕒 News fetch scheduled: Every 30 minutes');
+  cron.schedule('*/30 * * * *', () => {
+    if (isFetchRunning) {
+      console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
+      return;
+    }
+    console.log('⏰ Cron: Triggering scheduled news fetch...');
+    isFetchRunning = true;
 
-// Auto-fetch every 30 minutes
-cron.schedule('*/30 * * * *', () => {
-  if (isFetchRunning) {
-    console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
-    return;
-  }
-  console.log('⏰ Cron: Triggering scheduled news fetch...');
-  isFetchRunning = true;
+    fetchAndAnalyzeNews()
+      .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
+      .finally(() => {
+          isFetchRunning = false;
+          console.log('🟢 Scheduled fetch process complete.');
+       });
+  });
 
-  fetchAndAnalyzeNews()
-    .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
-    .finally(() => {
-        isFetchRunning = false;
-        console.log('🟢 Scheduled fetch process complete.');
-     });
-});
-
-// Auto-cleanup daily at 2 AM server time
-cron.schedule('0 2 * * *', async () => {
-  console.log('🧹 Cron: Triggering daily article cleanup...');
-  try {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const result = await Article.deleteMany({ createdAt: { $lt: sevenDaysAgo } }).limit(5000);
-    console.log(`🗑️ Cleanup successful: Deleted ${result.deletedCount} articles older than 7 days (batch limit 5000).`);
-  } catch (error) {
-    console.error('❌ CRITICAL Error during scheduled cleanup:', error.message);
-  }
-});
+  console.log('🗑️ Cleanup scheduled: Daily at 2 AM');
+  cron.schedule('0 2 * * *', async () => {
+    console.log('🧹 Cron: Triggering daily article cleanup...');
+    try {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      const result = await Article.deleteMany({ createdAt: { $lt: sevenDaysAgo } }).limit(5000);
+      console.log(`🗑️ Cleanup successful: Deleted ${result.deletedCount} articles older than 7 days (batch limit 5000).`);
+    } catch (error) {
+      console.error('❌ CRITICAL Error during scheduled cleanup:', error.message);
+    }
+  });
+}
 
 // --- Error Handling & Server Startup ---
 
@@ -922,30 +917,58 @@ app.use((err, req, res, next) => {
   });
 });
 
+// --- NEW STARTUP LOGIC ---
 const PORT = process.env.PORT || 3001;
 const HOST = process.env.HOST || '0.0.0.0';
 
-app.listen(PORT, HOST, () => {
-  console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
-  console.log(`🔗 Health Check: http://localhost:${PORT}/`);
-  console.log(`API available at /api`);
-  console.log(`🕒 News fetch scheduled: Every 30 minutes`);
-  console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
+console.log('🟡 Connecting to MongoDB...');
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => {
+    console.log('✅ MongoDB Connected');
+    
+    // Start the server *after* MongoDB is connected
+    const server = app.listen(PORT, HOST, () => {
+      console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
+      console.log(`🔗 Health Check: http://localhost:${PORT}/`);
+      console.log(`API available at /api`);
+      
+      // Setup cron jobs now that server is live
+      setupCronJobs(); 
+    });
+
+    // Graceful shutdown logic
+    const gracefulShutdown = async (signal) => {
+      console.log(`\n👋 ${signal} received. Initiating graceful shutdown...`);
+      // Stop the server from accepting new connections
+      server.close(async () => {
+        console.log('🔌 HTTP server closed.');
+        try {
+          // Close MongoDB connection
+          await mongoose.connection.close();
+          console.log('💾 MongoDB connection closed.');
+          console.log('✅ Shutdown complete.');
+          process.exit(0);
+        } catch (err) {
+          console.error('❌ Error during graceful shutdown:', err);
+          process.exit(1);
+        }
+      });
+    };
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+  })
+  .catch(err => {
+    console.error('❌ MongoDB Connection Error:', err.message);
+    // If Mongo connection fails on startup, exit the process
+    process.exit(1); 
+  });
+
+mongoose.connection.on('error', err => {
+  console.error('❌ MongoDB runtime error:', err.message);
 });
-
-const gracefulShutdown = async (signal) => {
-  console.log(`\n👋 ${signal} received. Initiating graceful shutdown...`);
-  try {
-    console.log('🔌 Closing MongoDB connection...');
-    await mongoose.connection.close();
-    console.log('💾 MongoDB connection closed.');
-    console.log('✅ Shutdown complete.');
-    process.exit(0);
-  } catch (err) {
-    console.error('❌ Error during graceful shutdown:', err);
-    process.exit(1);
-  }
-};
-
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+mongoose.connection.on('disconnected', () => {
+  console.warn('⚠️ MongoDB disconnected.');
+});
+// --- END NEW STARTUP LOGIC ---
