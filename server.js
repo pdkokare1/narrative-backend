@@ -1,7 +1,5 @@
 // In file: server.js
-// --- FIX: Simplified the root '/' health check route to be the most basic route possible. ---
-// --- FIX: Moved app.listen() inside the mongoose.connect().then() block ---
-// --- FIX: Removed all Vector logic and replaced with String Similarity logic ---
+// --- FIX: Added specific CORS origins to allow the frontend ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -17,7 +15,6 @@ const admin = require('firebase-admin');
 // --- Services ---
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService');
-// --- Import the clustering service ---
 const clusteringService = require('./services/clusteringService');
 
 // --- Models ---
@@ -44,9 +41,30 @@ const app = express();
 
 // --- Middleware ---
 app.set('trust proxy', 1);
+
+// --- *** NEW: Specific CORS Configuration *** ---
+// This tells the backend to trust your frontend
+const allowedOrigins = [
+  'https://www.thegamut.in',
+  'http://localhost:3000' // For any future local testing
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  }
+};
+app.use(cors(corsOptions));
+// --- *** END NEW CORS CONFIG *** ---
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
-app.use(cors());
 app.use(express.json({ limit: '1mb' }));
 
 // --- Rate Limiter ---
@@ -79,7 +97,6 @@ const checkAuth = async (req, res, next) => {
 
 
 // --- Mongoose Schema ---
-// We define the schema *before* the routes that use it.
 const articleSchema = new mongoose.Schema({
   headline: { type: String, required: true, trim: true },
   summary: { type: String, required: true, trim: true },
@@ -107,13 +124,12 @@ const articleSchema = new mongoose.Schema({
   coverageRight: { type: Number, default: 0 },
   clusterId: { type: Number, index: true },
   clusterTopic: { type: String, index: true, trim: true },
-  // --- REMOVED: clusterTopicVector ---
   country: { type: String, index: true, trim: true, default: 'Global' },
   primaryNoun: { type: String, index: true, trim: true, default: null },
   secondaryNoun: { type: String, index: true, trim: true, default: null },
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.20-string' } // <-- Updated version name
+  analysisVersion: { type: String, default: '2.20-string' }
 }, {
   timestamps: true,
   autoIndex: process.env.NODE_ENV !== 'production',
@@ -129,19 +145,16 @@ articleSchema.index({ createdAt: 1 });
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
 articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
-// --- REMOVED: clusterTopicVector index ---
 
 const Article = mongoose.model('Article', articleSchema);
 
 
 // --- API Routes ---
 
-// --- *** THIS IS THE FIX *** ---
 // GET / - A super-simple health check route that cannot fail.
 app.get('/', (req, res) => {
   res.status(200).send('Server is healthy and running.');
 });
-// --- *** END OF FIX *** ---
 
 
 // --- Apply token check to ALL OTHER API routes ---
@@ -700,7 +713,7 @@ app.get('/api/stats/keys', (req, res, next) => {
 
 // --- Core Fetch/Analyze Function ---
 async function fetchAndAnalyzeNews() {
-  console.log('🔄 Starting fetchAndAnalyzeNews cycle (String Clustering v2.20)...'); // <-- Updated log
+  console.log('🔄 Starting fetchAndAnalyzeNews cycle (String Clustering v2.20)...');
   const stats = { fetched: 0, processed: 0, skipped_duplicate: 0, skipped_invalid: 0, skipped_junk: 0, errors: 0, start_time: Date.now() };
 
   try {
@@ -776,7 +789,6 @@ async function fetchAndAnalyzeNews() {
               coverageRight: analysis.coverageRight || 0,
               clusterId: null, // Will be set below
               clusterTopic: analysis.clusterTopic,
-              // --- REMOVED: clusterTopicVector ---
               country: analysis.country,
               primaryNoun: analysis.primaryNoun,
               secondaryNoun: analysis.secondaryNoun,
