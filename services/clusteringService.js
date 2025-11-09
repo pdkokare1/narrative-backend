@@ -1,4 +1,4 @@
-// In file: services/clusteringService.js
+// In file: services/clusteringService.js just to ckeck if this code is deploying successfully.
 const stringSimilarity = require('string-similarity');
 
 // Set the similarity threshold
