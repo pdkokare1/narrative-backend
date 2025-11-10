@@ -1,5 +1,6 @@
 // In file: server.js
 // --- FIX: Corrected syntax error in GET /api/profile/me catch block ---
+// --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -261,7 +262,7 @@ app.post('/api/activity/log-share', async (req, res) => {
     });
   } catch (error) {
     console.error('Error in POST /api/activity/log-share:', error.message);
-    res.status(500).json({ error: 'Error logging activity' });
+    res.status(5KA00).json({ error: 'Error logging activity' });
   }
 });
 
@@ -1016,9 +1017,7 @@ async function fetchAndAnalyzeNews() {
             stats.processed++;
             console.log(`✅ Saved [${savedArticle._id}]: ${savedArticle.headline.substring(0, 50)}... (${savedArticle.analysisType})`);
 
-            // --- DELAY FOR FREE TIER RATE LIMIT ---
-            await sleep(31000); // Wait 31 seconds (allows slightly under 2 RPM)
-            // ----------------------------------------
+            // --- THIS IS THE FIX: The 31-second delay block was REMOVED ---
 
         } catch (error) {
             // Log errors during individual article processing but continue the loop
@@ -1042,11 +1041,7 @@ async function fetchAndAnalyzeNews() {
   }
 }
 
-// --- Sleep Function ---
-function sleep(ms) {
-  // console.log(`😴 Sleeping for ${ms / 1000} seconds...`); 
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+// --- THIS IS THE FIX: The sleep() function was REMOVED ---
 
 // --- Scheduled Tasks ---
 
