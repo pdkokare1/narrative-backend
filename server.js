@@ -1,6 +1,7 @@
 // In file: server.js
 // --- FIX: Corrected syntax error in GET /api/profile/me catch block ---
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
+// --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -262,7 +263,9 @@ app.post('/api/activity/log-share', async (req, res) => {
     });
   } catch (error) {
     console.error('Error in POST /api/activity/log-share:', error.message);
-    res.status(5KA00).json({ error: 'Error logging activity' });
+    // --- THIS IS THE FIX ---
+    res.status(500).json({ error: 'Error logging activity' });
+    // --- END OF FIX ---
   }
 });
 
