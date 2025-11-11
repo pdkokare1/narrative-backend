@@ -1,4 +1,4 @@
-// In file: server.js
+// In file: server.js checking deployement
 // --- FIX: Corrected syntax error in GET /api/profile/me catch block ---
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
