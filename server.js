@@ -3,7 +3,7 @@
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
 // --- FIX (2025-11-12): Added Adaptive Throttle for Gemini 429 errors ---
-// --- *** FIX (2025-11-12 V3): ADDED 'SMART PAUSE' - Check isRateLimited flag for longer pause *** ---
+// --- *** FIX (2025-11-12 V4): 'SMART PAUSE' increased from 30s to 60s to guarantee quota reset *** ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -1042,12 +1042,12 @@ async function fetchAndAnalyzeNews() {
             stats.errors++;
         }
         
-        // --- *** THIS IS THE FIX (V3 - Smart Pause) *** ---
+        // --- *** THIS IS THE FIX (V4 - Smart Pause) *** ---
         // We now check the 'isRateLimited' flag from the geminiService.
         if (geminiService.isRateLimited) {
-          // If we are rate limited, pause for 30 seconds to let the quota recover.
-          console.log('...Snail Mode Active 🐌... pausing for 30s to let quota recover...');
-          await sleep(30000); // 30-second (30000ms) "cooldown" pause
+          // If we are rate limited, pause for 60 seconds to let the quota fully recover.
+          console.log('...Snail Mode Active 🐌... pausing for 60s to let quota recover...');
+          await sleep(60000); // 60-second (60000ms) "cooldown" pause
         } else {
           // If all is good, pause for 3 seconds to stay under the limit.
           console.log('...pausing for 3s to respect free tier rate limit...');
