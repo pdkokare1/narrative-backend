@@ -3,7 +3,7 @@
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
 // --- FIX (2025-11-12): Added Adaptive Throttle for Gemini 429 errors ---
-// --- *** FIX (2025-11-12 V4): 'SMART PAUSE' increased from 30s to 60s to guarantee quota reset *** ---
+// --- *** FIX (2025-11-12 V5): Changed cron job to every 2 hours and kept 60s snail mode *** ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -768,7 +768,7 @@ app.post('/api/articles/:id/save', async (req, res, next) => {
   }
 });
 
-// --- *** NEW: GET SAVED ARTICLES ROUTE *** ---
+// --- *** NEW: GET SAVED ARTICLES ROUTE ---
 app.get('/api/articles/saved', async (req, res, next) => {
   try {
     const { uid } = req.user;
@@ -1076,13 +1076,13 @@ async function fetchAndAnalyzeNews() {
 
 // --- Scheduled Tasks ---
 
-// Auto-fetch every 30 minutes
-cron.schedule('*/30 * * * *', () => {
+// --- *** THIS IS THE FIX: Changed from '*/30 * * * *' (every 30 mins) to '0 */2 * * *' (every 2 hours) *** ---
+cron.schedule('0 */2 * * *', () => {
   if (isFetchRunning) {
     console.log('⏰ Cron: Skipping scheduled fetch - previous job still active.');
     return;
   }
-  console.log('⏰ Cron: Triggering scheduled news fetch...');
+  console.log('⏰ Cron: Triggering scheduled news fetch (every 2 hours)...');
   isFetchRunning = true;
 
   // --- *** THIS IS THE FIX *** ---
@@ -1138,7 +1138,7 @@ app.listen(PORT, HOST, () => {
   console.log(`\n🚀 Server listening on host ${HOST}, port ${PORT}`);
   console.log(`🔗 Health Check: http://localhost:${PORT}/`);
   console.log(`API available at /api`);
-  console.log(`🕒 News fetch scheduled: Every 30 minutes`);
+  console.log(`🕒 News fetch scheduled: Every 2 hours`);
   console.log(`🗑️ Cleanup scheduled: Daily at 2 AM`);
 });
 
