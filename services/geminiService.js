@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.14 - 5-Field Clustering)
+// services/geminiService.js (FINAL v2.15 - Adaptive Throttling)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -13,6 +13,11 @@ class GeminiService {
     this.currentKeyIndex = 0;
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
+    
+    // --- *** THIS IS THE FIX *** ---
+    // This switch will be set to 'true' if we detect a 429 rate-limit error.
+    this.isRateLimited = false;
+    // --- *** END OF FIX *** ---
 
     // Initialize trackers
     this.apiKeys.forEach(key => {
@@ -74,6 +79,11 @@ class GeminiService {
     if (apiKey && this.keyUsageCount.has(apiKey)) {
         this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
         if (this.keyErrorCount.get(apiKey) > 0) this.keyErrorCount.set(apiKey, 0);
+        
+        // --- *** THIS IS THE FIX *** ---
+        // If a request succeeds, we assume we are on the Paid Tier. Go fast.
+        this.isRateLimited = false;
+        // --- *** END OF FIX *** ---
     }
   }
 
@@ -110,6 +120,14 @@ class GeminiService {
 
         const status = error.response?.status;
         const isRetriable = (status === 503 || status === 429); // Retry on Service Unavailable or Rate Limit
+        
+        // --- *** THIS IS THE FIX *** ---
+        // If we get a 429 (rate limit), flip the "slow mode" switch ON.
+        if (status === 429) {
+            console.warn(`🐌 RATE LIMIT DETECTED. Enabling 'slow mode' throttle.`);
+            this.isRateLimited = true;
+        }
+        // --- *** END OF FIX *** ---
 
         if (isRetriable && attempt < maxRetries) {
           const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000; // Exponential backoff
