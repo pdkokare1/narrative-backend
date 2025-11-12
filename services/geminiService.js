@@ -1,4 +1,5 @@
 // services/geminiService.js (FINAL v2.15 - Adaptive Throttling)
+// --- *** FIX (2025-11-12 QF): Reduced maxRetries to 2 to conserve free tier quota *** ---
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -101,7 +102,8 @@ class GeminiService {
   }
 
   // --- Main Analysis Function with Retries ---
-  async analyzeArticle(article, maxRetries = 3) {
+  // --- *** THIS IS THE FIX: Changed maxRetries from 3 to 2 *** ---
+  async analyzeArticle(article, maxRetries = 2) {
     if (!this.apiKeys || this.apiKeys.length === 0) throw new Error("Analysis failed: No Gemini keys configured.");
 
     let lastError = null;
