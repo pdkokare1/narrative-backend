@@ -1,4 +1,5 @@
 // services/newsService.js (FINAL v2.5 - Focused News Fetching)
+// --- *** FIX (2025-11-12 V6): Drastically reduced fetch limits to 2 per region to stay in free tier *** ---
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -112,13 +113,18 @@ recordError(apiKey, apiName = "NewsAPI") {
     let successfulSources = new Set();
     const startTime = Date.now();
 
+    // --- *** THIS IS THE FIX *** ---
+    // We are reducing the number of articles fetched to 2 per region.
+    // This reduces the total from 30 to 6, which is extremely safe for the free tier.
+    // --- *** END OF FIX *** ---
+
     // --- GNews Attempts ---
     if (this.gnewsKeys.length > 0) {
       console.log('📡 Fetching from GNews (US, IN, World)...');
       const gnewsRequests = [
-        { params: { country: 'us', max: 25 }, name: 'GNews-US' }, // Increased limit slightly
-        { params: { country: 'in', max: 25 }, name: 'GNews-IN' },
-        { params: { topic: 'world', lang: 'en', max: 20 }, name: 'GNews-World' } // English for world topic
+        { params: { country: 'us', max: 2 }, name: 'GNews-US' }, // WAS 5
+        { params: { country: 'in', max: 2 }, name: 'GNews-IN' }, // WAS 5
+        { params: { topic: 'world', lang: 'en', max: 2 }, name: 'GNews-World' } // WAS 5
       ];
 
       // Execute requests concurrently
@@ -145,14 +151,14 @@ recordError(apiKey, apiName = "NewsAPI") {
 
 
     // --- NewsAPI Fallback ---
-    const needsNewsApiFallback = this.newsapiKeys.length > 0 && (this.gnewsKeys.length === 0 || allArticles.length < 20); // Trigger if GNews failed or returned few
+    const needsNewsApiFallback = this.newsapiKeys.length > 0 && (this.gnewsKeys.length === 0 || allArticles.length < 3); // Trigger if GNews failed or returned few
 
     if (needsNewsApiFallback) {
       console.log('📡 GNews insufficient/unavailable. Fetching fallback from NewsAPI (US, IN, Geopolitics)...');
       const newsapiRequests = [
-         { params: { country: 'us', pageSize: 20 }, name: 'NewsAPI-US', endpoint: 'top-headlines' },
-         { params: { country: 'in', pageSize: 20 }, name: 'NewsAPI-IN', endpoint: 'top-headlines' },
-         { params: { q: 'geopolitics OR "international relations" OR diplomacy', language: 'en', pageSize: 15, sortBy: 'publishedAt' }, name: 'NewsAPI-Geopolitics', endpoint: 'everything' }
+         { params: { country: 'us', pageSize: 2 }, name: 'NewsAPI-US', endpoint: 'top-headlines' }, // WAS 5
+         { params: { country: 'in', pageSize: 2 }, name: 'NewsAPI-IN', endpoint: 'top-headlines' }, // WAS 5
+         { params: { q: 'geopolitics OR "international relations" OR diplomacy', language: 'en', pageSize: 2, sortBy: 'publishedAt' }, name: 'NewsAPI-Geopolitics', endpoint: 'everything' } // WAS 5
       ];
 
       const newsapiResults = await Promise.allSettled(
