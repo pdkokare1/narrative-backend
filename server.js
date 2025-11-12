@@ -3,6 +3,7 @@
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
 // --- FIX (2025-11-12): Added Adaptive Throttle for Gemini 429 errors ---
+// --- *** FIX (2025-11-12 PM): Replaced 2s conditional pause with 3s MANDATORY pause to respect free tier limits *** ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -1041,13 +1042,12 @@ async function fetchAndAnalyzeNews() {
             stats.errors++;
         }
         
-        // --- *** THIS IS THE FIX *** ---
-        // Check for rate-limiting *after* each article (whether it succeeded or failed).
-        // If the 'slow mode' switch is on, pause for 2 seconds.
-        if (geminiService.isRateLimited) {
-          console.log('🐌 Rate-limit active. Pausing for 2s to cool down...');
-          await sleep(2000); // 2-second delay to stay under 50/min free tier
-        }
+        // --- *** THIS IS THE FIX (Rate Limit) *** ---
+        // We are on the Free Tier, which has a 50 requests/minute limit.
+        // To stay safe, we will *always* pause for 3 seconds between *every* article.
+        // This paces our requests to ~20 per minute (60s / 3s = 20), well under the limit.
+        console.log('...pausing for 3s to respect free tier rate limit...');
+        await sleep(3000); // 3-second (3000ms) mandatory pause
         // --- *** END OF FIX *** ---
 
     } // End loop
