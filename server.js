@@ -2,6 +2,7 @@
 // --- FIX: Corrected syntax error in GET /api/profile/me catch block ---
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
+// --- FIX (2025-11-12): Added Adaptive Throttle for Gemini 429 errors ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -21,6 +22,13 @@ const newsService = require('./services/newsService');
 // --- Models ---
 const Profile = require('./models/profileModel');
 const ActivityLog = require('./models/activityLogModel');
+
+// --- *** THIS IS THE FIX *** ---
+// Helper function for adaptive throttling
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+// --- *** END OF FIX *** ---
 
 // --- Initialize Firebase Admin ---
 try {
@@ -98,6 +106,11 @@ app.post('/api/fetch-news', (req, res) => {
   }
   console.log(`📰 Manual fetch triggered via API by user: ${req.user.uid}`);
   isFetchRunning = true;
+  
+  // --- *** THIS IS THE FIX *** ---
+  // Reset the throttle state at the beginning of every new batch
+  geminiService.isRateLimited = false;
+  // --- *** END OF FIX *** ---
 
   // Respond to the user immediately
   res.status(202).json({ message: 'Fetch acknowledged. Analysis starting in background.', timestamp: new Date().toISOString() });
@@ -1027,6 +1040,16 @@ async function fetchAndAnalyzeNews() {
             console.error(`❌ Error processing article "${article?.title?.substring(0,60)}...": ${error.message}`);
             stats.errors++;
         }
+        
+        // --- *** THIS IS THE FIX *** ---
+        // Check for rate-limiting *after* each article (whether it succeeded or failed).
+        // If the 'slow mode' switch is on, pause for 2 seconds.
+        if (geminiService.isRateLimited) {
+          console.log('🐌 Rate-limit active. Pausing for 2s to cool down...');
+          await sleep(2000); // 2-second delay to stay under 50/min free tier
+        }
+        // --- *** END OF FIX *** ---
+
     } // End loop
 
     stats.end_time = Date.now();
@@ -1044,7 +1067,7 @@ async function fetchAndAnalyzeNews() {
   }
 }
 
-// --- THIS IS THE FIX: The sleep() function was REMOVED ---
+// --- THIS IS THE FIX: The sleep() function was REMOVED from here ---
 
 // --- Scheduled Tasks ---
 
@@ -1056,6 +1079,11 @@ cron.schedule('*/30 * * * *', () => {
   }
   console.log('⏰ Cron: Triggering scheduled news fetch...');
   isFetchRunning = true;
+
+  // --- *** THIS IS THE FIX *** ---
+  // Reset the throttle state at the beginning of every new batch
+  geminiService.isRateLimited = false;
+  // --- *** END OF FIX *** ---
 
   fetchAndAnalyzeNews()
     .catch(err => { console.error('❌ CRITICAL Error during scheduled fetch:', err.message); })
