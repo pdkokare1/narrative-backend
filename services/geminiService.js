@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.15 - Adaptive Throttling)
+// services/geminiService.js (FINAL v2.16 - Dynamic Date Fix)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -14,10 +14,7 @@ class GeminiService {
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
     
-    // --- *** THIS IS THE FIX *** ---
-    // This switch will be set to 'true' if we detect a 429 rate-limit error.
     this.isRateLimited = false;
-    // --- *** END OF FIX *** ---
 
     // Initialize trackers
     this.apiKeys.forEach(key => {
@@ -80,10 +77,8 @@ class GeminiService {
         this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
         if (this.keyErrorCount.get(apiKey) > 0) this.keyErrorCount.set(apiKey, 0);
         
-        // --- *** THIS IS THE FIX *** ---
         // If a request succeeds, we assume we are on the Paid Tier. Go fast.
         this.isRateLimited = false;
-        // --- *** END OF FIX *** ---
     }
   }
 
@@ -121,13 +116,10 @@ class GeminiService {
         const status = error.response?.status;
         const isRetriable = (status === 503 || status === 429); // Retry on Service Unavailable or Rate Limit
         
-        // --- *** THIS IS THE FIX *** ---
-        // If we get a 429 (rate limit), flip the "slow mode" switch ON.
         if (status === 429) {
             console.warn(`🐌 RATE LIMIT DETECTED. Enabling 'slow mode' throttle.`);
             this.isRateLimited = true;
         }
-        // --- *** END OF FIX *** ---
 
         if (isRetriable && attempt < maxRetries) {
           const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000; // Exponential backoff
@@ -157,7 +149,7 @@ class GeminiService {
         { // Request Body
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
-            responseMimeType: "application/json", // --- NEW: Force JSON output ---
+            responseMimeType: "application/json", // --- Force JSON output ---
             temperature: 0.4,
             topK: 32,
             topP: 0.95,
@@ -181,7 +173,6 @@ class GeminiService {
       if (!response.data || typeof response.data !== 'object') {
           throw new Error("Received invalid response data from Gemini API despite 2xx status.");
       }
-      // --- MODIFIED: Pass data directly to parser ---
       return this.parseAnalysisResponse(response.data);
 
     } catch (error) {
@@ -207,12 +198,18 @@ class GeminiService {
     const title = article?.title || "No Title";
     const description = article?.description || "No Description";
 
+    // --- *** THIS IS THE FIX *** ---
     // --- CRITICAL CONTEXT INJECTION ---
-    const currentDate = "October 30, 2025"; // Updated date
-    const currentUSPresident = "Donald Trump";
+    // Get the current date in "Month Day, Year" format (e.g., "November 13, 2025")
+    const currentDate = new Date().toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric',
+      timeZone: 'UTC' // Use UTC for consistency
+    });
     // ---------------------------------
 
-    return `CURRENT_CONTEXT: Today's date is ${currentDate}. The current President of the United States is ${currentUSPresident}. All analysis must reflect this present reality.
+    return `CURRENT_CONTEXT: Today's date is ${currentDate}. All analysis must be based on this date.
 
 Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
 
@@ -259,6 +256,7 @@ JSON Structure:
 
 Output ONLY the JSON object.`;
   }
+  // --- *** END OF FIX *** ---
 
   // --- Parse and Validate Response ---
   parseAnalysisResponse(data) {
@@ -279,7 +277,6 @@ Output ONLY the JSON object.`;
         }
 
         // --- 3. Extract Text (This is now the JSON object itself) ---
-        // --- THIS IS THE FIX: 'const' changed to 'let' ---
         let parsed = candidate.content?.parts?.[0]?.text;
         if (typeof parsed !== 'object' || parsed === null) {
              // Fallback for older models that might still wrap in text/markdown
