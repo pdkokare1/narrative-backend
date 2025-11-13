@@ -3,7 +3,7 @@
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
 // --- FIX (2025-11-12): Added Adaptive Throttle for Gemini 429 errors ---
-// --- *** FIX (2025-11-13): Re-implemented 'Snail Mode' check in server.js loop *** ---
+// --- *** FIX (2025-11-13): Corrected FATAL CRASH from 'Date.row()' to 'Date.now()' *** ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -1042,6 +1042,7 @@ async function fetchAndAnalyzeNews() {
         
         // --- *** THIS IS THE FIX (V5 - Smart Pause) *** ---
         // We now check the 'isRateLimited' flag from the geminiService.
+        // This flag is set to TRUE by geminiService if it gets a 429 error.
         if (geminiService.isRateLimited) {
           // If we are rate limited, pause for 60 seconds to let the quota fully recover.
           console.log('...Snail Mode Active 🐌... pausing for 60s to let quota recover...');
@@ -1100,7 +1101,9 @@ cron.schedule('0 */2 * * *', () => {
 cron.schedule('0 2 * * *', async () => {
   console.log('🧹 Cron: Triggering daily article cleanup...');
   try {
-    const sevenDaysAgo = new Date(Date.row() - 7 * 24 * 60 * 60 * 1000);
+    // --- *** THIS IS THE FIX: 'Date.row()' to 'Date.now()' *** ---
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    // --- *** END OF FIX *** ---
     // Limit deletion batch size for safety and performance
     const result = await Article.deleteMany({ createdAt: { $lt: sevenDaysAgo } }).limit(5000);
     console.log(`🗑️ Cleanup successful: Deleted ${result.deletedCount} articles older than 7 days (batch limit 5000).`);
