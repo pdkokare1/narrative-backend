@@ -1,5 +1,5 @@
 // services/geminiService.js (FINAL v2.15 - Adaptive Throttling)
-// --- *** FIX (2025-11-12 QF): Reduced maxRetries to 2 to conserve free tier quota *** ---
+// --- *** FIX (2025-11-13): Added "Smart Backoff" to read Google's 'retry in' time *** ---
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -15,10 +15,8 @@ class GeminiService {
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
     
-    // --- *** THIS IS THE FIX *** ---
     // This switch will be set to 'true' if we detect a 429 rate-limit error.
     this.isRateLimited = false;
-    // --- *** END OF FIX *** ---
 
     // Initialize trackers
     this.apiKeys.forEach(key => {
@@ -81,10 +79,8 @@ class GeminiService {
         this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
         if (this.keyErrorCount.get(apiKey) > 0) this.keyErrorCount.set(apiKey, 0);
         
-        // --- *** THIS IS THE FIX *** ---
-        // If a request succeeds, we assume we are on the Paid Tier. Go fast.
+        // If a request succeeds, we are no longer rate-limited. Go fast.
         this.isRateLimited = false;
-        // --- *** END OF FIX *** ---
     }
   }
 
@@ -102,7 +98,6 @@ class GeminiService {
   }
 
   // --- Main Analysis Function with Retries ---
-  // --- *** THIS IS THE FIX: Changed maxRetries from 3 to 2 *** ---
   async analyzeArticle(article, maxRetries = 2) {
     if (!this.apiKeys || this.apiKeys.length === 0) throw new Error("Analysis failed: No Gemini keys configured.");
 
@@ -121,20 +116,32 @@ class GeminiService {
         if (apiKeyUsed) this.recordError(apiKeyUsed); // Record error for the key used
 
         const status = error.response?.status;
-        const isRetriable = (status === 503 || status === 429); // Retry on Service Unavailable or Rate Limit
         
-        // --- *** THIS IS THE FIX *** ---
-        // If we get a 429 (rate limit), flip the "slow mode" switch ON.
+        // --- *** THIS IS THE NEW "SMART BACKOFF" LOGIC *** ---
+        let delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000; // Default: 2-3s, then 4-5s
+        const isRetriable = (status === 503 || status === 429);
+
         if (status === 429) {
-            console.warn(`🐌 RATE LIMIT DETECTED. Enabling 'slow mode' throttle.`);
-            this.isRateLimited = true;
+            console.warn(`🐌 RATE LIMIT DETECTED.`);
+            this.isRateLimited = true; // Set the global flag for server.js
+            
+            // Try to read the *exact* wait time from Google's error
+            const message = error.response?.data?.error?.message;
+            if (message) {
+                const retryMatch = message.match(/Please retry in ([\d\.]+)s\./);
+                if (retryMatch && retryMatch[1]) {
+                    const waitInSeconds = parseFloat(retryMatch[1]);
+                    // Use Google's time + a 1-second safety buffer
+                    delay = (waitInSeconds + 1) * 1000; 
+                    console.warn(`...Google requested ${waitInSeconds}s. Waiting for ${Math.round(delay/1000)}s...`);
+                }
+            }
         }
-        // --- *** END OF FIX *** ---
+        // --- *** END OF NEW LOGIC *** ---
 
         if (isRetriable && attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000; // Exponential backoff
           console.warn(`⏳ Gemini returned ${status}. Retrying attempt ${attempt + 1}/${maxRetries} after ${Math.round(delay/1000)}s...`);
-          await sleep(delay);
+          await sleep(delay); // Wait for the calculated delay
         } else {
           console.error(`❌ Gemini analysis failed definitively after ${attempt} attempt(s) for article: "${article?.title?.substring(0, 60)}..."`);
           break; // Exit retry loop
