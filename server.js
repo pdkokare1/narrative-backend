@@ -1,4 +1,5 @@
-// In file: server.js checking deployement
+// In file: server.js
+// --- FIX: Added Firebase App Check middleware ---
 // --- FIX: Corrected syntax error in GET /api/profile/me catch block ---
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
@@ -70,7 +71,33 @@ const apiLimiter = rateLimit({
 // --- Apply limiter to all API routes ---
 app.use('/api/', apiLimiter); 
 
+// --- *** NEW: App Check (Step 2) *** ---
+// This middleware is the "bouncer" that checks for the secret handshake.
+const checkAppCheck = async (req, res, next) => {
+  const appCheckToken = req.header('X-Firebase-AppCheck'); // Get the token
+
+  if (!appCheckToken) {
+    // If there's no token, reject it.
+    return res.status(401).json({ error: 'Unauthorized: No App Check token.' });
+  }
+
+  try {
+    // Ask Firebase to verify the token is real
+    await admin.appCheck().verifyToken(appCheckToken);
+    
+    // Token is valid! Let the request continue.
+    next(); 
+  } catch (err) {
+    // Token is fake or expired. Reject it.
+    console.warn('⚠️ App Check Error:', err.message);
+    return res.status(403).json({ error: 'Forbidden: Invalid App Check token.' });
+  }
+};
+// --- *** END OF NEW APP CHECK CODE *** ---
+
+
 // --- Token Verification Middleware ---
+// This checks if a *user* is logged in.
 const checkAuth = async (req, res, next) => {
   const token = req.headers.authorization?.split('Bearer ')[1]; // Get token
 
@@ -89,9 +116,12 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
-// --- Apply token check to ALL OTHER API routes ---
+// --- *** APPLYING THE MIDDLEWARE *** ---
+// We apply the "bouncer" (App Check) *first* to all API routes.
+app.use('/api/', checkAppCheck); 
+// We apply the "login check" (Auth) *second* to all API routes.
 app.use('/api/', checkAuth);
-// --- *** ALL ROUTES BELOW THIS LINE ARE NOW PROTECTED *** ---
+// --- *** ALL ROUTES BELOW THIS LINE ARE NOW PROTECTED BY BOTH *** ---
 
 
 // --- *** MOVED THIS ENDPOINT *** ---
