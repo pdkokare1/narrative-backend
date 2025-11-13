@@ -3,7 +3,7 @@
 // --- BUG FIX: Removed 31-second sleep() delay from fetchAndAnalyzeNews loop ---
 // --- BUG FIX (2025-11-11): Corrected '5KA00' typo to '500' in log-share catch block ---
 // --- FIX (2025-11-12): Added Adaptive Throttle for Gemini 429 errors ---
-// --- *** FIX (2025-11-12 V5): Changed cron job to every 2 hours and kept 60s snail mode *** ---
+// --- *** FIX (2025-11-13): Removed 'Snail Mode' logic, as geminiService now handles its own smart backoff. Kept 3s polite pause. *** ---
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -108,10 +108,8 @@ app.post('/api/fetch-news', (req, res) => {
   console.log(`📰 Manual fetch triggered via API by user: ${req.user.uid}`);
   isFetchRunning = true;
   
-  // --- *** THIS IS THE FIX *** ---
   // Reset the throttle state at the beginning of every new batch
   geminiService.isRateLimited = false;
-  // --- *** END OF FIX *** ---
 
   // Respond to the user immediately
   res.status(202).json({ message: 'Fetch acknowledged. Analysis starting in background.', timestamp: new Date().toISOString() });
@@ -1042,17 +1040,13 @@ async function fetchAndAnalyzeNews() {
             stats.errors++;
         }
         
-        // --- *** THIS IS THE FIX (V4 - Smart Pause) *** ---
-        // We now check the 'isRateLimited' flag from the geminiService.
-        if (geminiService.isRateLimited) {
-          // If we are rate limited, pause for 60 seconds to let the quota fully recover.
-          console.log('...Snail Mode Active 🐌... pausing for 60s to let quota recover...');
-          await sleep(60000); // 60-second (60000ms) "cooldown" pause
-        } else {
-          // If all is good, pause for 3 seconds to stay under the limit.
-          console.log('...pausing for 3s to respect free tier rate limit...');
-          await sleep(3000); // 3-second (3000ms) "normal" pause
-        }
+        // --- *** THIS IS THE FIX (V5) *** ---
+        // We are removing the "Snail Mode" logic.
+        // The `geminiService` will now handle its *own* long pauses if it gets a 429 error.
+        // We are just adding a simple, polite 3-second pause between *every* request
+        // to prevent requests from stacking up.
+        console.log('...pausing for 3s to respect free tier rate limit...');
+        await sleep(3000); // 3-second (3000ms) "normal" pause
         // --- *** END OF FIX *** ---
 
     } // End loop
