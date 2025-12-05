@@ -1,4 +1,4 @@
-// server.js (Final - All Routes Restored)
+// server.js (v2.20 - Added 'For You' & 'Weekly Digest' Logic)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -33,7 +33,7 @@ app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
 
-// --- CORS Config (Crucial for your domain) ---
+// --- CORS Config ---
 app.use(cors({
   origin: [
     'https://thegamut.in', 
@@ -106,7 +106,7 @@ app.use('/api/', checkAppCheck);
 app.use('/api/', checkAuth);
 
 
-// ================= ROUTES (RESTORED) =================
+// ================= ROUTES =================
 
 // --- 1. Profile Routes ---
 
@@ -149,6 +149,82 @@ app.post('/api/profile', async (req, res) => {
     console.error('Error in POST /api/profile:', error.message);
     if (error.code === 11000) return res.status(409).json({ error: 'Profile exists.' });
     res.status(500).json({ error: 'Error creating profile' });
+  }
+});
+
+// --- NEW: Weekly Digest (The Spectrum Check) ---
+app.get('/api/profile/weekly-digest', async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    // 1. Get logs from last 7 days
+    const recentLogs = await ActivityLog.aggregate([
+      { $match: { userId: userId, action: 'view_analysis', timestamp: { $gte: sevenDaysAgo } } },
+      { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'article' } },
+      { $unwind: '$article' },
+      { $project: { lean: '$article.politicalLean', category: '$article.category', topic: '$article.clusterTopic' } }
+    ]);
+
+    if (!recentLogs || recentLogs.length < 5) {
+      return res.status(200).json({ status: 'Insufficient Data', message: "Read more articles to unlock your Weekly Pulse." });
+    }
+
+    // 2. Calculate "Spectrum Score"
+    // Left = -2, Left-Leaning = -1, Center = 0, Right-Leaning = +1, Right = +2
+    let score = 0;
+    const leanCounts = {};
+    const categoryCounts = {};
+
+    recentLogs.forEach(log => {
+      // Track Leans
+      leanCounts[log.lean] = (leanCounts[log.lean] || 0) + 1;
+      
+      // Calculate Score
+      if (log.lean === 'Left') score -= 2;
+      else if (log.lean === 'Left-Leaning') score -= 1;
+      else if (log.lean === 'Right-Leaning') score += 1;
+      else if (log.lean === 'Right') score += 2;
+      
+      // Track Categories (for recommendation context)
+      if (log.category) categoryCounts[log.category] = (categoryCounts[log.category] || 0) + 1;
+    });
+
+    const avgScore = score / recentLogs.length;
+    let status = 'Balanced';
+    let bubbleType = null; // 'Left' or 'Right'
+    
+    if (avgScore <= -0.8) { status = 'Left Bubble'; bubbleType = 'Left'; }
+    else if (avgScore >= 0.8) { status = 'Right Bubble'; bubbleType = 'Right'; }
+
+    // 3. Find Recommendation (Palate Cleanser) if in a bubble
+    let recommendation = null;
+    if (bubbleType) {
+      const topCategory = Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0] || 'General';
+      const targetLeans = bubbleType === 'Left' ? ['Right', 'Right-Leaning', 'Center'] : ['Left', 'Left-Leaning', 'Center'];
+      
+      // Find a high-quality article from the opposing view on a topic they like
+      recommendation = await Article.findOne({
+        category: topCategory,
+        politicalLean: { $in: targetLeans },
+        trustScore: { $gt: 75 } // High quality only
+      })
+      .sort({ publishedAt: -1 }) // Newest
+      .select('headline summary politicalLean source _id')
+      .lean();
+    }
+
+    res.status(200).json({
+      status,
+      avgScore,
+      articleCount: recentLogs.length,
+      recommendation,
+      topCategory: Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0]
+    });
+
+  } catch (error) {
+    console.error("Weekly Digest Error:", error);
+    res.status(500).json({ error: 'Error generating digest' });
   }
 });
 
@@ -243,7 +319,84 @@ app.post('/api/activity/log-read', async (req, res) => {
 
 // --- 4. Data Fetching Routes ---
 
-// Smart Feed Route
+// NEW: "Balanced For You" Feed
+app.get('/api/articles/for-you', async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    
+    // 1. Analyze User Preferences (Last 50 reads)
+    const logs = await ActivityLog.aggregate([
+      { $match: { userId: userId, action: 'view_analysis' } },
+      { $sort: { timestamp: -1 } },
+      { $limit: 50 },
+      { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'article' } },
+      { $unwind: '$article' }
+    ]);
+
+    // Defaults if no data
+    let favoriteCategory = 'Technology'; 
+    let usualLean = 'Center';
+
+    if (logs.length > 0) {
+      // Calculate Stats
+      const cats = {}; const leans = {};
+      logs.forEach(l => {
+        if(l.article.category) cats[l.article.category] = (cats[l.article.category] || 0) + 1;
+        if(l.article.politicalLean) leans[l.article.politicalLean] = (leans[l.article.politicalLean] || 0) + 1;
+      });
+      favoriteCategory = Object.keys(cats).sort((a,b) => cats[b] - cats[a])[0];
+      usualLean = Object.keys(leans).sort((a,b) => leans[b] - leans[a])[0];
+    }
+
+    // Determine "Opposite" Lean for Challenge
+    let challengeLeans = [];
+    if (['Left', 'Left-Leaning'].includes(usualLean)) challengeLeans = ['Right', 'Right-Leaning', 'Center'];
+    else if (['Right', 'Right-Leaning'].includes(usualLean)) challengeLeans = ['Left', 'Left-Leaning', 'Center'];
+    else challengeLeans = ['Left', 'Right']; // If Center, show extremes
+
+    // 2. Fetch "Comfort" Articles (Matching habits)
+    const comfortArticles = await Article.find({
+      category: favoriteCategory,
+      politicalLean: usualLean
+    })
+    .sort({ publishedAt: -1 })
+    .limit(5)
+    .lean();
+
+    // 3. Fetch "Challenge" Articles (Same topic, opposite view)
+    const challengeArticles = await Article.find({
+      category: favoriteCategory,
+      politicalLean: { $in: challengeLeans }
+    })
+    .sort({ publishedAt: -1 })
+    .limit(5)
+    .lean();
+
+    // 4. Mark them for UI Badge
+    const result = [
+      ...comfortArticles.map(a => ({ ...a, suggestionType: 'Comfort' })),
+      ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
+    ];
+
+    // Shuffle results so they are mixed
+    for (let i = result.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [result[i], result[j]] = [result[j], result[i]];
+    }
+
+    res.status(200).json({ 
+      articles: result, 
+      meta: { basedOnCategory: favoriteCategory, usualLean: usualLean } 
+    });
+
+  } catch (error) {
+    console.error("For You Error:", error);
+    res.status(500).json({ error: 'Error generating recommendations' });
+  }
+});
+
+
+// Standard Feed Route
 app.get('/api/articles', async (req, res, next) => {
   try {
     const filters = {
@@ -400,7 +553,7 @@ app.get('/api/profile/stats', async (req, res) => {
 
 // ==========================================
 
-// --- Background Logic (No changes needed) ---
+// --- Background Logic ---
 let isFetchRunning = false;
 app.post('/api/fetch-news', (req, res) => {
   if (isFetchRunning) return res.status(429).json({ message: 'Running' });
