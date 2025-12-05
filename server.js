@@ -1,4 +1,4 @@
-// server.js (v2.30 - Optimized with Parallel Processing)
+// server.js (v2.40 - Added Search Endpoint)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -152,7 +152,7 @@ app.post('/api/profile', async (req, res) => {
   }
 });
 
-// Weekly Digest (The Spectrum Check)
+// Weekly Digest
 app.get('/api/profile/weekly-digest', async (req, res) => {
   try {
     const userId = req.user.uid;
@@ -308,6 +308,38 @@ app.post('/api/activity/log-read', async (req, res) => {
 
 
 // --- 4. Data Fetching Routes ---
+
+// NEW: Search Endpoint
+app.get('/api/search', async (req, res) => {
+  try {
+    const query = req.query.q;
+    if (!query || query.trim().length === 0) return res.status(400).json({ error: 'Query required' });
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+
+    // MongoDB Text Search with Ranking
+    const articles = await Article.find(
+      { $text: { $search: query } },
+      { score: { $meta: 'textScore' } }
+    )
+    .sort({ score: { $meta: 'textScore' }, publishedAt: -1 }) // Sort by Relevance then Date
+    .skip(offset)
+    .limit(limit)
+    .lean();
+
+    const total = await Article.countDocuments({ $text: { $search: query } });
+
+    // Mark these as "Full" results for the UI
+    const results = articles.map(a => ({ ...a, clusterCount: 1 })); // Default to 1 count for search
+
+    res.status(200).json({ articles: results, pagination: { total } });
+  } catch (error) {
+    console.error("Search Error:", error);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
 
 // "Balanced For You" Feed
 app.get('/api/articles/for-you', async (req, res) => {
