@@ -40,10 +40,8 @@ const articleSchema = new mongoose.Schema({
   primaryNoun: { type: String, index: true, trim: true, default: null },
   secondaryNoun: { type: String, index: true, trim: true, default: null },
   
-  // --- NEW: Vector Embedding for Smart Clustering ---
-  // This stores the "AI understanding" of the headline as a list of numbers
+  // Vector Embedding
   embedding: { type: [Number], index: false }, 
-  // ------------------------------------------------
   
   keyFindings: [String],
   recommendations: [String],
@@ -51,6 +49,24 @@ const articleSchema = new mongoose.Schema({
 }, {
   timestamps: true, // Adds createdAt and updatedAt
   autoIndex: process.env.NODE_ENV !== 'production',
+});
+
+// --- NEW: Text Index for Search ---
+// This allows us to search headlines, summaries, and nouns instantly.
+articleSchema.index({ 
+  headline: 'text', 
+  summary: 'text', 
+  clusterTopic: 'text', 
+  primaryNoun: 'text', 
+  secondaryNoun: 'text' 
+}, {
+  name: 'GlobalSearchIndex',
+  weights: {
+    headline: 10,     // Headlines matches are most important
+    clusterTopic: 8,  // Topic matches are very important
+    primaryNoun: 5,   // Specific people/orgs are important
+    summary: 1        // Summary matches are less critical
+  }
 });
 
 // Indexes for performance
@@ -62,7 +78,7 @@ articleSchema.index({ biasScore: 1, publishedAt: -1 });
 articleSchema.index({ createdAt: 1 });
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
-// 5-Field Cluster Index (Legacy support + Fast lookup)
+// 5-Field Cluster Index
 articleSchema.index({ clusterTopic: 1, category: 1, country: 1, primaryNoun: 1, secondaryNoun: 1, publishedAt: -1 }, {
   name: "5_Field_Cluster_Index"
 });
