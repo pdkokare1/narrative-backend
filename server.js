@@ -1,4 +1,4 @@
-// server.js (Final Railway Fix)
+// server.js (Final - All Routes Restored)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -12,16 +12,19 @@ require('dotenv').config();
 const admin = require('firebase-admin');
 
 // --- Services ---
-// Ensure these files exist in your /services folder!
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService'); 
 const clusteringService = require('./services/clusteringService'); 
 
 // --- Models ---
-// Ensure these files exist in your /models folder!
 const Profile = require('./models/profileModel');
 const ActivityLog = require('./models/activityLogModel');
 const Article = require('./models/articleModel');
+
+// --- Helper Functions ---
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 const app = express();
 
@@ -29,24 +32,25 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(compression());
-app.use(cors());
+
+// --- CORS Config (Crucial for your domain) ---
+app.use(cors({
+  origin: [
+    'https://thegamut.in', 
+    'https://www.thegamut.in', 
+    'https://api.thegamut.in',
+    'http://localhost:3000'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck']
+}));
+
 app.use(express.json({ limit: '1mb' }));
 
-// --- 1. HEALTH CHECK ROUTE (Required by Railway) ---
-// This must be defined BEFORE the authentication middleware
-// so Railway can ping it without logging in.
+// --- 1. HEALTH CHECK ---
 app.get('/', (req, res) => {
   res.status(200).send('OK'); 
 });
-
-// --- 2. CRITICAL: Check Environment Variables ---
-// If these are missing, the app will crash on startup.
-if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-  console.error("❌ CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT is missing.");
-}
-if (!process.env.MONGODB_URI) {
-  console.error("❌ CRITICAL ERROR: MONGODB_URI is missing.");
-}
 
 // --- Initialize Firebase Admin ---
 try {
@@ -59,13 +63,12 @@ try {
   }
 } catch (error) {
   console.error('❌ Firebase Admin Init Error:', error.message);
-  // Do not crash, just log it.
 }
 
 // --- Rate Limiter ---
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 300, 
   standardHeaders: true, 
   legacyHeaders: false, 
 });
@@ -98,13 +101,16 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
-// --- Apply Middleware to API routes only ---
+// --- Apply Middleware ---
 app.use('/api/', checkAppCheck); 
 app.use('/api/', checkAuth);
 
-// --- Routes ---
 
-// Profile Route
+// ================= ROUTES (RESTORED) =================
+
+// --- 1. Profile Routes ---
+
+// GET Profile
 app.get('/api/profile/me', async (req, res) => {
   try {
     const profile = await Profile.findOne({ userId: req.user.uid })
@@ -118,7 +124,38 @@ app.get('/api/profile/me', async (req, res) => {
   }
 });
 
-// Save Article Route
+// POST Create Profile
+app.post('/api/profile', async (req, res) => {
+  try {
+    const { username } = req.body;
+    const { uid, email } = req.user; 
+
+    if (!username || username.trim().length < 3) {
+      return res.status(400).json({ error: 'Username must be at least 3 characters' });
+    }
+    const cleanUsername = username.trim();
+
+    const existingUsername = await Profile.findOne({ username: cleanUsername }).lean();
+    if (existingUsername) return res.status(409).json({ error: 'Username already taken' });
+
+    const existingProfile = await Profile.findOne({ userId: uid }).lean();
+    if (existingProfile) return res.status(409).json({ error: 'Profile already exists' });
+
+    const newProfile = new Profile({ userId: uid, email: email, username: cleanUsername });
+    await newProfile.save();
+    res.status(201).json(newProfile);
+
+  } catch (error) {
+    console.error('Error in POST /api/profile:', error.message);
+    if (error.code === 11000) return res.status(409).json({ error: 'Profile exists.' });
+    res.status(500).json({ error: 'Error creating profile' });
+  }
+});
+
+
+// --- 2. Article Actions ---
+
+// Save/Unsave Article
 app.post('/api/articles/:id/save', async (req, res) => {
     try {
         const { id } = req.params;
@@ -143,6 +180,68 @@ app.post('/api/articles/:id/save', async (req, res) => {
         res.status(500).json({ error: 'Error saving article' });
     }
 });
+
+// Get Saved Articles
+app.get('/api/articles/saved', async (req, res) => {
+  try {
+    const { uid } = req.user;
+    const profile = await Profile.findOne({ userId: uid })
+      .select('savedArticles')
+      .populate({
+        path: 'savedArticles',
+        options: { sort: { publishedAt: -1 } } 
+      })
+      .lean();
+
+    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    res.status(200).json({ articles: profile.savedArticles || [] });
+  } catch (error) {
+    console.error('Error in GET /api/articles/saved:', error.message);
+    res.status(500).json({ error: 'Error loading saved articles' });
+  }
+});
+
+
+// --- 3. Activity Logging ---
+
+app.post('/api/activity/log-view', async (req, res) => {
+  try {
+    const { articleId } = req.body;
+    if (!articleId) return res.status(400).json({ error: 'ID required' });
+    await ActivityLog.create({ userId: req.user.uid, articleId, action: 'view_analysis' });
+    await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { articlesViewedCount: 1 } });
+    res.status(200).json({ message: 'Logged' });
+  } catch (error) { res.status(500).json({ error: 'Log error' }); }
+});
+
+app.post('/api/activity/log-compare', async (req, res) => {
+  try {
+    const { articleId } = req.body;
+    await ActivityLog.create({ userId: req.user.uid, articleId, action: 'view_comparison' });
+    await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { comparisonsViewedCount: 1 } });
+    res.status(200).json({ message: 'Logged' });
+  } catch (error) { res.status(500).json({ error: 'Log error' }); }
+});
+
+app.post('/api/activity/log-share', async (req, res) => {
+  try {
+    const { articleId } = req.body;
+    await ActivityLog.create({ userId: req.user.uid, articleId, action: 'share_article' });
+    await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { articlesSharedCount: 1 } });
+    res.status(200).json({ message: 'Logged' });
+  } catch (error) { res.status(500).json({ error: 'Log error' }); }
+});
+
+app.post('/api/activity/log-read', async (req, res) => {
+  try {
+    const { articleId } = req.body;
+    await ActivityLog.create({ userId: req.user.uid, articleId, action: 'read_external' });
+    res.status(200).json({ message: 'Logged' });
+  } catch (error) { res.status(500).json({ error: 'Log error' }); }
+});
+
+
+// --- 4. Data Fetching Routes ---
 
 // Smart Feed Route
 app.get('/api/articles', async (req, res, next) => {
@@ -200,46 +299,197 @@ app.get('/api/articles', async (req, res, next) => {
   }
 });
 
-// --- Scheduled Tasks ---
-let isFetchRunning = false;
-async function fetchAndAnalyzeNews() {
-    if (isFetchRunning) return;
-    isFetchRunning = true;
-    console.log("🔄 Starting News Fetch...");
-    try {
-        const articles = await newsService.fetchNews();
-        // ... (simplified logic for brevity, assuming services handle the rest)
-        console.log(`✅ Processed ${articles.length} articles.`);
-    } catch (e) {
-        console.error("Fetch Error:", e);
-    } finally {
-        isFetchRunning = false;
-    }
-}
+// Cluster Fetch
+app.get('/api/cluster/:clusterId', async (req, res, next) => {
+  try {
+    const clusterIdNum = parseInt(req.params.clusterId);
+    if (isNaN(clusterIdNum)) return res.status(400).json({ error: 'Invalid cluster ID' });
 
-cron.schedule('*/30 * * * *', () => {
-  fetchAndAnalyzeNews();
+    const articles = await Article.find({ clusterId: clusterIdNum })
+      .sort({ trustScore: -1, publishedAt: -1 })
+      .lean();
+
+    const grouped = articles.reduce((acc, article) => {
+      const lean = article.politicalLean;
+      if (['Left', 'Left-Leaning'].includes(lean)) acc.left.push(article);
+      else if (lean === 'Center') acc.center.push(article);
+      else if (['Right-Leaning', 'Right'].includes(lean)) acc.right.push(article);
+      else if (lean === 'Not Applicable') acc.reviews.push(article);
+      return acc;
+    }, { left: [], center: [], right: [], reviews: [] }); 
+
+    res.status(200).json({ ...grouped, stats: { total: articles.length } });
+  } catch (error) {
+    next(error);
+  }
 });
 
-// --- Database Connection ---
-// We connect ONLY if the URI is present.
+// Stats
+app.get('/api/profile/stats', async (req, res) => {
+  try {
+    const userId = req.user.uid;
+    const stats = await ActivityLog.aggregate([
+      { $match: { userId: userId } },
+      { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' } },
+      { $unwind: { path: '$articleDetails', preserveNullAndEmptyArrays: true } },
+      {
+        $facet: {
+          dailyCounts: [
+            { $match: { action: 'view_analysis' } },
+            { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }, count: { $sum: 1 } } },
+            { $sort: { '_id': 1 } }, { $project: { _id: 0, date: '$_id', count: 1 } }
+          ],
+          leanDistribution_read: [
+             { $match: { 'action': 'view_analysis' } },
+            { $group: { _id: '$articleDetails.politicalLean', count: { $sum: 1 } } },
+            { $project: { _id: 0, lean: '$_id', count: 1 } }
+          ],
+          leanDistribution_shared: [
+             { $match: { 'action': 'share_article' } },
+            { $group: { _id: '$articleDetails.politicalLean', count: { $sum: 1 } } },
+            { $project: { _id: 0, lean: '$_id', count: 1 } }
+          ],
+          categoryDistribution_read: [
+             { $match: { 'action': 'view_analysis' } },
+            { $group: { _id: '$articleDetails.category', count: { $sum: 1 } } },
+             { $sort: { count: -1 } }, { $limit: 10 },
+            { $project: { _id: 0, category: '$_id', count: 1 } }
+          ],
+          qualityDistribution_read: [
+             { $match: { 'action': 'view_analysis' } },
+            { $group: { _id: '$articleDetails.credibilityGrade', count: { $sum: 1 } } },
+            { $project: { _id: 0, grade: '$_id', count: 1 } }
+          ],
+          totalCounts: [
+            { $group: { _id: '$action', count: { $sum: 1 } } },
+            { $project: { _id: 0, action: '$_id', count: 1 } }
+          ],
+          topSources_read: [
+            { $match: { 'action': 'view_analysis' } },
+            { $group: { _id: '$articleDetails.source', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }, { $limit: 10 },
+            { $project: { _id: 0, source: '$_id', count: 1 } }
+          ],
+          sentimentDistribution_read: [
+            { $match: { 'action': 'view_analysis' } },
+            { $group: { _id: '$articleDetails.sentiment', count: { $sum: 1 } } },
+            { $project: { _id: 0, sentiment: '$_id', count: 1 } }
+          ]
+        }
+      }
+    ]);
+
+    const results = {
+      timeframeDays: 'All Time',
+      dailyCounts: stats[0]?.dailyCounts || [],
+      leanDistribution_read: stats[0]?.leanDistribution_read || [],
+      leanDistribution_shared: stats[0]?.leanDistribution_shared || [],
+      categoryDistribution_read: stats[0]?.categoryDistribution_read || [],
+      qualityDistribution_read: stats[0]?.qualityDistribution_read || [],
+      totalCounts: stats[0]?.totalCounts || [],
+      topSources_read: stats[0]?.topSources_read || [],
+      sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
+    };
+    res.status(200).json(results);
+  } catch (error) {
+    console.error('Stats Error:', error);
+    res.status(500).json({ error: 'Error fetching stats' });
+  }
+});
+
+
+// ==========================================
+
+// --- Background Logic (No changes needed) ---
+let isFetchRunning = false;
+app.post('/api/fetch-news', (req, res) => {
+  if (isFetchRunning) return res.status(429).json({ message: 'Running' });
+  isFetchRunning = true;
+  geminiService.isRateLimited = false;
+  res.status(202).json({ message: 'Started' });
+  fetchAndAnalyzeNews().finally(() => { isFetchRunning = false; });
+});
+
+async function fetchAndAnalyzeNews() {
+  console.log('🔄 Fetching news...');
+  try {
+    const rawArticles = await newsService.fetchNews(); 
+    if (rawArticles.length === 0) return;
+
+    for (const article of rawArticles) {
+        try {
+            if (!article?.url || !article?.title) continue;
+            const exists = await Article.findOne({ url: article.url }, { _id: 1 });
+            if (exists) continue;
+
+            const textToEmbed = `${article.title}. ${article.description}`;
+            const embedding = await geminiService.createEmbedding(textToEmbed);
+            const analysis = await geminiService.analyzeArticle(article);
+
+            if (analysis.isJunk) continue;
+            
+            const newArticleData = {
+              headline: article.title,
+              summary: analysis.summary,
+              source: article.source?.name,
+              category: analysis.category,
+              politicalLean: analysis.politicalLean,
+              url: article.url,
+              imageUrl: article.urlToImage,
+              publishedAt: article.publishedAt,
+              analysisType: analysis.analysisType,
+              sentiment: analysis.sentiment,
+              biasScore: analysis.biasScore, 
+              biasLabel: analysis.biasLabel,
+              biasComponents: analysis.biasComponents || {},
+              credibilityScore: analysis.credibilityScore, 
+              credibilityGrade: analysis.credibilityGrade,
+              credibilityComponents: analysis.credibilityComponents || {},
+              reliabilityScore: analysis.reliabilityScore, 
+              reliabilityGrade: analysis.reliabilityGrade,
+              reliabilityComponents: analysis.reliabilityComponents || {},
+              trustScore: analysis.trustScore, 
+              trustLevel: analysis.trustLevel,
+              coverageLeft: analysis.coverageLeft || 0,
+              coverageCenter: analysis.coverageCenter || 0,
+              coverageRight: analysis.coverageRight || 0,
+              clusterTopic: analysis.clusterTopic,
+              country: analysis.country,
+              primaryNoun: analysis.primaryNoun,
+              secondaryNoun: analysis.secondaryNoun,
+              keyFindings: analysis.keyFindings || [],
+              recommendations: analysis.recommendations || [],
+              analysisVersion: Article.schema.path('analysisVersion').defaultValue,
+              embedding: embedding || []
+            };
+            
+            newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding);
+            await Article.create(newArticleData);
+            console.log(`✅ Saved: ${newArticleData.headline.substring(0, 30)}...`);
+        } catch (error) {
+            console.error(`❌ Article Error: ${error.message}`);
+        }
+        if (geminiService.isRateLimited) await sleep(2000); 
+    }
+  } catch (error) {
+    console.error('❌ Fetch Error:', error.message);
+  }
+}
+
+cron.schedule('*/30 * * * *', () => { if(!isFetchRunning) { isFetchRunning = true; geminiService.isRateLimited = false; fetchAndAnalyzeNews().finally(() => isFetchRunning = false); } });
+
+// --- Server Startup ---
 if (process.env.MONGODB_URI) {
     mongoose.connect(process.env.MONGODB_URI)
         .then(() => console.log('✅ MongoDB Connected'))
         .catch(err => console.error("❌ MongoDB Connection Failed:", err.message));
-} else {
-    console.error("❌ CRITICAL: MONGODB_URI is missing. Database connection aborted.");
 }
 
-// --- Server Startup ---
-// 1. Get Port from Environment (Railway provides this)
 const PORT = process.env.PORT || 3001;
-// 2. Bind to 0.0.0.0 (Required for Docker/Railway networking)
 const HOST = '0.0.0.0'; 
 
 app.listen(PORT, HOST, () => {
     console.log(`🚀 Server running on http://${HOST}:${PORT}`);
-    console.log(`Health check available at http://${HOST}:${PORT}/`);
 });
 
 module.exports = app;
