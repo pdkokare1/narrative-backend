@@ -1,4 +1,4 @@
-// server.js (v2.20 - Added 'For You' & 'Weekly Digest' Logic)
+// server.js (v2.30 - Optimized with Parallel Processing)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -152,13 +152,12 @@ app.post('/api/profile', async (req, res) => {
   }
 });
 
-// --- NEW: Weekly Digest (The Spectrum Check) ---
+// Weekly Digest (The Spectrum Check)
 app.get('/api/profile/weekly-digest', async (req, res) => {
   try {
     const userId = req.user.uid;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
-    // 1. Get logs from last 7 days
     const recentLogs = await ActivityLog.aggregate([
       { $match: { userId: userId, action: 'view_analysis', timestamp: { $gte: sevenDaysAgo } } },
       { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'article' } },
@@ -170,46 +169,37 @@ app.get('/api/profile/weekly-digest', async (req, res) => {
       return res.status(200).json({ status: 'Insufficient Data', message: "Read more articles to unlock your Weekly Pulse." });
     }
 
-    // 2. Calculate "Spectrum Score"
-    // Left = -2, Left-Leaning = -1, Center = 0, Right-Leaning = +1, Right = +2
     let score = 0;
     const leanCounts = {};
     const categoryCounts = {};
 
     recentLogs.forEach(log => {
-      // Track Leans
       leanCounts[log.lean] = (leanCounts[log.lean] || 0) + 1;
-      
-      // Calculate Score
       if (log.lean === 'Left') score -= 2;
       else if (log.lean === 'Left-Leaning') score -= 1;
       else if (log.lean === 'Right-Leaning') score += 1;
       else if (log.lean === 'Right') score += 2;
-      
-      // Track Categories (for recommendation context)
       if (log.category) categoryCounts[log.category] = (categoryCounts[log.category] || 0) + 1;
     });
 
     const avgScore = score / recentLogs.length;
     let status = 'Balanced';
-    let bubbleType = null; // 'Left' or 'Right'
+    let bubbleType = null; 
     
     if (avgScore <= -0.8) { status = 'Left Bubble'; bubbleType = 'Left'; }
     else if (avgScore >= 0.8) { status = 'Right Bubble'; bubbleType = 'Right'; }
 
-    // 3. Find Recommendation (Palate Cleanser) if in a bubble
     let recommendation = null;
     if (bubbleType) {
       const topCategory = Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0] || 'General';
       const targetLeans = bubbleType === 'Left' ? ['Right', 'Right-Leaning', 'Center'] : ['Left', 'Left-Leaning', 'Center'];
       
-      // Find a high-quality article from the opposing view on a topic they like
       recommendation = await Article.findOne({
         category: topCategory,
         politicalLean: { $in: targetLeans },
-        trustScore: { $gt: 75 } // High quality only
+        trustScore: { $gt: 75 }
       })
-      .sort({ publishedAt: -1 }) // Newest
+      .sort({ publishedAt: -1 })
       .select('headline summary politicalLean source _id')
       .lean();
     }
@@ -319,12 +309,10 @@ app.post('/api/activity/log-read', async (req, res) => {
 
 // --- 4. Data Fetching Routes ---
 
-// NEW: "Balanced For You" Feed
+// "Balanced For You" Feed
 app.get('/api/articles/for-you', async (req, res) => {
   try {
     const userId = req.user.uid;
-    
-    // 1. Analyze User Preferences (Last 50 reads)
     const logs = await ActivityLog.aggregate([
       { $match: { userId: userId, action: 'view_analysis' } },
       { $sort: { timestamp: -1 } },
@@ -333,12 +321,10 @@ app.get('/api/articles/for-you', async (req, res) => {
       { $unwind: '$article' }
     ]);
 
-    // Defaults if no data
     let favoriteCategory = 'Technology'; 
     let usualLean = 'Center';
 
     if (logs.length > 0) {
-      // Calculate Stats
       const cats = {}; const leans = {};
       logs.forEach(l => {
         if(l.article.category) cats[l.article.category] = (cats[l.article.category] || 0) + 1;
@@ -348,46 +334,25 @@ app.get('/api/articles/for-you', async (req, res) => {
       usualLean = Object.keys(leans).sort((a,b) => leans[b] - leans[a])[0];
     }
 
-    // Determine "Opposite" Lean for Challenge
     let challengeLeans = [];
     if (['Left', 'Left-Leaning'].includes(usualLean)) challengeLeans = ['Right', 'Right-Leaning', 'Center'];
     else if (['Right', 'Right-Leaning'].includes(usualLean)) challengeLeans = ['Left', 'Left-Leaning', 'Center'];
-    else challengeLeans = ['Left', 'Right']; // If Center, show extremes
+    else challengeLeans = ['Left', 'Right'];
 
-    // 2. Fetch "Comfort" Articles (Matching habits)
-    const comfortArticles = await Article.find({
-      category: favoriteCategory,
-      politicalLean: usualLean
-    })
-    .sort({ publishedAt: -1 })
-    .limit(5)
-    .lean();
+    const comfortArticles = await Article.find({ category: favoriteCategory, politicalLean: usualLean }).sort({ publishedAt: -1 }).limit(5).lean();
+    const challengeArticles = await Article.find({ category: favoriteCategory, politicalLean: { $in: challengeLeans } }).sort({ publishedAt: -1 }).limit(5).lean();
 
-    // 3. Fetch "Challenge" Articles (Same topic, opposite view)
-    const challengeArticles = await Article.find({
-      category: favoriteCategory,
-      politicalLean: { $in: challengeLeans }
-    })
-    .sort({ publishedAt: -1 })
-    .limit(5)
-    .lean();
-
-    // 4. Mark them for UI Badge
     const result = [
       ...comfortArticles.map(a => ({ ...a, suggestionType: 'Comfort' })),
       ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
     ];
 
-    // Shuffle results so they are mixed
     for (let i = result.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
     }
 
-    res.status(200).json({ 
-      articles: result, 
-      meta: { basedOnCategory: favoriteCategory, usualLean: usualLean } 
-    });
+    res.status(200).json({ articles: result, meta: { basedOnCategory: favoriteCategory, usualLean: usualLean } });
 
   } catch (error) {
     console.error("For You Error:", error);
@@ -553,7 +518,7 @@ app.get('/api/profile/stats', async (req, res) => {
 
 // ==========================================
 
-// --- Background Logic ---
+// --- Background Logic (Parallelized) ---
 let isFetchRunning = false;
 app.post('/api/fetch-news', (req, res) => {
   if (isFetchRunning) return res.status(429).json({ message: 'Running' });
@@ -569,64 +534,85 @@ async function fetchAndAnalyzeNews() {
     const rawArticles = await newsService.fetchNews(); 
     if (rawArticles.length === 0) return;
 
-    for (const article of rawArticles) {
-        try {
-            if (!article?.url || !article?.title) continue;
-            const exists = await Article.findOne({ url: article.url }, { _id: 1 });
-            if (exists) continue;
-
-            const textToEmbed = `${article.title}. ${article.description}`;
-            const embedding = await geminiService.createEmbedding(textToEmbed);
-            const analysis = await geminiService.analyzeArticle(article);
-
-            if (analysis.isJunk) continue;
-            
-            const newArticleData = {
-              headline: article.title,
-              summary: analysis.summary,
-              source: article.source?.name,
-              category: analysis.category,
-              politicalLean: analysis.politicalLean,
-              url: article.url,
-              imageUrl: article.urlToImage,
-              publishedAt: article.publishedAt,
-              analysisType: analysis.analysisType,
-              sentiment: analysis.sentiment,
-              biasScore: analysis.biasScore, 
-              biasLabel: analysis.biasLabel,
-              biasComponents: analysis.biasComponents || {},
-              credibilityScore: analysis.credibilityScore, 
-              credibilityGrade: analysis.credibilityGrade,
-              credibilityComponents: analysis.credibilityComponents || {},
-              reliabilityScore: analysis.reliabilityScore, 
-              reliabilityGrade: analysis.reliabilityGrade,
-              reliabilityComponents: analysis.reliabilityComponents || {},
-              trustScore: analysis.trustScore, 
-              trustLevel: analysis.trustLevel,
-              coverageLeft: analysis.coverageLeft || 0,
-              coverageCenter: analysis.coverageCenter || 0,
-              coverageRight: analysis.coverageRight || 0,
-              clusterTopic: analysis.clusterTopic,
-              country: analysis.country,
-              primaryNoun: analysis.primaryNoun,
-              secondaryNoun: analysis.secondaryNoun,
-              keyFindings: analysis.keyFindings || [],
-              recommendations: analysis.recommendations || [],
-              analysisVersion: Article.schema.path('analysisVersion').defaultValue,
-              embedding: embedding || []
-            };
-            
-            newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding);
-            await Article.create(newArticleData);
-            console.log(`✅ Saved: ${newArticleData.headline.substring(0, 30)}...`);
-        } catch (error) {
-            console.error(`❌ Article Error: ${error.message}`);
-        }
-        if (geminiService.isRateLimited) await sleep(2000); 
+    // --- PARALLEL PROCESSING (Batch Size 3 for 4 Keys) ---
+    const BATCH_SIZE = 3; 
+    for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
+        const batch = rawArticles.slice(i, i + BATCH_SIZE);
+        console.log(`⚡ Processing batch ${i/BATCH_SIZE + 1}/${Math.ceil(rawArticles.length/BATCH_SIZE)}`);
+        
+        await Promise.all(batch.map(article => processSingleArticle(article)));
+        
+        // Small safety buffer if rate limited
+        if (geminiService.isRateLimited) await sleep(5000); 
+        else await sleep(1000); 
     }
+    console.log('✅ Batch processing complete.');
+
   } catch (error) {
     console.error('❌ Fetch Error:', error.message);
   }
+}
+
+// Extracted Helper for Parallelism
+async function processSingleArticle(article) {
+    try {
+        if (!article?.url || !article?.title) return;
+        
+        // Quick existence check
+        const exists = await Article.findOne({ url: article.url }, { _id: 1 });
+        if (exists) return;
+
+        const textToEmbed = `${article.title}. ${article.description}`;
+        
+        // Parallelize Embedding + Analysis (if possible, though usually sequential is safer for token limits)
+        // We stick to sequential inside the article to ensure we don't embed junk
+        const analysis = await geminiService.analyzeArticle(article);
+        if (analysis.isJunk) return;
+
+        const embedding = await geminiService.createEmbedding(textToEmbed);
+
+        const newArticleData = {
+            headline: article.title,
+            summary: analysis.summary,
+            source: article.source?.name,
+            category: analysis.category,
+            politicalLean: analysis.politicalLean,
+            url: article.url,
+            imageUrl: article.urlToImage,
+            publishedAt: article.publishedAt,
+            analysisType: analysis.analysisType,
+            sentiment: analysis.sentiment,
+            biasScore: analysis.biasScore, 
+            biasLabel: analysis.biasLabel,
+            biasComponents: analysis.biasComponents || {},
+            credibilityScore: analysis.credibilityScore, 
+            credibilityGrade: analysis.credibilityGrade,
+            credibilityComponents: analysis.credibilityComponents || {},
+            reliabilityScore: analysis.reliabilityScore, 
+            reliabilityGrade: analysis.reliabilityGrade,
+            reliabilityComponents: analysis.reliabilityComponents || {},
+            trustScore: analysis.trustScore, 
+            trustLevel: analysis.trustLevel,
+            coverageLeft: analysis.coverageLeft || 0,
+            coverageCenter: analysis.coverageCenter || 0,
+            coverageRight: analysis.coverageRight || 0,
+            clusterTopic: analysis.clusterTopic,
+            country: analysis.country,
+            primaryNoun: analysis.primaryNoun,
+            secondaryNoun: analysis.secondaryNoun,
+            keyFindings: analysis.keyFindings || [],
+            recommendations: analysis.recommendations || [],
+            analysisVersion: Article.schema.path('analysisVersion').defaultValue,
+            embedding: embedding || []
+        };
+        
+        newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding);
+        await Article.create(newArticleData);
+        console.log(`✅ Saved: ${newArticleData.headline.substring(0, 30)}...`);
+
+    } catch (error) {
+        console.error(`❌ Article Error: ${error.message}`);
+    }
 }
 
 cron.schedule('*/30 * * * *', () => { if(!isFetchRunning) { isFetchRunning = true; geminiService.isRateLimited = false; fetchAndAnalyzeNews().finally(() => isFetchRunning = false); } });
