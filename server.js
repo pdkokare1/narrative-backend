@@ -1,4 +1,4 @@
-// server.js (Modularized & Enhanced)
+// server.js (Railway Fix & Modularized)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -14,30 +14,16 @@ const admin = require('firebase-admin');
 // --- Services ---
 const geminiService = require('./services/geminiService');
 const newsService = require('./services/newsService'); 
-const clusteringService = require('./services/clusteringService'); // NEW SERVICE
+const clusteringService = require('./services/clusteringService'); 
 
 // --- Models ---
 const Profile = require('./models/profileModel');
 const ActivityLog = require('./models/activityLogModel');
-const Article = require('./models/articleModel'); // NEW IMPORT
+const Article = require('./models/articleModel');
 
 // --- Helper Functions ---
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// --- Initialize Firebase Admin ---
-try {
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is not set.');
-  }
-  const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-  });
-  console.log('✅ Firebase Admin SDK Initialized');
-} catch (error) {
-  console.error('❌ Firebase Admin Init Error:', error.message);
 }
 
 const app = express();
@@ -58,6 +44,27 @@ const apiLimiter = rateLimit({
   legacyHeaders: false, 
 });
 app.use('/api/', apiLimiter); 
+
+// --- CRITICAL: Check Environment Variables ---
+if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+  console.error("❌ CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT is missing in Environment Variables.");
+}
+if (!process.env.MONGODB_URI) {
+  console.error("❌ CRITICAL ERROR: MONGODB_URI is missing in Environment Variables.");
+}
+
+// --- Initialize Firebase Admin ---
+try {
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log('✅ Firebase Admin SDK Initialized');
+  }
+} catch (error) {
+  console.error('❌ Firebase Admin Init Error:', error.message);
+}
 
 // --- App Check Middleware ---
 const checkAppCheck = async (req, res, next) => {
@@ -92,7 +99,7 @@ const checkAuth = async (req, res, next) => {
 app.use('/api/', checkAppCheck); 
 app.use('/api/', checkAuth);
 
-// --- Background Fetch Logic (Now uses Clustering Service) ---
+// --- Background Fetch Logic ---
 let isFetchRunning = false;
 
 app.post('/api/fetch-news', (req, res) => {
@@ -132,7 +139,6 @@ async function fetchAndAnalyzeNews() {
                 continue;
             }
 
-            // Deduplication (24h window)
             const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
             const exists = await Article.findOne({
               $or: [
@@ -150,12 +156,9 @@ async function fetchAndAnalyzeNews() {
                 continue;
             }
 
-            // --- 1. Generate Embedding (The "Vector") ---
-            // We combine title + description for a rich vector
             const textToEmbed = `${article.title}. ${article.description}`;
             const embedding = await geminiService.createEmbedding(textToEmbed);
 
-            // --- 2. Analyze Content ---
             console.log(`🤖 Analyzing: ${article.title.substring(0, 50)}...`);
             const analysis = await geminiService.analyzeArticle(article);
 
@@ -198,14 +201,11 @@ async function fetchAndAnalyzeNews() {
               recommendations: analysis.recommendations || [],
               analysisVersion: Article.schema.path('analysisVersion').defaultValue,
               
-              // --- Save Embedding ---
               embedding: embedding || []
             };
             
-            // --- 3. Assign Cluster ID (Using Smart Service) ---
             newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding);
 
-            // --- 4. Save to DB ---
             await Article.create(newArticleData);
             stats.processed++;
             console.log(`✅ Saved: ${newArticleData.headline.substring(0, 40)}... (Cluster: ${newArticleData.clusterId})`);
@@ -215,13 +215,12 @@ async function fetchAndAnalyzeNews() {
             stats.errors++;
         }
         
-        // Rate Limit Pause
         if (geminiService.isRateLimited) {
           console.log('🐌 Rate-limit active. Pausing for 2s...');
           await sleep(2000); 
         }
 
-    } // End loop
+    }
 
     const duration = ((Date.now() - stats.start_time) / 1000).toFixed(2);
     console.log(`\n🏁 Cycle finished in ${duration}s. Processed: ${stats.processed}. Errors: ${stats.errors}.`);
@@ -250,9 +249,8 @@ cron.schedule('0 2 * * *', async () => {
   }
 });
 
-// --- Routes (Reduced for brevity - Controllers to be added later) ---
+// --- Routes ---
 
-// GET /api/profile/me
 app.get('/api/profile/me', async (req, res) => {
   try {
     const profile = await Profile.findOne({ userId: req.user.uid })
@@ -265,9 +263,31 @@ app.get('/api/profile/me', async (req, res) => {
   }
 });
 
-// ... (Other routes: /api/profile, /api/activity/*, /api/stats, etc. keep existing logic until Controller Refactor)
+// --- Save Article Route ---
+app.post('/api/articles/:id/save', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { uid } = req.user;
+        if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ error: 'Invalid article ID' });
 
-// GET /api/articles (Smart Feed)
+        const articleObjectId = new mongoose.Types.ObjectId(id);
+        const profile = await Profile.findOne({ userId: uid });
+        if (!profile) return res.status(404).json({ error: 'Profile not found' });
+
+        const isSaved = profile.savedArticles.includes(articleObjectId);
+        let updatedProfile;
+        
+        if (isSaved) {
+            updatedProfile = await Profile.findOneAndUpdate({ userId: uid }, { $pull: { savedArticles: articleObjectId } }, { new: true }).lean();
+        } else {
+            updatedProfile = await Profile.findOneAndUpdate({ userId: uid }, { $addToSet: { savedArticles: articleObjectId } }, { new: true }).lean();
+        }
+        res.status(200).json({ message: isSaved ? 'Article unsaved' : 'Article saved', savedArticles: updatedProfile.savedArticles });
+    } catch (error) {
+        res.status(500).json({ error: 'Error saving article' });
+    }
+});
+
 app.get('/api/articles', async (req, res, next) => {
   try {
     const filters = {
@@ -322,14 +342,17 @@ app.get('/api/articles', async (req, res, next) => {
   }
 });
 
-// ... (Keep other existing routes like save/unsave, cluster fetch, stats, etc.) ...
-// Note: For brevity in this response, I am assuming you will keep the other endpoints (save, stats, cluster) 
-// exactly as they were in the previous server.js, just ensuring they use the imported 'Article' model.
-
-// Database Connection
-mongoose.connect(process.env.MONGODB_URI).then(() => console.log('✅ MongoDB Connected'));
+// --- Database Connection ---
+if (process.env.MONGODB_URI) {
+    mongoose.connect(process.env.MONGODB_URI).then(() => console.log('✅ MongoDB Connected')).catch(err => console.error("❌ MongoDB Connection Failed:", err.message));
+} else {
+    console.error("❌ CRITICAL: MONGODB_URI is missing. Database connection aborted.");
+}
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// Listen on 0.0.0.0 to fix Docker/Railway networking issues
+const HOST = '0.0.0.0'; 
+
+app.listen(PORT, HOST, () => console.log(`🚀 Server running on http://${HOST}:${PORT}`));
 
 module.exports = app;
