@@ -1,4 +1,4 @@
-// server.js (v2.40 - Added Search Endpoint)
+// server.js (v2.50 - Added Trending Endpoint)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -309,7 +309,34 @@ app.post('/api/activity/log-read', async (req, res) => {
 
 // --- 4. Data Fetching Routes ---
 
-// NEW: Search Endpoint
+// NEW: Trending Topics
+app.get('/api/trending', async (req, res) => {
+  try {
+    // Look back 24 hours
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    
+    // Find most frequent Cluster Topics
+    const trending = await Article.aggregate([
+      { 
+        $match: { 
+          publishedAt: { $gte: oneDayAgo }, 
+          clusterTopic: { $ne: null } // Must have a topic
+        } 
+      },
+      { $group: { _id: "$clusterTopic", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 7 }, // Top 7 topics
+      { $project: { _id: 0, topic: "$_id", count: 1 } }
+    ]);
+
+    res.status(200).json({ topics: trending || [] });
+  } catch (error) {
+    console.error("Trending Error:", error);
+    res.status(500).json({ error: 'Error fetching trending' });
+  }
+});
+
+// Search Endpoint
 app.get('/api/search', async (req, res) => {
   try {
     const query = req.query.q;
@@ -318,20 +345,17 @@ app.get('/api/search', async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50);
     const offset = Math.max(parseInt(req.query.offset) || 0, 0);
 
-    // MongoDB Text Search with Ranking
     const articles = await Article.find(
       { $text: { $search: query } },
       { score: { $meta: 'textScore' } }
     )
-    .sort({ score: { $meta: 'textScore' }, publishedAt: -1 }) // Sort by Relevance then Date
+    .sort({ score: { $meta: 'textScore' }, publishedAt: -1 })
     .skip(offset)
     .limit(limit)
     .lean();
 
     const total = await Article.countDocuments({ $text: { $search: query } });
-
-    // Mark these as "Full" results for the UI
-    const results = articles.map(a => ({ ...a, clusterCount: 1 })); // Default to 1 count for search
+    const results = articles.map(a => ({ ...a, clusterCount: 1 }));
 
     res.status(200).json({ articles: results, pagination: { total } });
   } catch (error) {
