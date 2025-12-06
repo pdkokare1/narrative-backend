@@ -1,4 +1,4 @@
-// services/geminiService.js (FINAL v2.17 - Added Embeddings)
+// services/geminiService.js (FINAL v3.0 - Robust JSON Parsing & Embeddings)
 const axios = require('axios');
 
 // --- Helper Functions ---
@@ -105,7 +105,7 @@ class GeminiService {
         if (apiKeyUsed) this.recordError(apiKeyUsed);
 
         const status = error.response?.status;
-        const isRetriable = (status === 503 || status === 429);
+        const isRetriable = (status === 503 || status === 429 || status >= 500);
         
         if (status === 429) {
             console.warn(`🐌 RATE LIMIT DETECTED. Enabling 'slow mode' throttle.`);
@@ -117,15 +117,15 @@ class GeminiService {
           console.warn(`⏳ Gemini returned ${status}. Retrying attempt ${attempt + 1}/${maxRetries} after ${Math.round(delay/1000)}s...`);
           await sleep(delay);
         } else {
-          console.error(`❌ Gemini analysis failed definitively after ${attempt} attempt(s).`);
-          break;
+          console.error(`❌ Gemini analysis failed definitively after ${attempt} attempt(s). Msg: ${error.message}`);
+          break; // Don't retry non-retriable errors (like 400 Bad Request)
         }
       }
     }
     throw lastError || new Error(`Gemini analysis failed after ${maxRetries} attempts.`);
   }
 
-  // --- NEW: Generate Embedding Function ---
+  // --- Generate Embedding Function ---
   async createEmbedding(text) {
       if (!text || typeof text !== 'string') return null;
       
@@ -168,7 +168,7 @@ class GeminiService {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: "application/json",
-            temperature: 0.4,
+            temperature: 0.3, // Lowered temperature for more consistent JSON
             topK: 32,
             topP: 0.95,
             maxOutputTokens: 4096 
@@ -186,7 +186,6 @@ class GeminiService {
       return this.parseAnalysisResponse(response.data);
 
     } catch (error) {
-       // Error handling logic identical to before
        if (error.response) {
             console.error(`❌ Gemini API HTTP Error: Status ${error.response.status}`);
             throw new Error(`Gemini API request failed with HTTP status ${error.response.status}`);
@@ -202,77 +201,81 @@ class GeminiService {
     const description = article?.description || "No Description";
     const currentDate = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });
 
-    return `CURRENT_CONTEXT: Today's date is ${currentDate}. All analysis must be based on this date.
+    return `CURRENT_CONTEXT: Today's date is ${currentDate}.
 
-Analyze the news article (Title: "${title}", Description: "${description}"). Return ONLY a valid JSON object.
+Analyze this article:
+Title: "${title}"
+Description: "${description}"
+
+Respond ONLY with valid JSON. Do not include markdown formatting like \`\`\`json.
 
 INSTRUCTIONS:
-1. 'analysisType': 'Full' for hard news. 'SentimentOnly' for opinions/reviews.
-2. 'sentiment': 'Positive', 'Negative', or 'Neutral'.
-3. 'isJunk': 'Yes' if promotional/ad/spam. Otherwise 'No'.
-
-**--- CLUSTERING FIELDS ---**
-4. 'clusterTopic': A 5-7 word generic topic (e.g., 'US Election Polls', 'iPhone Launch'). Null if not a specific event.
-5. 'country': 'USA', 'India', or 'Global'.
-6. 'primaryNoun': Main proper noun (Person/Org).
-7. 'secondaryNoun': Second proper noun.
-
-8. If 'Full': Provide scores (0-100) for bias, credibility, reliability.
-9. If 'SentimentOnly': Set all scores to 0, politicalLean to 'Not Applicable'.
+1. Determine 'analysisType': 'Full' (Hard News) or 'SentimentOnly' (Opinion/Review).
+2. If 'Full', provide numerical scores (0-100). If 'SentimentOnly', scores must be 0.
+3. 'isJunk': Set to true ONLY if it is an advertisement, spam, or broken text.
 
 JSON Structure:
 {
-  "summary": "Neutral summary (exactly 60 words).",
-  "category": "Politics/Economy/Technology/Health/Environment/Justice/Education/Entertainment/Sports/Other",
-  "politicalLean": "Left/Left-Leaning/Center/Right-Leaning/Right/Not Applicable",
-  "analysisType": "Full",
-  "sentiment": "Neutral",
-  "isJunk": "No",
-  "clusterTopic": "US-China Trade Talks",
-  "country": "Global",
-  "primaryNoun": "Donald Trump",
-  "secondaryNoun": "Xi Jinping",
-  "biasScore": 50, "biasLabel": "Moderate",
-  "biasComponents": {"linguistic": {"sentimentPolarity": 50}, "sourceSelection": {}, "demographic": {}, "framing": {}},
-  "credibilityScore": 75, "credibilityGrade": "B",
-  "credibilityComponents": {"sourceCredibility": 70, "factVerification": 80, "professionalism": 75, "evidenceQuality": 85, "transparency": 60, "audienceTrust": 65},
-  "reliabilityScore": 80, "reliabilityGrade": "B+",
-  "reliabilityComponents": {"consistency": 80, "temporalStability": 70, "qualityControl": 85, "publicationStandards": 90, "correctionsPolicy": 75, "updateMaintenance": 60},
-  "trustLevel": "Trustworthy",
-  "coverageLeft": 33, "coverageCenter": 34, "coverageRight": 33,
-  "keyFindings": ["Finding 1."],
-  "recommendations": ["Rec 1."]
-}
-
-Output ONLY the JSON object.`;
+  "summary": "Neutral summary (approx 60 words).",
+  "category": "Politics" | "Economy" | "Technology" | "Health" | "Environment" | "Justice" | "Education" | "Entertainment" | "Sports" | "Other",
+  "politicalLean": "Left" | "Left-Leaning" | "Center" | "Right-Leaning" | "Right" | "Not Applicable",
+  "analysisType": "Full" | "SentimentOnly",
+  "sentiment": "Positive" | "Negative" | "Neutral",
+  "isJunk": false,
+  "clusterTopic": "Specific Event Name (e.g. 'G20 Summit 2024') or null",
+  "country": "USA" | "India" | "Global",
+  "primaryNoun": "Main Person/Org",
+  "secondaryNoun": "Secondary Person/Org",
+  "biasScore": 0, "biasLabel": "Label",
+  "biasComponents": {"linguistic": {"sentimentPolarity": 0, "emotionalLanguage": 0, "loadedTerms": 0, "complexityBias": 0}, "sourceSelection": {"sourceDiversity": 0, "expertBalance": 0, "attributionTransparency": 0}, "demographic": {"genderBalance": 0, "racialBalance": 0, "ageRepresentation": 0}, "framing": {"headlineFraming": 0, "storySelection": 0, "omissionBias": 0}},
+  "credibilityScore": 0, "credibilityGrade": "Grade",
+  "credibilityComponents": {"sourceCredibility": 0, "factVerification": 0, "professionalism": 0, "evidenceQuality": 0, "transparency": 0, "audienceTrust": 0},
+  "reliabilityScore": 0, "reliabilityGrade": "Grade",
+  "reliabilityComponents": {"consistency": 0, "temporalStability": 0, "qualityControl": 0, "publicationStandards": 0, "correctionsPolicy": 0, "updateMaintenance": 0},
+  "trustLevel": "Label",
+  "coverageLeft": 0, "coverageCenter": 0, "coverageRight": 0,
+  "keyFindings": ["Point 1", "Point 2"],
+  "recommendations": ["Rec 1", "Rec 2"]
+}`;
   }
 
-  // --- Parse Response ---
+  // --- Parse Response (Improved) ---
   parseAnalysisResponse(data) {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates returned');
         
-        let parsed = data.candidates[0]?.content?.parts?.[0]?.text;
-        
-        // Clean markdown if present
-        if (typeof parsed === 'string') {
-             const jsonMatch = parsed.trim().match(/(?:```json)?\s*(\{[\s\S]*\})\s*(?:```)?/);
-             if (jsonMatch?.[1]) parsed = JSON.parse(jsonMatch[1]);
-        }
-        
-        if (typeof parsed !== 'object' || parsed === null) throw new Error('Invalid JSON');
+        let text = data.candidates[0]?.content?.parts?.[0]?.text;
+        if (!text) throw new Error('Empty response text');
 
-        // Apply Defaults
+        // 1. Sanitize Markdown
+        text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+
+        // 2. Extract JSON if buried in text
+        const jsonStart = text.indexOf('{');
+        const jsonEnd = text.lastIndexOf('}');
+        if (jsonStart !== -1 && jsonEnd !== -1) {
+            text = text.substring(jsonStart, jsonEnd + 1);
+        }
+
+        let parsed;
+        try {
+            parsed = JSON.parse(text);
+        } catch (e) {
+            console.warn("⚠️ JSON Parse failed, attempting simple repair...");
+            // Very simple repair: try removing trailing commas
+            text = text.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']');
+            parsed = JSON.parse(text);
+        }
+
+        // Apply Defaults to prevent UI crashes
         parsed.summary = parsed.summary || 'Summary unavailable';
         parsed.analysisType = ['Full', 'SentimentOnly'].includes(parsed.analysisType) ? parsed.analysisType : 'Full';
         parsed.sentiment = ['Positive', 'Negative', 'Neutral'].includes(parsed.sentiment) ? parsed.sentiment : 'Neutral';
         parsed.politicalLean = parsed.politicalLean || 'Center';
-        parsed.category = parsed.category || 'General';
+        parsed.category = parsed.category || 'Other';
         parsed.isJunk = (parsed.isJunk === 'Yes' || parsed.isJunk === true);
         parsed.clusterTopic = parsed.clusterTopic || null;
         parsed.country = ['USA', 'India'].includes(parsed.country) ? parsed.country : 'Global';
-        parsed.primaryNoun = parsed.primaryNoun || null;
-        parsed.secondaryNoun = parsed.secondaryNoun || null;
 
         // Ensure Scores are Numbers
         const parseScore = (s) => (parsed.analysisType === 'SentimentOnly' ? 0 : Math.round(Number(s) || 0));
@@ -280,20 +283,20 @@ Output ONLY the JSON object.`;
         parsed.credibilityScore = parseScore(parsed.credibilityScore);
         parsed.reliabilityScore = parseScore(parsed.reliabilityScore);
         
-        // Trust Score
+        // Trust Score Calculation
         parsed.trustScore = 0;
         if (parsed.analysisType === 'Full' && parsed.credibilityScore > 0) {
             parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
         }
 
-        // Arrays
+        // Arrays check
         parsed.keyFindings = Array.isArray(parsed.keyFindings) ? parsed.keyFindings : [];
         parsed.recommendations = Array.isArray(parsed.recommendations) ? parsed.recommendations : [];
 
         return parsed;
 
     } catch (error) {
-        console.error(`❌ Parser Error: ${error.message}`);
+        console.error(`❌ Parser Error: ${error.message} \nRaw Text Preview: ${data?.candidates?.[0]?.content?.parts?.[0]?.text?.substring(0, 50)}...`);
         throw new Error(`Failed to parse Gemini response: ${error.message}`);
     }
   }
