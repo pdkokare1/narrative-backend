@@ -1,4 +1,4 @@
-// routes/articleRoutes.js
+// routes/articleRoutes.js (FINAL v3.1 - With Caching)
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -8,9 +8,25 @@ const Article = require('../models/articleModel');
 const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
 
-// --- 1. Trending Topics ---
+// --- CACHE CONFIGURATION ---
+let trendingCache = {
+  data: [],
+  lastFetch: 0
+};
+const CACHE_DURATION = 30 * 60 * 1000; // 30 Minutes in milliseconds
+
+// --- 1. Trending Topics (Cached) ---
 router.get('/trending', async (req, res) => {
   try {
+    const now = Date.now();
+
+    // 1. Check if cache is valid
+    if (trendingCache.data.length > 0 && (now - trendingCache.lastFetch < CACHE_DURATION)) {
+      // Serve from RAM (Instant, Free)
+      return res.status(200).json({ topics: trendingCache.data });
+    }
+
+    // 2. Cache expired or empty? Query Database (Slower, Costs money)
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const trending = await Article.aggregate([
       { 
@@ -24,7 +40,16 @@ router.get('/trending', async (req, res) => {
       { $limit: 7 },
       { $project: { _id: 0, topic: "$_id", count: 1 } }
     ]);
-    res.status(200).json({ topics: trending || [] });
+
+    // 3. Update Cache
+    trendingCache = {
+      data: trending || [],
+      lastFetch: now
+    };
+
+    console.log('🔄 Refreshed Trending Topics Cache');
+    res.status(200).json({ topics: trendingCache.data });
+
   } catch (error) {
     console.error("Trending Error:", error);
     res.status(500).json({ error: 'Error fetching trending' });
@@ -50,7 +75,7 @@ router.get('/search', async (req, res) => {
     .lean();
 
     const total = await Article.countDocuments({ $text: { $search: query } });
-    const results = articles.map(a => ({ ...a, clusterCount: 1 })); // Search results are standalone
+    const results = articles.map(a => ({ ...a, clusterCount: 1 })); 
 
     res.status(200).json({ articles: results, pagination: { total } });
   } catch (error) {
@@ -80,18 +105,15 @@ router.get('/articles/for-you', async (req, res) => {
         if(l.article.category) cats[l.article.category] = (cats[l.article.category] || 0) + 1;
         if(l.article.politicalLean) leans[l.article.politicalLean] = (leans[l.article.politicalLean] || 0) + 1;
       });
-      // Find mode (most frequent)
       favoriteCategory = Object.keys(cats).sort((a,b) => cats[b] - cats[a])[0];
       usualLean = Object.keys(leans).sort((a,b) => leans[b] - leans[a])[0];
     }
 
-    // Determine opposing views
     let challengeLeans = [];
     if (['Left', 'Left-Leaning'].includes(usualLean)) challengeLeans = ['Right', 'Right-Leaning', 'Center'];
     else if (['Right', 'Right-Leaning'].includes(usualLean)) challengeLeans = ['Left', 'Left-Leaning', 'Center'];
     else challengeLeans = ['Left', 'Right'];
 
-    // Fetch Comfort & Challenge articles
     const comfortArticles = await Article.find({ category: favoriteCategory, politicalLean: usualLean }).sort({ publishedAt: -1 }).limit(5).lean();
     const challengeArticles = await Article.find({ category: favoriteCategory, politicalLean: { $in: challengeLeans } }).sort({ publishedAt: -1 }).limit(5).lean();
 
@@ -100,7 +122,6 @@ router.get('/articles/for-you', async (req, res) => {
       ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
     ];
 
-    // Shuffle results
     for (let i = result.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
@@ -186,7 +207,7 @@ router.get('/cluster/:clusterId', async (req, res) => {
   }
 });
 
-// --- 7. Main Feed (Must be last to avoid conflict with specific routes like /saved) ---
+// --- 7. Main Feed ---
 router.get('/articles', async (req, res) => {
   try {
     const filters = {
