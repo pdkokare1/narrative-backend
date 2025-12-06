@@ -1,4 +1,4 @@
-// models/articleModel.js (FINAL v3.1 - Optimized Indexes)
+// models/articleModel.js (FINAL v3.2 - Smart Search)
 const mongoose = require('mongoose');
 
 const articleSchema = new mongoose.Schema({
@@ -51,20 +51,27 @@ const articleSchema = new mongoose.Schema({
   autoIndex: process.env.NODE_ENV !== 'production',
 });
 
-// --- SEARCH INDEX ---
-// Allows instant searching of headlines, topics, and nouns
+// --- SMART SEARCH INDEX ---
+// Expanded to include Source, Category, and Lean for "natural language" feel.
 articleSchema.index({ 
   headline: 'text', 
   summary: 'text', 
   clusterTopic: 'text', 
   primaryNoun: 'text', 
-  secondaryNoun: 'text' 
+  secondaryNoun: 'text',
+  source: 'text',       // <--- NEW
+  category: 'text',     // <--- NEW
+  politicalLean: 'text' // <--- NEW
 }, {
   name: 'GlobalSearchIndex',
   weights: {
     headline: 10,
     clusterTopic: 8,
-    primaryNoun: 5,
+    primaryNoun: 6,
+    source: 5,       // High weight for finding specific outlets
+    category: 4,
+    secondaryNoun: 3,
+    politicalLean: 3,
     summary: 1
   }
 });
@@ -72,7 +79,6 @@ articleSchema.index({
 // --- PERFORMANCE INDEXES ---
 
 // 1. "For You" Feed Optimization (Compound Index)
-// Speeds up finding "Technology" articles that are also "Center" lean
 articleSchema.index({ category: 1, politicalLean: 1, publishedAt: -1 });
 
 // 2. Feed Sorting & Filtering
