@@ -1,4 +1,4 @@
-// models/articleModel.js
+// models/articleModel.js (FINAL v3.1 - Optimized Indexes)
 const mongoose = require('mongoose');
 
 const articleSchema = new mongoose.Schema({
@@ -45,14 +45,14 @@ const articleSchema = new mongoose.Schema({
   
   keyFindings: [String],
   recommendations: [String],
-  analysisVersion: { type: String, default: '2.14' }
+  analysisVersion: { type: String, default: '3.0' }
 }, {
   timestamps: true, // Adds createdAt and updatedAt
   autoIndex: process.env.NODE_ENV !== 'production',
 });
 
-// --- NEW: Text Index for Search ---
-// This allows us to search headlines, summaries, and nouns instantly.
+// --- SEARCH INDEX ---
+// Allows instant searching of headlines, topics, and nouns
 articleSchema.index({ 
   headline: 'text', 
   summary: 'text', 
@@ -62,26 +62,41 @@ articleSchema.index({
 }, {
   name: 'GlobalSearchIndex',
   weights: {
-    headline: 10,     // Headlines matches are most important
-    clusterTopic: 8,  // Topic matches are very important
-    primaryNoun: 5,   // Specific people/orgs are important
-    summary: 1        // Summary matches are less critical
+    headline: 10,
+    clusterTopic: 8,
+    primaryNoun: 5,
+    summary: 1
   }
 });
 
-// Indexes for performance
+// --- PERFORMANCE INDEXES ---
+
+// 1. "For You" Feed Optimization (Compound Index)
+// Speeds up finding "Technology" articles that are also "Center" lean
+articleSchema.index({ category: 1, politicalLean: 1, publishedAt: -1 });
+
+// 2. Feed Sorting & Filtering
 articleSchema.index({ category: 1, publishedAt: -1 });
 articleSchema.index({ politicalLean: 1, publishedAt: -1 });
-articleSchema.index({ clusterId: 1, trustScore: -1 });
+articleSchema.index({ analysisType: 1, publishedAt: -1 });
+articleSchema.index({ country: 1, publishedAt: -1 });
+
+// 3. Sorting by Scores
 articleSchema.index({ trustScore: -1, publishedAt: -1 });
 articleSchema.index({ biasScore: 1, publishedAt: -1 });
-articleSchema.index({ createdAt: 1 });
-articleSchema.index({ analysisType: 1, publishedAt: -1 });
+
+// 4. Clustering & Deduplication
+articleSchema.index({ clusterId: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
-// 5-Field Cluster Index
-articleSchema.index({ clusterTopic: 1, category: 1, country: 1, primaryNoun: 1, secondaryNoun: 1, publishedAt: -1 }, {
-  name: "5_Field_Cluster_Index"
-});
-articleSchema.index({ country: 1, analysisType: 1, publishedAt: -1 });
+
+// 5. Advanced Clustering Lookup (5-Field)
+articleSchema.index({ 
+  clusterTopic: 1, 
+  category: 1, 
+  country: 1, 
+  primaryNoun: 1, 
+  secondaryNoun: 1, 
+  publishedAt: -1 
+}, { name: "5_Field_Cluster_Index" });
 
 module.exports = mongoose.model('Article', articleSchema);
