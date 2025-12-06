@@ -1,4 +1,4 @@
-// routes/articleRoutes.js (FINAL v3.1 - With Caching)
+// routes/articleRoutes.js
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -13,20 +13,18 @@ let trendingCache = {
   data: [],
   lastFetch: 0
 };
-const CACHE_DURATION = 30 * 60 * 1000; // 30 Minutes in milliseconds
+const CACHE_DURATION = 30 * 60 * 1000; // 30 Minutes for Trending RAM Cache
 
 // --- 1. Trending Topics (Cached) ---
 router.get('/trending', async (req, res) => {
   try {
     const now = Date.now();
-
-    // 1. Check if cache is valid
+    
+    // Server-Side RAM Cache
     if (trendingCache.data.length > 0 && (now - trendingCache.lastFetch < CACHE_DURATION)) {
-      // Serve from RAM (Instant, Free)
       return res.status(200).json({ topics: trendingCache.data });
     }
 
-    // 2. Cache expired or empty? Query Database (Slower, Costs money)
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const trending = await Article.aggregate([
       { 
@@ -41,13 +39,10 @@ router.get('/trending', async (req, res) => {
       { $project: { _id: 0, topic: "$_id", count: 1 } }
     ]);
 
-    // 3. Update Cache
-    trendingCache = {
-      data: trending || [],
-      lastFetch: now
-    };
-
-    console.log('🔄 Refreshed Trending Topics Cache');
+    trendingCache = { data: trending || [], lastFetch: now };
+    
+    // Browser Cache Header (30 mins)
+    res.set('Cache-Control', 'public, max-age=1800'); 
     res.status(200).json({ topics: trendingCache.data });
 
   } catch (error) {
@@ -56,7 +51,7 @@ router.get('/trending', async (req, res) => {
   }
 });
 
-// --- 2. Search ---
+// --- 2. Search (Cached) ---
 router.get('/search', async (req, res) => {
   try {
     const query = req.query.q;
@@ -77,6 +72,8 @@ router.get('/search', async (req, res) => {
     const total = await Article.countDocuments({ $text: { $search: query } });
     const results = articles.map(a => ({ ...a, clusterCount: 1 })); 
 
+    // Cache search results for 10 minutes
+    res.set('Cache-Control', 'public, max-age=600');
     res.status(200).json({ articles: results, pagination: { total } });
   } catch (error) {
     console.error("Search Error:", error);
@@ -84,9 +81,12 @@ router.get('/search', async (req, res) => {
   }
 });
 
-// --- 3. "Balanced For You" Feed ---
+// --- 3. "Balanced For You" Feed (Private/No-Cache) ---
 router.get('/articles/for-you', async (req, res) => {
   try {
+    // This is personalized, so we CANNOT cache it publicly
+    res.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+
     const userId = req.user.uid;
     const logs = await ActivityLog.aggregate([
       { $match: { userId: userId, action: 'view_analysis' } },
@@ -122,6 +122,7 @@ router.get('/articles/for-you', async (req, res) => {
       ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
     ];
 
+    // Shuffle
     for (let i = result.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
@@ -181,7 +182,7 @@ router.get('/articles/saved', async (req, res) => {
   }
 });
 
-// --- 6. Cluster Fetch ---
+// --- 6. Cluster Fetch (Cached) ---
 router.get('/cluster/:clusterId', async (req, res) => {
   try {
     const clusterIdNum = parseInt(req.params.clusterId);
@@ -200,6 +201,8 @@ router.get('/cluster/:clusterId', async (req, res) => {
       return acc;
     }, { left: [], center: [], right: [], reviews: [] }); 
 
+    // Cache cluster view for 10 minutes (it rarely changes once created)
+    res.set('Cache-Control', 'public, max-age=600');
     res.status(200).json({ ...grouped, stats: { total: articles.length } });
   } catch (error) {
     console.error("Cluster Error:", error);
@@ -207,7 +210,7 @@ router.get('/cluster/:clusterId', async (req, res) => {
   }
 });
 
-// --- 7. Main Feed ---
+// --- 7. Main Feed (Cached) ---
 router.get('/articles', async (req, res) => {
   try {
     const filters = {
@@ -255,6 +258,9 @@ router.get('/articles', async (req, res) => {
     ];
 
     const results = await Article.aggregate(aggregation).allowDiskUse(true);
+    
+    // Cache Main Feed for 5 minutes
+    res.set('Cache-Control', 'public, max-age=300');
     res.status(200).json({ articles: results[0]?.articles || [], pagination: { total: results[0]?.pagination[0]?.total || 0 } });
 
   } catch (error) {
