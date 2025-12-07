@@ -13,14 +13,12 @@ let trendingCache = {
   data: [],
   lastFetch: 0
 };
-const CACHE_DURATION = 30 * 60 * 1000; // 30 Minutes for Trending RAM Cache
+const CACHE_DURATION = 30 * 60 * 1000; // 30 Minutes
 
 // --- 1. Trending Topics (Cached) ---
 router.get('/trending', async (req, res) => {
   try {
     const now = Date.now();
-    
-    // Server-Side RAM Cache
     if (trendingCache.data.length > 0 && (now - trendingCache.lastFetch < CACHE_DURATION)) {
       return res.status(200).json({ topics: trendingCache.data });
     }
@@ -40,8 +38,6 @@ router.get('/trending', async (req, res) => {
     ]);
 
     trendingCache = { data: trending || [], lastFetch: now };
-    
-    // Browser Cache Header (30 mins)
     res.set('Cache-Control', 'public, max-age=1800'); 
     res.status(200).json({ topics: trendingCache.data });
 
@@ -72,7 +68,6 @@ router.get('/search', async (req, res) => {
     const total = await Article.countDocuments({ $text: { $search: query } });
     const results = articles.map(a => ({ ...a, clusterCount: 1 })); 
 
-    // Cache search results for 10 minutes
     res.set('Cache-Control', 'public, max-age=600');
     res.status(200).json({ articles: results, pagination: { total } });
   } catch (error) {
@@ -81,10 +76,9 @@ router.get('/search', async (req, res) => {
   }
 });
 
-// --- 3. "Balanced For You" Feed (Private/No-Cache) ---
+// --- 3. "Balanced For You" Feed (Private) ---
 router.get('/articles/for-you', async (req, res) => {
   try {
-    // This is personalized, so we CANNOT cache it publicly
     res.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
 
     const userId = req.user.uid;
@@ -122,7 +116,6 @@ router.get('/articles/for-you', async (req, res) => {
       ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
     ];
 
-    // Shuffle
     for (let i = result.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
@@ -182,28 +175,39 @@ router.get('/articles/saved', async (req, res) => {
   }
 });
 
-// --- 6. Cluster Fetch (Cached) ---
+// --- 6. Cluster Fetch (FIXED) ---
 router.get('/cluster/:clusterId', async (req, res) => {
   try {
     const clusterIdNum = parseInt(req.params.clusterId);
     if (isNaN(clusterIdNum)) return res.status(400).json({ error: 'Invalid cluster ID' });
 
+    // Fetch all articles in this cluster
     const articles = await Article.find({ clusterId: clusterIdNum })
       .sort({ trustScore: -1, publishedAt: -1 })
       .lean();
 
     const grouped = articles.reduce((acc, article) => {
-      const lean = article.politicalLean;
-      if (['Left', 'Left-Leaning'].includes(lean)) acc.left.push(article);
-      else if (lean === 'Center') acc.center.push(article);
-      else if (['Right-Leaning', 'Right'].includes(lean)) acc.right.push(article);
-      else if (lean === 'Not Applicable') acc.reviews.push(article);
+      // Normalize lean to avoid mismatches
+      const lean = article.politicalLean || 'Not Applicable';
+      
+      if (['Left', 'Left-Leaning'].includes(lean)) {
+          acc.left.push(article);
+      } else if (lean === 'Center') {
+          acc.center.push(article);
+      } else if (['Right-Leaning', 'Right'].includes(lean)) {
+          acc.right.push(article);
+      } else {
+          // CATCH-ALL: Everything else (reviews, soft news, unknown) goes here
+          // This fixes the "Ghost Article" bug
+          acc.reviews.push(article);
+      }
       return acc;
     }, { left: [], center: [], right: [], reviews: [] }); 
 
-    // Cache cluster view for 10 minutes (it rarely changes once created)
     res.set('Cache-Control', 'public, max-age=600');
+    // We return the grouped lists AND the raw total so the frontend can double-check
     res.status(200).json({ ...grouped, stats: { total: articles.length } });
+
   } catch (error) {
     console.error("Cluster Error:", error);
     res.status(500).json({ error: 'Cluster fetch error' });
@@ -229,6 +233,7 @@ router.get('/articles', async (req, res) => {
     if (filters.lean) matchStage.politicalLean = filters.lean;
     if (filters.region) matchStage.country = filters.region;
     
+    // Updated Logic for Hard/Soft news mapping
     if (filters.articleType === 'Hard News') matchStage.analysisType = 'Full';
     else if (filters.articleType === 'Opinion & Reviews') matchStage.analysisType = 'SentimentOnly';
 
@@ -259,7 +264,6 @@ router.get('/articles', async (req, res) => {
 
     const results = await Article.aggregate(aggregation).allowDiskUse(true);
     
-    // Cache Main Feed for 5 minutes
     res.set('Cache-Control', 'public, max-age=300');
     res.status(200).json({ articles: results[0]?.articles || [], pagination: { total: results[0]?.pagination[0]?.total || 0 } });
 
