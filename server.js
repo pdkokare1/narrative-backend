@@ -1,4 +1,4 @@
-// server.js (FINAL v3.1 - Cleaned & Job-Based)
+// server.js (FINAL v3.2 - With Emergency Services)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -12,13 +12,16 @@ require('dotenv').config();
 const admin = require('firebase-admin');
 
 // --- Import Job Manager ---
-// The complex logic is now here, keeping server.js clean
 const newsFetcher = require('./jobs/newsFetcher');
 
 // --- Routes ---
 const profileRoutes = require('./routes/profileRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
+const emergencyRoutes = require('./routes/emergencyRoutes'); // <--- NEW IMPORT
+
+// --- Services ---
+const emergencyService = require('./services/emergencyService'); // <--- NEW IMPORT
 
 const app = express();
 
@@ -102,12 +105,13 @@ app.use('/api/', checkAuth);
 // --- MOUNT ROUTES ---
 app.use('/api/profile', profileRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/emergency-resources', emergencyRoutes); // <--- NEW ROUTE
 app.use('/api', articleRoutes); 
 
 
 // ================= SYSTEM / BACKGROUND JOBS =================
 
-// Manual Trigger Endpoint (Now uses the Job Manager)
+// Manual Trigger Endpoint
 app.post('/api/fetch-news', async (req, res) => {
   const started = await newsFetcher.run();
   
@@ -127,7 +131,13 @@ cron.schedule('*/30 * * * *', () => {
 // --- Server Startup ---
 if (process.env.MONGODB_URI) {
     mongoose.connect(process.env.MONGODB_URI)
-        .then(() => console.log('✅ MongoDB Connected'))
+        .then(async () => {
+            console.log('✅ MongoDB Connected');
+            
+            // --- AUTO-SEED EMERGENCY CONTACTS ---
+            // This runs once when the server starts to populate your database
+            await emergencyService.initializeEmergencyContacts();
+        })
         .catch(err => console.error("❌ MongoDB Connection Failed:", err.message));
 }
 
