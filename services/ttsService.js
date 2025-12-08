@@ -5,8 +5,12 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
 
 class TTSService {
     constructor() {
-        // TEMP FIX: Hardcoded key since Railway login is blocked
-        this.apiKey = 'sk_0aa52132b87eee3a27806a0a6bd788c6fdd089cbc385b7c4';
+        // --- HARDCODED KEY DEBUGGING ---
+        // Replace the string below with your FRESH key
+        this.apiKey = 'sk_e988590a8365ae9980abb85a7a62f09096cbdef083d6b514'; 
+        
+        // Log the first 4 characters to console on startup to verify it loaded
+        console.log(`🎙️ TTS Service Init. Key starts with: ${this.apiKey ? this.apiKey.substring(0,4) : 'MISSING'}...`);
     }
 
     /**
@@ -16,23 +20,20 @@ class TTSService {
      * @returns {Promise<Stream>} - The audio stream
      */
     async streamAudio(text, voiceId) {
-        // Fallback checks just in case
-        if (!this.apiKey || this.apiKey.includes('placeholder')) {
-            console.error("CRITICAL: ElevenLabs API Key is missing or invalid.");
+        if (!this.apiKey || this.apiKey.includes('PASTE_NEW_KEY')) {
+            console.error("CRITICAL: ElevenLabs API Key is missing or default placeholder.");
             throw new Error("Server configuration error: Missing API Key");
         }
 
         const url = `${ELEVENLABS_API_URL}/${voiceId}/stream`;
         
-        // Settings for stability vs expressiveness
-        // optimize_streaming_latency: 3 (Max speed without quality drop)
         const params = {
             optimize_streaming_latency: 3 
         };
 
         const data = {
             text: text,
-            model_id: "eleven_turbo_v2", // Turbo is cheaper and faster for news
+            model_id: "eleven_turbo_v2", 
             voice_settings: {
                 stability: 0.5,
                 similarity_boost: 0.7
@@ -47,18 +48,13 @@ class TTSService {
                     'Accept': 'audio/mpeg'
                 },
                 params: params,
-                responseType: 'stream' // Crucial: We want the audio stream, not text
+                responseType: 'stream'
             });
 
             return response.data;
 
         } catch (error) {
-            // Detailed error logging for debugging
-            if (error.response) {
-                console.error("ElevenLabs API Error:", error.response.status, JSON.stringify(error.response.data));
-            } else {
-                console.error("ElevenLabs Network Error:", error.message);
-            }
+            console.error("ElevenLabs API Error:", error.response?.status, JSON.stringify(error.response?.data || error.message));
             throw new Error("Failed to generate speech");
         }
     }
