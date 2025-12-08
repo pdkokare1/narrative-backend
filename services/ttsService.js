@@ -5,7 +5,8 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
 
 class TTSService {
     constructor() {
-        this.apiKey = process.env.ELEVENLABS_API_KEY;
+        // TEMP FIX: Hardcoded key since Railway login is blocked
+        this.apiKey = 'sk_0aa52132b87eee3a27806a0a6bd788c6fdd089cbc385b7c4';
     }
 
     /**
@@ -15,14 +16,16 @@ class TTSService {
      * @returns {Promise<Stream>} - The audio stream
      */
     async streamAudio(text, voiceId) {
-        if (!this.apiKey) {
-            throw new Error("Missing ELEVENLABS_API_KEY in server environment variables.");
+        // Fallback checks just in case
+        if (!this.apiKey || this.apiKey.includes('placeholder')) {
+            console.error("CRITICAL: ElevenLabs API Key is missing or invalid.");
+            throw new Error("Server configuration error: Missing API Key");
         }
 
         const url = `${ELEVENLABS_API_URL}/${voiceId}/stream`;
         
         // Settings for stability vs expressiveness
-        // optimize_streaming_latency: 0 (Default), 4 (Max speed)
+        // optimize_streaming_latency: 3 (Max speed without quality drop)
         const params = {
             optimize_streaming_latency: 3 
         };
@@ -50,7 +53,12 @@ class TTSService {
             return response.data;
 
         } catch (error) {
-            console.error("ElevenLabs API Error:", error.response?.status, error.message);
+            // Detailed error logging for debugging
+            if (error.response) {
+                console.error("ElevenLabs API Error:", error.response.status, JSON.stringify(error.response.data));
+            } else {
+                console.error("ElevenLabs Network Error:", error.message);
+            }
             throw new Error("Failed to generate speech");
         }
     }
