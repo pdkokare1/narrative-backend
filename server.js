@@ -1,4 +1,4 @@
-// server.js (FINAL v3.2 - With Emergency Services)
+// server.js (FINAL v3.3 - With ElevenLabs TTS)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -18,16 +18,20 @@ const newsFetcher = require('./jobs/newsFetcher');
 const profileRoutes = require('./routes/profileRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
-const emergencyRoutes = require('./routes/emergencyRoutes'); // <--- NEW IMPORT
+const emergencyRoutes = require('./routes/emergencyRoutes');
+const ttsRoutes = require('./routes/ttsRoutes'); // <--- NEW IMPORT
 
 // --- Services ---
-const emergencyService = require('./services/emergencyService'); // <--- NEW IMPORT
+const emergencyService = require('./services/emergencyService');
 
 const app = express();
 
 // --- Middleware ---
 app.set('trust proxy', 1);
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({ 
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: "cross-origin" } // Allow audio loading
+}));
 app.use(compression());
 
 // --- CORS Config ---
@@ -105,7 +109,8 @@ app.use('/api/', checkAuth);
 // --- MOUNT ROUTES ---
 app.use('/api/profile', profileRoutes);
 app.use('/api/activity', activityRoutes);
-app.use('/api/emergency-resources', emergencyRoutes); // <--- NEW ROUTE
+app.use('/api/emergency-resources', emergencyRoutes);
+app.use('/api/tts', ttsRoutes); // <--- NEW ROUTE
 app.use('/api', articleRoutes); 
 
 
@@ -133,9 +138,6 @@ if (process.env.MONGODB_URI) {
     mongoose.connect(process.env.MONGODB_URI)
         .then(async () => {
             console.log('✅ MongoDB Connected');
-            
-            // --- AUTO-SEED EMERGENCY CONTACTS ---
-            // This runs once when the server starts to populate your database
             await emergencyService.initializeEmergencyContacts();
         })
         .catch(err => console.error("❌ MongoDB Connection Failed:", err.message));
