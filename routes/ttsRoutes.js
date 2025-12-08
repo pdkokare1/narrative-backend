@@ -3,28 +3,24 @@ const express = require('express');
 const router = express.Router();
 const ttsService = require('../services/ttsService');
 
-// Safe Voice ID (Rachel)
-const SAFE_VOICE_ID = '21m00Tcm4TlvDq8ikWAM';
-
 // POST /api/tts/stream
 router.post('/stream', async (req, res) => {
     try {
-        const { text } = req.body; // Ignore voiceId from frontend for now
+        const { text, voiceId } = req.body;
 
         if (!text) {
             return res.status(400).json({ error: "Text is required" });
         }
 
-        console.log(`🎙️ Backend Request: Streaming text...`);
+        // Use the voice ID from the frontend (The Premium one)
+        // Fallback to Rachel only if frontend sends nothing
+        const targetVoiceId = voiceId || '21m00Tcm4TlvDq8ikWAM'; 
 
-        // FORCE SAFE VOICE
-        const audioStream = await ttsService.streamAudio(text, SAFE_VOICE_ID);
+        const audioStream = await ttsService.streamAudio(text, targetVoiceId);
 
-        // Set proper headers
         res.setHeader('Content-Type', 'audio/mpeg');
         res.setHeader('Transfer-Encoding', 'chunked');
 
-        // Pipe audio
         audioStream.pipe(res);
 
     } catch (error) {
