@@ -1,37 +1,43 @@
 // services/ttsService.js
 const axios = require('axios');
 
-const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
+const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        // --- HARDCODED KEY DEBUGGING ---
-        // Updated with your NEWEST key (sk_848...)
-        this.apiKey = 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa'.trim(); 
+        // Your Key (sk_848...)
+        this.apiKey = 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa'.trim();
         
-        console.log(`🎙️ TTS Service Init. Key starts with: ${this.apiKey.substring(0,4)}...`);
+        // Run a verification check immediately when server starts
+        this.verifyConnection();
+    }
+
+    async verifyConnection() {
+        try {
+            console.log(`🎙️ Testing ElevenLabs Connection...`);
+            // Simple GET request to check user info. If this fails, the Key/Account is bad.
+            const response = await axios.get(`${ELEVENLABS_API_URL}/user`, {
+                headers: { 'xi-api-key': this.apiKey }
+            });
+            console.log(`✅ ElevenLabs Connected! User: ${response.data.subscription.character_count}/${response.data.subscription.character_limit} chars used.`);
+        } catch (error) {
+            console.error(`❌ ElevenLabs Connection FAILED. Status: ${error.response?.status}`);
+            console.error(`❌ Reason: ${JSON.stringify(error.response?.data || error.message)}`);
+        }
     }
 
     async streamAudio(text, voiceId) {
-        // Fallback checks
-        if (!this.apiKey) {
-            console.error("CRITICAL: ElevenLabs API Key is missing.");
-            throw new Error("Server configuration error: Missing API Key");
-        }
+        if (!this.apiKey) throw new Error("Missing API Key");
 
-        const url = `${ELEVENLABS_API_URL}/${voiceId}/stream`;
+        const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
         
-        // optimize_streaming_latency: 3 = Fastest response time
-        const params = {
-            optimize_streaming_latency: 3 
-        };
-
+        // CHANGED: Use the most compatible model and remove latency optimizations
         const data = {
             text: text,
-            model_id: "eleven_turbo_v2", 
+            model_id: "eleven_multilingual_v2", // More compatible than Turbo
             voice_settings: {
                 stability: 0.5,
-                similarity_boost: 0.7
+                similarity_boost: 0.75
             }
         };
 
@@ -42,18 +48,16 @@ class TTSService {
                     'Content-Type': 'application/json',
                     'Accept': 'audio/mpeg'
                 },
-                params: params,
-                responseType: 'stream' // Crucial: We receive binary audio
+                responseType: 'stream' 
             });
 
-            console.log(`🎙️ ElevenLabs Stream Started for: "${text.substring(0, 15)}..."`);
+            console.log(`🎙️ Streaming audio...`);
             return response.data;
 
         } catch (error) {
-            // Log only the essential error message to keep logs clean
-            const status = error.response ? error.response.status : 'Unknown';
-            const msg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
-            console.error(`❌ ElevenLabs Error (${status}): ${msg}`);
+            console.error("ElevenLabs Stream Error:", error.message);
+            // If it's a stream error, we can't easily read the JSON body, 
+            // but the verifyConnection() logs above should tell us the real reason.
             throw new Error("Failed to generate speech");
         }
     }
