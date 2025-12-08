@@ -6,8 +6,8 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
 class TTSService {
     constructor() {
         // --- HARDCODED KEY DEBUGGING ---
-        // Updated with the FRESH key you just provided
-        this.apiKey = 'sk_e988590a8365ae9980abb85a7a62f09096cbdef083d6b514'.trim(); 
+        // Updated with your NEWEST key (sk_848...)
+        this.apiKey = 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa'.trim(); 
         
         console.log(`🎙️ TTS Service Init. Key starts with: ${this.apiKey.substring(0,4)}...`);
     }
