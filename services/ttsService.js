@@ -6,22 +6,13 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1/text-to-speech';
 class TTSService {
     constructor() {
         // --- HARDCODED KEY DEBUGGING ---
-        // Replace the string below with your FRESH key
+        // Your specific key is here.
         this.apiKey = 'sk_e988590a8365ae9980abb85a7a62f09096cbdef083d6b514'; 
-        
-        // Log the first 4 characters to console on startup to verify it loaded
-        console.log(`🎙️ TTS Service Init. Key starts with: ${this.apiKey ? this.apiKey.substring(0,4) : 'MISSING'}...`);
+        console.log(`🎙️ TTS Service Init. Key loaded: ${this.apiKey.substring(0,4)}...`);
     }
 
-    /**
-     * Streams audio from ElevenLabs
-     * @param {string} text - The text to speak
-     * @param {string} voiceId - The ID of the voice to use
-     * @returns {Promise<Stream>} - The audio stream
-     */
     async streamAudio(text, voiceId) {
-        if (!this.apiKey || this.apiKey.includes('PASTE_NEW_KEY')) {
-            console.error("CRITICAL: ElevenLabs API Key is missing or default placeholder.");
+        if (!this.apiKey) {
             throw new Error("Server configuration error: Missing API Key");
         }
 
@@ -48,13 +39,17 @@ class TTSService {
                     'Accept': 'audio/mpeg'
                 },
                 params: params,
-                responseType: 'stream'
+                responseType: 'stream' // We want the stream
             });
 
+            console.log(`🎙️ ElevenLabs Stream Started for: "${text.substring(0, 20)}..."`);
             return response.data;
 
         } catch (error) {
-            console.error("ElevenLabs API Error:", error.response?.status, JSON.stringify(error.response?.data || error.message));
+            // Only log the status, not the whole error object to avoid clutter
+            const status = error.response ? error.response.status : 'Unknown';
+            const msg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
+            console.error(`❌ ElevenLabs Error (${status}): ${msg}`);
             throw new Error("Failed to generate speech");
         }
     }
