@@ -1,4 +1,4 @@
-// models/articleModel.js (FINAL v3.2 - Smart Search)
+// models/articleModel.js (FINAL v3.3 - Audio Caching Added)
 const mongoose = require('mongoose');
 
 const articleSchema = new mongoose.Schema({
@@ -9,6 +9,11 @@ const articleSchema = new mongoose.Schema({
   politicalLean: { type: String, required: true, trim: true },
   url: { type: String, required: true, unique: true, trim: true, index: true },
   imageUrl: { type: String, trim: true },
+  
+  // --- NEW: Audio Caching Field ---
+  audioUrl: { type: String, default: null }, 
+  // --------------------------------
+  
   publishedAt: { type: Date, default: Date.now, index: true },
   
   // Analysis Data
@@ -52,23 +57,22 @@ const articleSchema = new mongoose.Schema({
 });
 
 // --- SMART SEARCH INDEX ---
-// Expanded to include Source, Category, and Lean for "natural language" feel.
 articleSchema.index({ 
   headline: 'text', 
   summary: 'text', 
   clusterTopic: 'text', 
   primaryNoun: 'text', 
   secondaryNoun: 'text',
-  source: 'text',       // <--- NEW
-  category: 'text',     // <--- NEW
-  politicalLean: 'text' // <--- NEW
+  source: 'text',       
+  category: 'text',     
+  politicalLean: 'text' 
 }, {
   name: 'GlobalSearchIndex',
   weights: {
     headline: 10,
     clusterTopic: 8,
     primaryNoun: 6,
-    source: 5,       // High weight for finding specific outlets
+    source: 5,       
     category: 4,
     secondaryNoun: 3,
     politicalLean: 3,
@@ -77,25 +81,15 @@ articleSchema.index({
 });
 
 // --- PERFORMANCE INDEXES ---
-
-// 1. "For You" Feed Optimization (Compound Index)
 articleSchema.index({ category: 1, politicalLean: 1, publishedAt: -1 });
-
-// 2. Feed Sorting & Filtering
 articleSchema.index({ category: 1, publishedAt: -1 });
 articleSchema.index({ politicalLean: 1, publishedAt: -1 });
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ country: 1, publishedAt: -1 });
-
-// 3. Sorting by Scores
 articleSchema.index({ trustScore: -1, publishedAt: -1 });
 articleSchema.index({ biasScore: 1, publishedAt: -1 });
-
-// 4. Clustering & Deduplication
 articleSchema.index({ clusterId: 1, publishedAt: -1 });
 articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
-
-// 5. Advanced Clustering Lookup (5-Field)
 articleSchema.index({ 
   clusterTopic: 1, 
   category: 1, 
