@@ -40,7 +40,7 @@ class TTSService {
         // "Teleprompter" Scrub
         const safeText = this.cleanTextForNews(text);
 
-        // High Energy / News Anchor Settings
+        // High Energy + Slower Pace Settings
         const params = {
             optimize_streaming_latency: 3 
         };
@@ -56,7 +56,9 @@ class TTSService {
                 // Style > 0 = Adds "acting" (punchiness)
                 style: 0.35,
                 // Speaker Boost = Adds volume and clarity
-                use_speaker_boost: true
+                use_speaker_boost: true,
+                // NEW: Slow down slightly for clarity (Range 0.7 - 1.2)
+                speed: 0.90 
             }
         };
 
@@ -71,7 +73,7 @@ class TTSService {
                 responseType: 'stream'
             });
 
-            console.log(`🎙️ News Anchor Reading: "${safeText.substring(0, 20)}..."`);
+            console.log(`🎙️ News Anchor Reading (Speed 0.9): "${safeText.substring(0, 20)}..."`);
             return response.data;
 
         } catch (error) {
