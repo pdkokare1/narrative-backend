@@ -1,43 +1,57 @@
-// services/newsService.js (FINAL v3.0 - Deduplication & Normalization)
+// services/newsService.js (FINAL v3.1 - With Headline Formatting)
 const axios = require('axios');
 
 // --- Helper Functions ---
 
-// Strip tracking parameters to ensure unique URLs
+// 1. Headline Formatter (New Rule)
+function formatHeadline(title) {
+    if (!title) return "No Title";
+    let clean = title.trim();
+    
+    // Rule A: Force Uppercase start
+    clean = clean.charAt(0).toUpperCase() + clean.slice(1);
+    
+    // Rule B: Force Period at end (unless it ends in ? or !)
+    // We also check for quotes closing a sentence like: " ...said."
+    if (!/[.!?]["']?$/.test(clean)) {
+        clean += ".";
+    }
+    
+    return clean;
+}
+
+// 2. URL Normalizer
 function normalizeUrl(url) {
     if (!url) return null;
     try {
         const urlObj = new URL(url);
-        // Remove common tracking parameters
         const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'ref', 'source', 'fbclid', 'gclid'];
         trackingParams.forEach(param => urlObj.searchParams.delete(param));
         return urlObj.toString();
     } catch (e) {
-        return url; // Return original if parsing fails
+        return url; 
     }
 }
 
+// 3. Deduplication
 function removeDuplicatesAndClean(articles) {
     if (!Array.isArray(articles)) return []; 
     const seenUrls = new Set();
     
     return articles.filter(article => {
-        // 1. Basic Validation
         if (!article || typeof article !== 'object') return false;
         if (!article.title || !article.url) return false;
-        
-        // 2. Junk Filter (Skip articles with no image or very short titles)
-        // Note: For GNews/NewsAPI, sometimes image is null, we can allow it if title is good.
-        // But for a visual feed, we prefer images. Let's be lenient but prefer quality.
         if (article.title.length < 10) return false; 
 
-        // 3. Normalization & Deduplication
         const cleanUrl = normalizeUrl(article.url);
         if (seenUrls.has(cleanUrl)) return false;
         
         seenUrls.add(cleanUrl);
-        // Update the article URL to the clean version
         article.url = cleanUrl; 
+        
+        // APPLY FORMATTING HERE
+        article.title = formatHeadline(article.title);
+        
         return true;
     });
 }
@@ -52,7 +66,6 @@ class NewsService {
     this.keyUsageCount = new Map();
     this.keyErrorCount = new Map();
 
-    // Initialize trackers
     [...this.gnewsKeys, ...this.newsapiKeys].forEach(key => {
         if (key) {
             this.keyUsageCount.set(key, 0);
@@ -76,7 +89,6 @@ class NewsService {
     return keys;
   }
 
-  // --- Key Rotation ---
   getNextKey(keys, currentIndex) {
       if (!keys || keys.length === 0) return { key: null, nextIndex: 0 };
       const key = keys[currentIndex];
@@ -114,10 +126,8 @@ class NewsService {
   // --- Main Fetch Logic ---
   async fetchNews() {
     let allArticles = [];
-    let successfulSources = new Set();
-    const startTime = Date.now();
-
-    // 1. GNews Fetch (Primary)
+    
+    // 1. GNews Fetch
     if (this.gnewsKeys.length > 0) {
       console.log('📡 Fetching from GNews...');
       const gnewsRequests = [
@@ -130,15 +140,14 @@ class NewsService {
         gnewsRequests.map(req => this.fetchFromGNews(req.params, req.name))
       );
 
-      gnewsResults.forEach((result, index) => {
+      gnewsResults.forEach((result) => {
         if (result.status === 'fulfilled' && result.value.length > 0) {
           allArticles.push(...result.value);
-          successfulSources.add(gnewsRequests[index].name);
         }
       });
     }
 
-    // 2. NewsAPI Fallback (Secondary)
+    // 2. NewsAPI Fallback
     const needsFallback = this.newsapiKeys.length > 0 && (this.gnewsKeys.length === 0 || allArticles.length < 15);
 
     if (needsFallback) {
@@ -153,22 +162,16 @@ class NewsService {
         newsapiRequests.map(req => this.fetchFromNewsAPI(req.params, req.name, req.endpoint))
       );
 
-      newsapiResults.forEach((result, index) => {
+      newsapiResults.forEach((result) => {
         if (result.status === 'fulfilled' && result.value.length > 0) {
           allArticles.push(...result.value);
-          successfulSources.add(newsapiRequests[index].name);
         }
       });
     }
 
-    // 3. Clean & Deduplicate
+    // 3. Clean & Deduplicate (Uses formatHeadline internally now)
     const uniqueArticles = removeDuplicatesAndClean(allArticles);
-    
-    // Sort by date (newest first)
     uniqueArticles.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
-
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`📰 FetchNews finished in ${duration}s. Found ${uniqueArticles.length} unique articles.`);
 
     return uniqueArticles;
   }
@@ -217,7 +220,7 @@ class NewsService {
       }
   }
 
-  // --- Transformers ---
+  // --- Transformers (Now using formatHeadline logic via removeDuplicatesAndClean) ---
   transformGNewsArticles(articles) {
     if (!Array.isArray(articles)) return [];
     return articles.map(article => ({
@@ -226,8 +229,7 @@ class NewsService {
         description: (article?.description || article?.content)?.trim(),
         url: article?.url?.trim(),
         urlToImage: article?.image?.trim(),
-        publishedAt: article?.publishedAt || new Date().toISOString(),
-        content: article?.content?.trim() || ''
+        publishedAt: article?.publishedAt || new Date().toISOString()
     }));
   }
 
@@ -239,16 +241,8 @@ class NewsService {
         description: article?.description?.trim(),
         url: article?.url?.trim(),
         urlToImage: article?.urlToImage?.trim(),
-        publishedAt: article?.publishedAt || new Date().toISOString(),
-        content: article?.content?.trim() || ''
+        publishedAt: article?.publishedAt || new Date().toISOString()
     }));
-  }
-
-  getStatistics() {
-    return {
-      totalGNewsKeys: this.gnewsKeys.length,
-      totalNewsAPIKeys: this.newsapiKeys.length
-    };
   }
 }
 
