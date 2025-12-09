@@ -5,21 +5,37 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        // Keeping your working key
+        // Your verified key
         this.apiKey = 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa'.trim();
-        this.verifyConnection();
+        
+        console.log(`🎙️ TTS Service Init. Key starts with: ${this.apiKey.substring(0,4)}...`);
     }
 
-    async verifyConnection() {
-        try {
-            console.log(`🎙️ Testing ElevenLabs Connection...`);
-            const response = await axios.get(`${ELEVENLABS_API_URL}/user`, {
-                headers: { 'xi-api-key': this.apiKey }
-            });
-            console.log(`✅ ElevenLabs Connected! User: ${response.data.subscription.character_count}/${response.data.subscription.character_limit} chars used.`);
-        } catch (error) {
-            console.error(`❌ ElevenLabs Connection FAILED: ${error.message}`);
-        }
+    /**
+     * Prepares text for News Reading:
+     * 1. Replaces quotes "..." with the spoken word "quote".
+     * 2. Replaces dashes - with commas to prevent long pauses.
+     * 3. Flattens colons : to periods.
+     */
+    cleanTextForNews(text) {
+        if (!text) return "";
+        let clean = text;
+
+        // 1. Explicitly say "Quote" for dialogue
+        // Replaces " or “ or ” with the word " quote "
+        clean = clean.replace(/["“”]/g, " quote ");
+
+        // 2. Soften Dashes (Stops the AI from taking dramatic pauses)
+        // Replaces - or — with a simple comma
+        clean = clean.replace(/[-—]/g, ", ");
+
+        // 3. Flatten Colons (Stops "Announcement" style pauses)
+        clean = clean.replace(/:/g, ".");
+
+        // 4. Remove excessive whitespace created by replacements
+        clean = clean.replace(/\s+/g, " ");
+
+        return clean;
     }
 
     async streamAudio(text, voiceId) {
@@ -27,21 +43,25 @@ class TTSService {
 
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
         
+        // Apply the "Teleprompter Scrub"
+        const safeText = this.cleanTextForNews(text);
+
+        // Settings tuned for "Flat News Anchor" style
         const params = {
             optimize_streaming_latency: 3 
         };
 
         const data = {
-            text: text,
+            text: safeText,
             model_id: "eleven_turbo_v2", 
             voice_settings: {
-                // NEWS ANCHOR SETTINGS:
-                // High stability = Consistent, serious tone (no random emotion)
-                // High similarity = Sticks strictly to the original voice's professional sound
-                stability: 0.75,
+                // VERY HIGH stability (0.85) = Monotone, serious, consistent
+                stability: 0.85,
+                // High similarity (0.80) = Sticks to the original voice tone
                 similarity_boost: 0.8,
-                style: 0.0,      // Keep style low to avoid "over-acting"
-                use_speaker_boost: true
+                style: 0.0,
+                // DISABLED Speaker Boost = Flattens volume range (less "bouncy")
+                use_speaker_boost: false 
             }
         };
 
@@ -53,10 +73,10 @@ class TTSService {
                     'Accept': 'audio/mpeg'
                 },
                 params: params,
-                responseType: 'stream' 
+                responseType: 'stream'
             });
 
-            console.log(`🎙️ Streaming audio...`);
+            console.log(`🎙️ News Anchor Reading: "${safeText.substring(0, 20)}..."`);
             return response.data;
 
         } catch (error) {
