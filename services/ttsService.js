@@ -1,87 +1,90 @@
 // services/ttsService.js
 const axios = require('axios');
+const cloudinary = require('cloudinary').v2;
+const stream = require('stream');
 
 const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        // Keeping your verified key
-        this.apiKey = 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa'.trim();
-        console.log(`🎙️ TTS Service Init. Key starts with: ${this.apiKey.substring(0,4)}...`);
+        this.apiKey = process.env.ELEVENLABS_API_KEY || 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa';
+        
+        // Initialize Cloudinary
+        cloudinary.config({
+            cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+            api_key: process.env.CLOUDINARY_API_KEY,
+            api_secret: process.env.CLOUDINARY_API_SECRET
+        });
+
+        console.log(`🎙️ TTS Service Ready (Cloudinary + ElevenLabs)`);
     }
 
-    /**
-     * Prepares text for News Reading (Teleprompter Mode)
-     */
     cleanTextForNews(text) {
         if (!text) return "";
         let clean = text;
-
-        // 1. Explicitly say "Quote" for dialogue
-        clean = clean.replace(/["“”]/g, " quote ");
-
-        // 2. Soften Dashes
-        clean = clean.replace(/[-—]/g, ", ");
-
-        // 3. Flatten Colons
-        clean = clean.replace(/:/g, ".");
-
-        // 4. Remove excessive whitespace
-        clean = clean.replace(/\s+/g, " ");
-
+        clean = clean.replace(/["“”]/g, " quote "); // Say "quote"
+        clean = clean.replace(/[-—]/g, ", ");       // Pause for dashes
+        clean = clean.replace(/:/g, ".");           // Pause for colons
+        clean = clean.replace(/\s+/g, " ");         // Remove extra spaces
         return clean;
     }
 
-    async streamAudio(text, voiceId) {
-        if (!this.apiKey) throw new Error("Missing API Key");
+    /**
+     * GENERATE AND UPLOAD
+     * 1. Calls ElevenLabs to get audio stream
+     * 2. Pipes that stream directly to Cloudinary
+     * 3. Returns the secure URL
+     */
+    async generateAndUpload(text, voiceId, articleId) {
+        if (!this.apiKey) throw new Error("Missing ElevenLabs API Key");
 
-        const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
-        
-        // "Teleprompter" Scrub
         const safeText = this.cleanTextForNews(text);
+        const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
 
-        // High Energy + Slower Pace Settings
-        const params = {
-            optimize_streaming_latency: 3 
-        };
-
-        const data = {
+        // 1. Get Audio Stream from ElevenLabs
+        const response = await axios.post(url, {
             text: safeText,
-            model_id: "eleven_turbo_v2", 
+            model_id: "eleven_turbo_v2",
             voice_settings: {
-                // Lower stability = More expressive/energetic
                 stability: 0.50,
-                // High similarity = Keeps the voice identity strong
                 similarity_boost: 0.75,
-                // Style > 0 = Adds "acting" (punchiness)
                 style: 0.35,
-                // Speaker Boost = Adds volume and clarity
                 use_speaker_boost: true,
-                // NEW: Slow down slightly for clarity (Range 0.7 - 1.2)
-                speed: 0.90 
+                speed: 0.90
             }
-        };
+        }, {
+            headers: {
+                'xi-api-key': this.apiKey,
+                'Content-Type': 'application/json',
+                'Accept': 'audio/mpeg'
+            },
+            params: { optimize_streaming_latency: 3 },
+            responseType: 'stream' // Important: We get a stream, not a file
+        });
 
-        try {
-            const response = await axios.post(url, data, {
-                headers: {
-                    'xi-api-key': this.apiKey,
-                    'Content-Type': 'application/json',
-                    'Accept': 'audio/mpeg'
+        // 2. Upload Stream to Cloudinary
+        return new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+                {
+                    folder: 'the-gamut-audio', // Folder isolation
+                    public_id: `article_${articleId}`, // Consistent naming
+                    resource_type: 'video', // Cloudinary treats audio as 'video' type sometimes
+                    format: 'mp3'
                 },
-                params: params,
-                responseType: 'stream'
-            });
+                (error, result) => {
+                    if (error) {
+                        console.error("Cloudinary Upload Error:", error);
+                        reject(error);
+                    } else {
+                        console.log(`✅ Audio Saved to Cloudinary: ${result.secure_url}`);
+                        resolve(result.secure_url);
+                    }
+                }
+            );
 
-            console.log(`🎙️ News Anchor Reading (Speed 0.9): "${safeText.substring(0, 20)}..."`);
-            return response.data;
-
-        } catch (error) {
-            const status = error.response ? error.response.status : 'Unknown';
-            const msg = error.response?.data ? JSON.stringify(error.response.data) : error.message;
-            console.error(`❌ ElevenLabs Error (${status}): ${msg}`);
-            throw new Error("Failed to generate speech");
-        }
+            // Pipe ElevenLabs -> Cloudinary
+            response.data.pipe(uploadStream);
+        });
     }
 }
 
