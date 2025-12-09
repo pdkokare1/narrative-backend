@@ -5,34 +5,28 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        // Your verified key
+        // Keeping your verified key
         this.apiKey = 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa'.trim();
-        
         console.log(`🎙️ TTS Service Init. Key starts with: ${this.apiKey.substring(0,4)}...`);
     }
 
     /**
-     * Prepares text for News Reading:
-     * 1. Replaces quotes "..." with the spoken word "quote".
-     * 2. Replaces dashes - with commas to prevent long pauses.
-     * 3. Flattens colons : to periods.
+     * Prepares text for News Reading (Teleprompter Mode)
      */
     cleanTextForNews(text) {
         if (!text) return "";
         let clean = text;
 
         // 1. Explicitly say "Quote" for dialogue
-        // Replaces " or “ or ” with the word " quote "
         clean = clean.replace(/["“”]/g, " quote ");
 
-        // 2. Soften Dashes (Stops the AI from taking dramatic pauses)
-        // Replaces - or — with a simple comma
+        // 2. Soften Dashes
         clean = clean.replace(/[-—]/g, ", ");
 
-        // 3. Flatten Colons (Stops "Announcement" style pauses)
+        // 3. Flatten Colons
         clean = clean.replace(/:/g, ".");
 
-        // 4. Remove excessive whitespace created by replacements
+        // 4. Remove excessive whitespace
         clean = clean.replace(/\s+/g, " ");
 
         return clean;
@@ -43,10 +37,10 @@ class TTSService {
 
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
         
-        // Apply the "Teleprompter Scrub"
+        // "Teleprompter" Scrub
         const safeText = this.cleanTextForNews(text);
 
-        // Settings tuned for "Flat News Anchor" style
+        // High Energy / News Anchor Settings
         const params = {
             optimize_streaming_latency: 3 
         };
@@ -55,13 +49,14 @@ class TTSService {
             text: safeText,
             model_id: "eleven_turbo_v2", 
             voice_settings: {
-                // VERY HIGH stability (0.85) = Monotone, serious, consistent
-                stability: 0.85,
-                // High similarity (0.80) = Sticks to the original voice tone
-                similarity_boost: 0.8,
-                style: 0.0,
-                // DISABLED Speaker Boost = Flattens volume range (less "bouncy")
-                use_speaker_boost: false 
+                // Lower stability = More expressive/energetic
+                stability: 0.50,
+                // High similarity = Keeps the voice identity strong
+                similarity_boost: 0.75,
+                // Style > 0 = Adds "acting" (punchiness)
+                style: 0.35,
+                // Speaker Boost = Adds volume and clarity
+                use_speaker_boost: true
             }
         };
 
