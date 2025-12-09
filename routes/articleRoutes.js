@@ -1,4 +1,4 @@
-// routes/articleRoutes.js
+// routes/articleRoutes.js (FINAL v3.4 - MongoDB Caching)
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -7,22 +7,23 @@ const router = express.Router();
 const Article = require('../models/articleModel');
 const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
+const Cache = require('../models/cacheModel'); // <--- NEW IMPORT
 
-// --- CACHE CONFIGURATION ---
-let trendingCache = {
-  data: [],
-  lastFetch: 0
-};
-const CACHE_DURATION = 30 * 60 * 1000; // 30 Minutes
-
-// --- 1. Trending Topics (Cached) ---
+// --- 1. Trending Topics (MongoDB Cached) ---
 router.get('/trending', async (req, res) => {
   try {
-    const now = Date.now();
-    if (trendingCache.data.length > 0 && (now - trendingCache.lastFetch < CACHE_DURATION)) {
-      return res.status(200).json({ topics: trendingCache.data });
+    const CACHE_KEY = 'trending_topics';
+    
+    // A. Check Database Cache
+    const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
+    
+    if (cachedDoc) {
+        // Hit! Return saved data
+        res.set('Cache-Control', 'public, max-age=1800'); // Tell browser to cache for 30m too
+        return res.status(200).json({ topics: cachedDoc.data });
     }
 
+    // B. Miss! Calculate from scratch
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const trending = await Article.aggregate([
       { 
@@ -37,9 +38,18 @@ router.get('/trending', async (req, res) => {
       { $project: { _id: 0, topic: "$_id", count: 1 } }
     ]);
 
-    trendingCache = { data: trending || [], lastFetch: now };
+    // C. Save to Database Cache (Expires in 30 minutes)
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // Now + 30 mins
+    
+    // Upsert = Update if exists, Insert if new
+    await Cache.findOneAndUpdate(
+        { key: CACHE_KEY },
+        { data: trending || [], expiresAt },
+        { upsert: true, new: true }
+    );
+
     res.set('Cache-Control', 'public, max-age=1800'); 
-    res.status(200).json({ topics: trendingCache.data });
+    res.status(200).json({ topics: trending || [] });
 
   } catch (error) {
     console.error("Trending Error:", error);
@@ -47,7 +57,7 @@ router.get('/trending', async (req, res) => {
   }
 });
 
-// --- 2. Search (Cached) ---
+// --- 2. Search (Cached in Browser) ---
 router.get('/search', async (req, res) => {
   try {
     const query = req.query.q;
@@ -175,7 +185,7 @@ router.get('/articles/saved', async (req, res) => {
   }
 });
 
-// --- 6. Cluster Fetch (FIXED) ---
+// --- 6. Cluster Fetch ---
 router.get('/cluster/:clusterId', async (req, res) => {
   try {
     const clusterIdNum = parseInt(req.params.clusterId);
@@ -187,7 +197,6 @@ router.get('/cluster/:clusterId', async (req, res) => {
       .lean();
 
     const grouped = articles.reduce((acc, article) => {
-      // Normalize lean to avoid mismatches
       const lean = article.politicalLean || 'Not Applicable';
       
       if (['Left', 'Left-Leaning'].includes(lean)) {
@@ -197,15 +206,13 @@ router.get('/cluster/:clusterId', async (req, res) => {
       } else if (['Right-Leaning', 'Right'].includes(lean)) {
           acc.right.push(article);
       } else {
-          // CATCH-ALL: Everything else (reviews, soft news, unknown) goes here
-          // This fixes the "Ghost Article" bug
+          // Reviews/Opinions/Soft News
           acc.reviews.push(article);
       }
       return acc;
     }, { left: [], center: [], right: [], reviews: [] }); 
 
     res.set('Cache-Control', 'public, max-age=600');
-    // We return the grouped lists AND the raw total so the frontend can double-check
     res.status(200).json({ ...grouped, stats: { total: articles.length } });
 
   } catch (error) {
@@ -233,7 +240,7 @@ router.get('/articles', async (req, res) => {
     if (filters.lean) matchStage.politicalLean = filters.lean;
     if (filters.region) matchStage.country = filters.region;
     
-    // Updated Logic for Hard/Soft news mapping
+    // Hard/Soft news mapping
     if (filters.articleType === 'Hard News') matchStage.analysisType = 'Full';
     else if (filters.articleType === 'Opinion & Reviews') matchStage.analysisType = 'SentimentOnly';
 
