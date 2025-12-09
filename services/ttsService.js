@@ -7,8 +7,13 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        this.apiKey = process.env.ELEVENLABS_API_KEY || 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa';
+        // CHANGED: Removed the hardcoded fallback. Now it relies 100% on Railway.
+        this.apiKey = process.env.ELEVENLABS_API_KEY;
         
+        if (!this.apiKey) {
+            console.error("❌ CRITICAL: ELEVENLABS_API_KEY is missing from Environment Variables!");
+        }
+
         // Initialize Cloudinary
         cloudinary.config({
             cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -29,14 +34,8 @@ class TTSService {
         return clean;
     }
 
-    /**
-     * GENERATE AND UPLOAD
-     * 1. Calls ElevenLabs to get audio stream
-     * 2. Pipes that stream directly to Cloudinary
-     * 3. Returns the secure URL
-     */
     async generateAndUpload(text, voiceId, articleId) {
-        if (!this.apiKey) throw new Error("Missing ElevenLabs API Key");
+        if (!this.apiKey) throw new Error("Missing ElevenLabs API Key in Environment Variables");
 
         const safeText = this.cleanTextForNews(text);
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
@@ -59,16 +58,16 @@ class TTSService {
                 'Accept': 'audio/mpeg'
             },
             params: { optimize_streaming_latency: 3 },
-            responseType: 'stream' // Important: We get a stream, not a file
+            responseType: 'stream'
         });
 
         // 2. Upload Stream to Cloudinary
         return new Promise((resolve, reject) => {
             const uploadStream = cloudinary.uploader.upload_stream(
                 {
-                    folder: 'the-gamut-audio', // Folder isolation
-                    public_id: `article_${articleId}`, // Consistent naming
-                    resource_type: 'video', // Cloudinary treats audio as 'video' type sometimes
+                    folder: 'the-gamut-audio',
+                    public_id: `article_${articleId}`,
+                    resource_type: 'video', 
                     format: 'mp3'
                 },
                 (error, result) => {
@@ -82,7 +81,6 @@ class TTSService {
                 }
             );
 
-            // Pipe ElevenLabs -> Cloudinary
             response.data.pipe(uploadStream);
         });
     }
