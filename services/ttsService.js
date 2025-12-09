@@ -5,9 +5,8 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        // Keeping your working key hardcoded
+        // Keeping your working key
         this.apiKey = 'sk_84859baaf9b9da27f81e79abd1d30827c8bf0ecb454b97aa'.trim();
-        
         this.verifyConnection();
     }
 
@@ -28,7 +27,6 @@ class TTSService {
 
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
         
-        // UPGRADE: Using Turbo v2 for faster latency (Best for News Radio)
         const params = {
             optimize_streaming_latency: 3 
         };
@@ -37,8 +35,13 @@ class TTSService {
             text: text,
             model_id: "eleven_turbo_v2", 
             voice_settings: {
-                stability: 0.5,
-                similarity_boost: 0.7
+                // NEWS ANCHOR SETTINGS:
+                // High stability = Consistent, serious tone (no random emotion)
+                // High similarity = Sticks strictly to the original voice's professional sound
+                stability: 0.75,
+                similarity_boost: 0.8,
+                style: 0.0,      // Keep style low to avoid "over-acting"
+                use_speaker_boost: true
             }
         };
 
@@ -53,7 +56,7 @@ class TTSService {
                 responseType: 'stream' 
             });
 
-            console.log(`🎙️ Streaming audio via Turbo...`);
+            console.log(`🎙️ Streaming audio...`);
             return response.data;
 
         } catch (error) {
