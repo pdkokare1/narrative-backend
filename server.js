@@ -1,4 +1,4 @@
-// server.js (AUTO-MIGRATION - TEMPORARY)
+// server.js (AUTO-MIGRATION, RESTART FIX - TEMPORARY)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -19,13 +19,13 @@ const emergencyService = require('./services/emergencyService');
 const aiService = require('./services/aiService'); // Needed for the migration
 const Article = require('./models/articleModel'); // Needed for the migration
 
-// --- Routes (Keep them imported for security cleanup later) ---
+// --- Routes (Keep imports) ---
 const profileRoutes = require('./routes/profileRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const ttsRoutes = require('./routes/ttsRoutes'); 
-const migrationRoutes = require('./routes/migrationRoutes'); // We won't mount this route, but keep the import
+const migrationRoutes = require('./routes/migrationRoutes'); 
 
 const app = express();
 
@@ -137,6 +137,9 @@ async function runBackfillLoop() {
         
         for (const article of articlesToFix) {
             try {
+                // Wait for a short moment before processing to prevent hitting the rate limit
+                await new Promise(resolve => setTimeout(resolve, 300));
+                
                 const textToEmbed = `${article.headline}. ${article.summary}`;
                 const embedding = await aiService.createEmbedding(textToEmbed);
 
@@ -146,10 +149,10 @@ async function runBackfillLoop() {
                     successCount++;
                 }
             } catch (err) {
-                console.error(`❌ Failed to fix article ${article._id}. Skipping batch...`);
-                // If AI service fails hard, we should probably stop the loop to prevent rate limits
-                await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s before checking again
-                return; 
+                // If AI service fails, log the error and wait longer before retrying the batch
+                console.error(`❌ Migration Failure (Could be rate limit or bad key). Waiting 10 seconds before re-checking DB...`);
+                await new Promise(resolve => setTimeout(resolve, 10000)); 
+                break; // Break the 'for' loop and restart the 'while' loop to fetch a new batch
             }
         }
         
