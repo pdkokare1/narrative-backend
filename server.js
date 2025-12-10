@@ -1,4 +1,4 @@
-// server.js (FINAL SECURE - After Migration)
+// server.js (TEMPORARY UNLOCKED - For Migration)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -20,7 +20,7 @@ const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const ttsRoutes = require('./routes/ttsRoutes'); 
-const migrationRoutes = require('./routes/migrationRoutes'); // Keep the import
+const migrationRoutes = require('./routes/migrationRoutes'); 
 
 // --- Services ---
 const emergencyService = require('./services/emergencyService');
@@ -103,6 +103,12 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
+// ================= PUBLIC ROUTES (UNSECURED FOR MIGRATION) =================
+// MOUNT MIGRATION BEFORE SECURITY CHECKS
+// This line allows POST requests to /api/migration/backfill to bypass security
+app.use('/api/migration', migrationRoutes); 
+// ===========================================================================
+
 // --- Apply Security Middleware ---
 app.use('/api/', checkAppCheck); 
 app.use('/api/', checkAuth);
@@ -112,7 +118,6 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/emergency-resources', emergencyRoutes);
 app.use('/api/tts', ttsRoutes);
-app.use('/api/migration', migrationRoutes); // <--- SECURED MIGRATION ROUTE
 app.use('/api', articleRoutes); 
 
 
