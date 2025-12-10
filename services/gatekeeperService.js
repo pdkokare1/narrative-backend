@@ -129,5 +129,3 @@ class GatekeeperService {
 }
 
 module.exports = new GatekeeperService();
-
-}
