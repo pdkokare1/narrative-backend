@@ -1,8 +1,8 @@
 // jobs/newsFetcher.js
 // Orchestrates the Fetch -> Filter -> Analyze -> Save pipeline.
 const newsService = require('../services/newsService');
-const gatekeeper = require('../services/gatekeeperService'); // <--- NEW
-const aiService = require('../services/aiService'); // <--- REPLACES geminiService
+const gatekeeper = require('../services/gatekeeperService'); 
+const aiService = require('../services/aiService'); 
 const clusteringService = require('../services/clusteringService');
 const Article = require('../models/articleModel');
 
@@ -16,6 +16,16 @@ function sleep(ms) {
 // --- Main Worker Function ---
 async function fetchAndAnalyzeNews() {
   console.log('🔄 Job Started: Fetching news...');
+  
+  // Job Stats
+  const stats = {
+      totalFetched: 0,
+      saved: 0,
+      duplicates: 0,
+      junk: 0,
+      errors: 0
+  };
+
   try {
     const rawArticles = await newsService.fetchNews(); 
     if (!rawArticles || rawArticles.length === 0) {
@@ -23,54 +33,71 @@ async function fetchAndAnalyzeNews() {
         return;
     }
 
-    console.log(`📡 Fetched ${rawArticles.length} articles. Starting processing...`);
+    stats.totalFetched = rawArticles.length;
+    console.log(`📡 Fetched ${stats.totalFetched} articles. Starting processing...`);
 
     // --- PARALLEL PROCESSING (Batch Size 3) ---
-    // We process 3 articles at a time to respect rate limits while remaining fast
     const BATCH_SIZE = 3; 
     for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
         const batch = rawArticles.slice(i, i + BATCH_SIZE);
         console.log(`⚡ Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(rawArticles.length/BATCH_SIZE)}`);
         
-        await Promise.all(batch.map(article => processSingleArticle(article)));
+        // Process batch and update stats
+        const results = await Promise.all(batch.map(article => processSingleArticle(article)));
+        
+        // Tally results
+        results.forEach(res => {
+            if (res === 'SAVED') stats.saved++;
+            else if (res === 'DUPLICATE') stats.duplicates++;
+            else if (res === 'JUNK') stats.junk++;
+            else if (res === 'ERROR') stats.errors++;
+        });
         
         // Safety buffer: 2 seconds between batches
         await sleep(2000); 
     }
-    console.log('✅ Job Complete: Batch processing finished.');
+
+    // --- FINAL REPORT ---
+    console.log(`
+    ===============================================
+    📊 JOB COMPLETE: News Processing Summary
+    ===============================================
+    📥 Fetched:    ${stats.totalFetched}
+    ✅ Saved:      ${stats.saved}
+    🗑️  Junk:       ${stats.junk} (Filtered)
+    ♻️  Duplicates: ${stats.duplicates}
+    ❌ Errors:     ${stats.errors}
+    ===============================================
+    `);
 
   } catch (error) {
-    console.error('❌ Job Error:', error.message);
+    console.error('❌ Job Critical Failure:', error.message);
   }
 }
 
 // --- Single Article Processor ---
 async function processSingleArticle(article) {
     try {
-        if (!article?.url || !article?.title) return;
+        if (!article?.url || !article?.title) return 'ERROR';
         
         // 1. DUPLICATE CHECK
-        // Check if we already have this specific URL
         const exists = await Article.exists({ url: article.url });
-        if (exists) return;
+        if (exists) return 'DUPLICATE';
 
         // 2. GATEKEEPER (The Filter)
-        // Uses Gemini 2.5 Flash (Cheap) to decide if this is worth analyzing
         const gatekeeperResult = await gatekeeper.evaluateArticle(article);
         
         if (gatekeeperResult.isJunk) {
-            console.log(`🗑️ Junk Skipped: "${article.title.substring(0, 30)}..."`);
-            return;
+            // Log logic is handled inside gatekeeperService, we just return status
+            return 'JUNK';
         }
 
-        console.log(`🔍 Analyzing [${gatekeeperResult.type} -> ${gatekeeperResult.recommendedModel}]: "${article.title.substring(0, 30)}..."`);
+        console.log(`🔍 Analyzing [${gatekeeperResult.type}]: "${article.title.substring(0, 30)}..."`);
 
         // 3. THE ANALYST (The Brain)
-        // Uses either Flash (Soft News) or Pro (Hard News) based on Gatekeeper's advice
         const analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
 
         // 4. THE LIBRARIAN (Vectorizing)
-        // Generate embedding for clustering
         const textToEmbed = `${article.title}. ${article.description}`;
         const embedding = await aiService.createEmbedding(textToEmbed);
 
@@ -88,7 +115,7 @@ async function processSingleArticle(article) {
             imageUrl: article.urlToImage,
             publishedAt: article.publishedAt,
             
-            // Set type based on Gatekeeper: Hard News = Full, Soft News = SentimentOnly
+            // Set type based on Gatekeeper
             analysisType: gatekeeperResult.type === 'Hard News' ? 'Full' : 'SentimentOnly',
             
             sentiment: analysis.sentiment,
@@ -116,7 +143,7 @@ async function processSingleArticle(article) {
             keyFindings: analysis.keyFindings || [],
             recommendations: analysis.recommendations || [],
             
-            analysisVersion: '3.1-Hybrid', // Mark version for debugging
+            analysisVersion: '3.2-Robust', 
             embedding: embedding || []
         };
         
@@ -125,9 +152,11 @@ async function processSingleArticle(article) {
         
         await Article.create(newArticleData);
         console.log(`✅ Saved: ${newArticleData.headline.substring(0, 30)}...`);
+        return 'SAVED';
 
     } catch (error) {
-        console.error(`❌ Article Error: ${error.message}`);
+        console.error(`❌ Article Error (${article?.title?.substring(0,15)}...): ${error.message}`);
+        return 'ERROR';
     }
 }
 
@@ -139,7 +168,8 @@ module.exports = {
     // Trigger the job safely
     run: async () => {
         if (isFetchRunning) {
-            return false; // Already running
+            console.warn("⚠️ Job skipped: Previous job still running.");
+            return false; 
         }
         isFetchRunning = true;
 
