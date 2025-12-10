@@ -1,6 +1,7 @@
 // routes/profileRoutes.js
 const express = require('express');
 const router = express.Router();
+const asyncHandler = require('../utils/asyncHandler'); // <--- NEW IMPORT
 
 // Models
 const Profile = require('../models/profileModel');
@@ -8,50 +9,48 @@ const ActivityLog = require('../models/activityLogModel');
 const Article = require('../models/articleModel');
 
 // --- 1. GET Profile ---
-router.get('/me', async (req, res) => {
-  try {
+router.get('/me', asyncHandler(async (req, res) => {
     const profile = await Profile.findOne({ userId: req.user.uid })
       .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles')
       .lean();
-    if (!profile) return res.status(404).json({ error: 'Profile not found' });
+    
+    if (!profile) {
+        res.status(404);
+        throw new Error('Profile not found');
+    }
     res.status(200).json(profile);
-  } catch (error) {
-    console.error("Profile Error:", error);
-    res.status(500).json({ error: 'Error fetching profile' });
-  }
-});
+}));
 
 // --- 2. Create Profile ---
-router.post('/', async (req, res) => {
-  try {
+router.post('/', asyncHandler(async (req, res) => {
     const { username } = req.body;
     const { uid, email } = req.user; 
 
     if (!username || username.trim().length < 3) {
-      return res.status(400).json({ error: 'Username must be at least 3 characters' });
+      res.status(400);
+      throw new Error('Username must be at least 3 characters');
     }
     const cleanUsername = username.trim();
 
     const existingUsername = await Profile.findOne({ username: cleanUsername }).lean();
-    if (existingUsername) return res.status(409).json({ error: 'Username already taken' });
+    if (existingUsername) {
+        res.status(409);
+        throw new Error('Username already taken');
+    }
 
     const existingProfile = await Profile.findOne({ userId: uid }).lean();
-    if (existingProfile) return res.status(409).json({ error: 'Profile already exists' });
+    if (existingProfile) {
+        res.status(409);
+        throw new Error('Profile already exists');
+    }
 
     const newProfile = new Profile({ userId: uid, email: email, username: cleanUsername });
     await newProfile.save();
     res.status(201).json(newProfile);
-
-  } catch (error) {
-    console.error('Error creating profile:', error.message);
-    if (error.code === 11000) return res.status(409).json({ error: 'Profile exists.' });
-    res.status(500).json({ error: 'Error creating profile' });
-  }
-});
+}));
 
 // --- 3. Weekly Digest (The "Pulse") ---
-router.get('/weekly-digest', async (req, res) => {
-  try {
+router.get('/weekly-digest', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
@@ -108,16 +107,10 @@ router.get('/weekly-digest', async (req, res) => {
       recommendation,
       topCategory: Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0]
     });
-
-  } catch (error) {
-    console.error("Weekly Digest Error:", error);
-    res.status(500).json({ error: 'Error generating digest' });
-  }
-});
+}));
 
 // --- 4. User Stats (Dashboard Data) ---
-router.get('/stats', async (req, res) => {
-  try {
+router.get('/stats', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const stats = await ActivityLog.aggregate([
       { $match: { userId: userId } },
@@ -182,10 +175,6 @@ router.get('/stats', async (req, res) => {
       sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
     };
     res.status(200).json(results);
-  } catch (error) {
-    console.error('Stats Error:', error);
-    res.status(500).json({ error: 'Error fetching stats' });
-  }
-});
+}));
 
 module.exports = router;
