@@ -1,4 +1,4 @@
-// server.js (FINAL SECURE - After Migration - POST-FIX)
+// server.js (FINAL SECURE - With Centralized Error Handling)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -13,6 +13,9 @@ const admin = require('firebase-admin');
 
 // --- Import Job Manager ---
 const newsFetcher = require('./jobs/newsFetcher');
+
+// --- Import Middleware ---
+const { errorHandler } = require('./middleware/errorMiddleware'); // <--- NEW
 
 // --- Routes ---
 const profileRoutes = require('./routes/profileRoutes');
@@ -79,33 +82,47 @@ app.use('/api/', apiLimiter);
 // --- App Check Middleware ---
 const checkAppCheck = async (req, res, next) => {
   const appCheckToken = req.header('X-Firebase-AppCheck');
-  if (!appCheckToken) return res.status(401).json({ error: 'Unauthorized: No App Check token.' });
+  if (!appCheckToken) {
+      res.status(401);
+      throw new Error('Unauthorized: No App Check token.');
+  }
   try {
     await admin.appCheck().verifyToken(appCheckToken);
     next(); 
   } catch (err) {
     console.warn('⚠️ App Check Error:', err.message);
-    return res.status(403).json({ error: 'Forbidden: Invalid App Check token.' });
+    res.status(403);
+    throw new Error('Forbidden: Invalid App Check token.');
   }
 };
 
 // --- Auth Middleware ---
 const checkAuth = async (req, res, next) => {
   const token = req.headers.authorization?.split('Bearer ')[1];
-  if (!token) return res.status(401).json({ error: 'Unauthorized: No token provided' });
+  if (!token) {
+      res.status(401);
+      throw new Error('Unauthorized: No token provided');
+  }
   try {
     const decodedToken = await admin.auth().verifyIdToken(token);
     req.user = decodedToken;
     next();
   } catch (error) {
     console.warn('⚠️ Auth Error:', error.code, error.message);
-    return res.status(403).json({ error: 'Forbidden: Invalid or expired token' });
+    res.status(403);
+    throw new Error('Forbidden: Invalid or expired token');
   }
 };
 
 // --- Apply Security Middleware ---
-app.use('/api/', checkAppCheck); 
-app.use('/api/', checkAuth);
+// Note: We wrap these in the routes or apply globally. 
+// For now, we keep applying them to /api/ globally.
+app.use('/api/', (req, res, next) => {
+    // We wrap the async middleware calls to catch errors
+    checkAppCheck(req, res, () => {
+        checkAuth(req, res, next).catch(next);
+    }).catch(next);
+});
 
 // --- MOUNT SECURE ROUTES ---
 app.use('/api/profile', profileRoutes);
@@ -137,11 +154,12 @@ if (process.env.MONGODB_URI) {
         .then(async () => {
             console.log('✅ MongoDB Connected');
             await emergencyService.initializeEmergencyContacts();
-            
-            // NOTE: Migration Loop is REMOVED to stop endless failure
         })
         .catch(err => console.error("❌ MongoDB Connection Failed:", err.message));
 }
+
+// --- GLOBAL ERROR HANDLER (Must be last) ---
+app.use(errorHandler); // <--- NEW
 
 const PORT = process.env.PORT || 3001;
 const HOST = '0.0.0.0'; 
