@@ -1,4 +1,4 @@
-// routes/articleRoutes.js (FINAL v3.5 - Optimized For You Feed)
+// routes/articleRoutes.js
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -8,6 +8,19 @@ const Article = require('../models/articleModel');
 const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
 const Cache = require('../models/cacheModel'); 
+
+// --- Helper: Merge & Deduplicate Arrays ---
+const mergeResults = (arr1, arr2) => {
+    const map = new Map();
+    [...arr1, ...arr2].forEach(item => {
+        // Use string ID as key to ensure uniqueness
+        const id = item._id.toString();
+        if (!map.has(id)) {
+            map.set(id, item);
+        }
+    });
+    return Array.from(map.values());
+};
 
 // --- 1. Trending Topics (MongoDB Cached) ---
 router.get('/trending', async (req, res) => {
@@ -55,7 +68,7 @@ router.get('/trending', async (req, res) => {
   }
 });
 
-// --- 2. Search (Cached) ---
+// --- 2. Search (Enhanced Hybrid: Text + Fuzzy Regex) ---
 router.get('/search', async (req, res) => {
   try {
     const query = req.query.q;
@@ -63,35 +76,61 @@ router.get('/search', async (req, res) => {
 
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50);
     const offset = Math.max(parseInt(req.query.offset) || 0, 0);
+    const cleanQuery = query.trim();
 
-    const articles = await Article.find(
-      { $text: { $search: query } },
+    // STRATEGY 1: Strict Text Search (Good for ranking)
+    // Uses the text index we created in the Model.
+    const textPromise = Article.find(
+      { $text: { $search: cleanQuery } },
       { score: { $meta: 'textScore' } }
     )
     .sort({ score: { $meta: 'textScore' }, publishedAt: -1 })
-    .skip(offset)
     .limit(limit)
     .lean();
 
-    const total = await Article.countDocuments({ $text: { $search: query } });
-    const results = articles.map(a => ({ ...a, clusterCount: 1 })); 
+    // STRATEGY 2: Flexible Regex Search (Good for partials/typos)
+    // "Poli" will match "Politics" here, whereas Text Search might miss it.
+    // We search Headlines and Topics specifically.
+    const regex = new RegExp(cleanQuery, 'i'); // 'i' = case insensitive
+    const regexPromise = Article.find({
+        $or: [
+            { headline: regex },
+            { clusterTopic: regex },
+            { category: regex }
+        ]
+    })
+    .sort({ publishedAt: -1 })
+    .limit(limit)
+    .lean();
+
+    // Run both in parallel for speed
+    const [textResults, regexResults] = await Promise.all([textPromise, regexPromise]);
+
+    // Merge results (Text results first as they are usually more relevant)
+    let combined = mergeResults(textResults, regexResults);
+
+    // Manual Pagination Handling since we merged two queries
+    const total = combined.length; // Approximate total of current batch
+    
+    // Slice for the requested page if we have a lot (though we limited db queries already)
+    // This is a simple approximation for the hybrid approach
+    const results = combined.slice(0, limit).map(a => ({ ...a, clusterCount: 1 }));
 
     res.set('Cache-Control', 'public, max-age=600');
     res.status(200).json({ articles: results, pagination: { total } });
+
   } catch (error) {
     console.error("Search Error:", error);
     res.status(500).json({ error: 'Search failed' });
   }
 });
 
-// --- 3. "Balanced For You" Feed (OPTIMIZED) ---
+// --- 3. "Balanced For You" Feed ---
 router.get('/articles/for-you', async (req, res) => {
   try {
     res.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
     const userId = req.user.uid;
 
-    // A. LIGHTWEIGHT AGGREGATION
-    // Only fetch 'category' and 'politicalLean'. Don't pull titles/summaries/vectors.
     const logs = await ActivityLog.aggregate([
       { $match: { userId: userId, action: 'view_analysis' } },
       { $sort: { timestamp: -1 } },
@@ -101,14 +140,13 @@ router.get('/articles/for-you', async (req, res) => {
           from: 'articles', 
           localField: 'articleId', 
           foreignField: '_id', 
-          pipeline: [{ $project: { category: 1, politicalLean: 1 } }], // <--- HUGE OPTIMIZATION
+          pipeline: [{ $project: { category: 1, politicalLean: 1 } }], 
           as: 'article' 
         } 
       },
       { $unwind: '$article' }
     ]);
 
-    // B. Calculate Preferences (In Memory)
     let favoriteCategory = 'Technology'; 
     let usualLean = 'Center';
 
@@ -126,14 +164,11 @@ router.get('/articles/for-you', async (req, res) => {
       if (sortedLeans.length) usualLean = sortedLeans[0];
     }
 
-    // C. Define Challenge Logic
     let challengeLeans = [];
     if (['Left', 'Left-Leaning'].includes(usualLean)) challengeLeans = ['Right', 'Right-Leaning', 'Center'];
     else if (['Right', 'Right-Leaning'].includes(usualLean)) challengeLeans = ['Left', 'Left-Leaning', 'Center'];
     else challengeLeans = ['Left', 'Right'];
 
-    // D. PARALLEL FETCHING (50% Faster)
-    // Run both database queries at the same time
     const [comfortArticles, challengeArticles] = await Promise.all([
         Article.find({ category: favoriteCategory, politicalLean: usualLean })
             .sort({ publishedAt: -1 })
@@ -145,13 +180,11 @@ router.get('/articles/for-you', async (req, res) => {
             .lean()
     ]);
 
-    // E. Merge & Shuffle
     const result = [
       ...comfortArticles.map(a => ({ ...a, suggestionType: 'Comfort' })),
       ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
     ];
 
-    // Fisher-Yates Shuffle
     for (let i = result.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
@@ -217,7 +250,6 @@ router.get('/cluster/:clusterId', async (req, res) => {
     const clusterIdNum = parseInt(req.params.clusterId);
     if (isNaN(clusterIdNum)) return res.status(400).json({ error: 'Invalid cluster ID' });
 
-    // Fetch all articles in this cluster
     const articles = await Article.find({ clusterId: clusterIdNum })
       .sort({ trustScore: -1, publishedAt: -1 })
       .lean();
@@ -265,7 +297,6 @@ router.get('/articles', async (req, res) => {
     if (filters.lean) matchStage.politicalLean = filters.lean;
     if (filters.region) matchStage.country = filters.region;
     
-    // Hard/Soft news mapping
     if (filters.articleType === 'Hard News') matchStage.analysisType = 'Full';
     else if (filters.articleType === 'Opinion & Reviews') matchStage.analysisType = 'SentimentOnly';
 
