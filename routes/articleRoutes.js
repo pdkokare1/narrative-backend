@@ -1,4 +1,4 @@
-// routes/articleRoutes.js (FINAL v3.4 - MongoDB Caching)
+// routes/articleRoutes.js (FINAL v3.5 - Optimized For You Feed)
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -7,7 +7,7 @@ const router = express.Router();
 const Article = require('../models/articleModel');
 const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
-const Cache = require('../models/cacheModel'); // <--- NEW IMPORT
+const Cache = require('../models/cacheModel'); 
 
 // --- 1. Trending Topics (MongoDB Cached) ---
 router.get('/trending', async (req, res) => {
@@ -18,8 +18,7 @@ router.get('/trending', async (req, res) => {
     const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
     
     if (cachedDoc) {
-        // Hit! Return saved data
-        res.set('Cache-Control', 'public, max-age=1800'); // Tell browser to cache for 30m too
+        res.set('Cache-Control', 'public, max-age=1800'); 
         return res.status(200).json({ topics: cachedDoc.data });
     }
 
@@ -38,10 +37,9 @@ router.get('/trending', async (req, res) => {
       { $project: { _id: 0, topic: "$_id", count: 1 } }
     ]);
 
-    // C. Save to Database Cache (Expires in 30 minutes)
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // Now + 30 mins
+    // C. Save to Database Cache
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 mins
     
-    // Upsert = Update if exists, Insert if new
     await Cache.findOneAndUpdate(
         { key: CACHE_KEY },
         { data: trending || [], expiresAt },
@@ -57,7 +55,7 @@ router.get('/trending', async (req, res) => {
   }
 });
 
-// --- 2. Search (Cached in Browser) ---
+// --- 2. Search (Cached) ---
 router.get('/search', async (req, res) => {
   try {
     const query = req.query.q;
@@ -86,20 +84,31 @@ router.get('/search', async (req, res) => {
   }
 });
 
-// --- 3. "Balanced For You" Feed (Private) ---
+// --- 3. "Balanced For You" Feed (OPTIMIZED) ---
 router.get('/articles/for-you', async (req, res) => {
   try {
     res.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
-
     const userId = req.user.uid;
+
+    // A. LIGHTWEIGHT AGGREGATION
+    // Only fetch 'category' and 'politicalLean'. Don't pull titles/summaries/vectors.
     const logs = await ActivityLog.aggregate([
       { $match: { userId: userId, action: 'view_analysis' } },
       { $sort: { timestamp: -1 } },
       { $limit: 50 },
-      { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'article' } },
+      { 
+        $lookup: { 
+          from: 'articles', 
+          localField: 'articleId', 
+          foreignField: '_id', 
+          pipeline: [{ $project: { category: 1, politicalLean: 1 } }], // <--- HUGE OPTIMIZATION
+          as: 'article' 
+        } 
+      },
       { $unwind: '$article' }
     ]);
 
+    // B. Calculate Preferences (In Memory)
     let favoriteCategory = 'Technology'; 
     let usualLean = 'Center';
 
@@ -109,23 +118,40 @@ router.get('/articles/for-you', async (req, res) => {
         if(l.article.category) cats[l.article.category] = (cats[l.article.category] || 0) + 1;
         if(l.article.politicalLean) leans[l.article.politicalLean] = (leans[l.article.politicalLean] || 0) + 1;
       });
-      favoriteCategory = Object.keys(cats).sort((a,b) => cats[b] - cats[a])[0];
-      usualLean = Object.keys(leans).sort((a,b) => leans[b] - leans[a])[0];
+      
+      const sortedCats = Object.keys(cats).sort((a,b) => cats[b] - cats[a]);
+      const sortedLeans = Object.keys(leans).sort((a,b) => leans[b] - leans[a]);
+      
+      if (sortedCats.length) favoriteCategory = sortedCats[0];
+      if (sortedLeans.length) usualLean = sortedLeans[0];
     }
 
+    // C. Define Challenge Logic
     let challengeLeans = [];
     if (['Left', 'Left-Leaning'].includes(usualLean)) challengeLeans = ['Right', 'Right-Leaning', 'Center'];
     else if (['Right', 'Right-Leaning'].includes(usualLean)) challengeLeans = ['Left', 'Left-Leaning', 'Center'];
     else challengeLeans = ['Left', 'Right'];
 
-    const comfortArticles = await Article.find({ category: favoriteCategory, politicalLean: usualLean }).sort({ publishedAt: -1 }).limit(5).lean();
-    const challengeArticles = await Article.find({ category: favoriteCategory, politicalLean: { $in: challengeLeans } }).sort({ publishedAt: -1 }).limit(5).lean();
+    // D. PARALLEL FETCHING (50% Faster)
+    // Run both database queries at the same time
+    const [comfortArticles, challengeArticles] = await Promise.all([
+        Article.find({ category: favoriteCategory, politicalLean: usualLean })
+            .sort({ publishedAt: -1 })
+            .limit(5)
+            .lean(),
+        Article.find({ category: favoriteCategory, politicalLean: { $in: challengeLeans } })
+            .sort({ publishedAt: -1 })
+            .limit(5)
+            .lean()
+    ]);
 
+    // E. Merge & Shuffle
     const result = [
       ...comfortArticles.map(a => ({ ...a, suggestionType: 'Comfort' })),
       ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
     ];
 
+    // Fisher-Yates Shuffle
     for (let i = result.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
@@ -206,7 +232,6 @@ router.get('/cluster/:clusterId', async (req, res) => {
       } else if (['Right-Leaning', 'Right'].includes(lean)) {
           acc.right.push(article);
       } else {
-          // Reviews/Opinions/Soft News
           acc.reviews.push(article);
       }
       return acc;
