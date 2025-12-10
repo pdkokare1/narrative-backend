@@ -9,12 +9,13 @@ const aiService = require('../services/aiService');
 router.post('/backfill', async (req, res) => {
     try {
         // 1. Find articles that DON'T have a vector yet
+        // We limit to 10 to prevent the server from timing out
         const articlesToFix = await Article.find({
             $or: [
                 { embedding: { $exists: false } },
                 { embedding: { $size: 0 } }
             ]
-        }).limit(10); // Process only 10 to avoid timeout
+        }).limit(10); 
 
         if (articlesToFix.length === 0) {
             return res.status(200).json({ message: "🎉 All articles are optimized! No more work to do." });
@@ -35,22 +36,22 @@ router.post('/backfill', async (req, res) => {
                     article.embedding = embedding;
                     await article.save();
                     successCount++;
-                    console.log(`✅ Optimized: ${article.headline.substring(0, 20)}...`);
+                    console.log(`✅ Optimized: ${article.headline.substring(0, 30)}...`);
                 }
             } catch (err) {
                 console.error(`❌ Failed to fix article ${article._id}:`, err.message);
             }
         }
 
-        // 3. Report back
+        // 3. Check how many are left
         const remaining = await Article.countDocuments({
             $or: [{ embedding: { $exists: false } }, { embedding: { $size: 0 } }]
         });
 
         res.status(200).json({
-            message: `Fixed ${successCount} articles.`,
+            message: `Batch Complete. Fixed ${successCount} articles.`,
             remaining: remaining,
-            instruction: remaining > 0 ? "⚠️ PLEASE RUN AGAIN" : "✅ DONE"
+            instruction: remaining > 0 ? "⚠️ PLEASE RUN AGAIN to fix the rest." : "✅ ALL DONE"
         });
 
     } catch (error) {
