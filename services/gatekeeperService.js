@@ -4,6 +4,18 @@ const axios = require('axios');
 // We use the 2.5 Flash model for high-speed categorization
 const MODEL_NAME = "gemini-2.5-flash"; 
 
+// --- NEW: Pre-Filter Keywords (Save API Costs) ---
+// If headlines contain these, we trash them immediately without asking AI.
+const JUNK_KEYWORDS = [
+    'coupon', 'promo code', 'discount code', 'deal of the day', 
+    'horoscope', 'zodiac', 'tarot',
+    'lottery', 'winning numbers', 'powerball', 'mega millions',
+    'wordle', 'crossword', 'sudoku', 'connections hint',
+    'giveaway', 'sweepstakes',
+    'shopping', 'gift guide', 'best buy', 'amazon prime day',
+    'sex position', 'porn', 'xxx'
+];
+
 class GatekeeperService {
     constructor() {
         this.apiKeys = this.loadApiKeys();
@@ -30,10 +42,18 @@ class GatekeeperService {
     }
 
     /**
+     * Checks if the title contains obvious junk keywords.
+     */
+    isObviousJunk(title) {
+        if (!title) return true;
+        const lowerTitle = title.toLowerCase();
+        return JUNK_KEYWORDS.some(keyword => lowerTitle.includes(keyword));
+    }
+
+    /**
      * The Gatekeeper Decision:
-     * 1. Classifies the article into granular categories.
-     * 2. Decides which model should analyze it (Pro vs Flash).
-     * 3. Rejects junk (Shopping, Gossip, Spam).
+     * 1. CHEAP CHECK: Keyword filtering.
+     * 2. SMART CHECK: AI Classification.
      */
     async evaluateArticle(article) {
         // Safety check
@@ -41,6 +61,13 @@ class GatekeeperService {
             return { category: 'Other', type: 'Soft News', isJunk: true };
         }
 
+        // --- 1. INSTANT REJECTION (Cost Saving) ---
+        if (this.isObviousJunk(article.title)) {
+            console.log(`🗑️ Pre-Filtered Junk: "${article.title.substring(0, 30)}..."`);
+            return { category: 'Junk', type: 'Junk', isJunk: true };
+        }
+
+        // --- 2. AI EVALUATION ---
         const apiKey = this.getNextApiKey();
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
 
@@ -102,3 +129,5 @@ class GatekeeperService {
 }
 
 module.exports = new GatekeeperService();
+
+}
