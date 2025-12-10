@@ -1,4 +1,4 @@
-// server.js (FINAL v3.3 - With ElevenLabs TTS)
+// server.js (FINAL v3.4 - With Migration Tools)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -19,7 +19,8 @@ const profileRoutes = require('./routes/profileRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
-const ttsRoutes = require('./routes/ttsRoutes'); // <--- NEW IMPORT
+const ttsRoutes = require('./routes/ttsRoutes'); 
+const migrationRoutes = require('./routes/migrationRoutes'); // <--- NEW IMPORT
 
 // --- Services ---
 const emergencyService = require('./services/emergencyService');
@@ -110,7 +111,8 @@ app.use('/api/', checkAuth);
 app.use('/api/profile', profileRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/emergency-resources', emergencyRoutes);
-app.use('/api/tts', ttsRoutes); // <--- NEW ROUTE
+app.use('/api/tts', ttsRoutes);
+app.use('/api/migration', migrationRoutes); // <--- NEW ROUTE
 app.use('/api', articleRoutes); 
 
 
