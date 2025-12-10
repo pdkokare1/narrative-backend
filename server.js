@@ -1,4 +1,4 @@
-// server.js (FINAL v3.4 - With Migration Tools)
+// server.js (TEMPORARY UNLOCKED - For Migration)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -20,7 +20,7 @@ const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const ttsRoutes = require('./routes/ttsRoutes'); 
-const migrationRoutes = require('./routes/migrationRoutes'); // <--- NEW IMPORT
+const migrationRoutes = require('./routes/migrationRoutes'); 
 
 // --- Services ---
 const emergencyService = require('./services/emergencyService');
@@ -31,7 +31,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(helmet({ 
   contentSecurityPolicy: false,
-  crossOriginResourcePolicy: { policy: "cross-origin" } // Allow audio loading
+  crossOriginResourcePolicy: { policy: "cross-origin" } 
 }));
 app.use(compression());
 
@@ -103,16 +103,21 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
+// ================= PUBLIC ROUTES (UNSECURED FOR MIGRATION) =================
+// MOUNT MIGRATION BEFORE SECURITY CHECKS
+// This line allows POST requests to /api/migration/backfill to bypass security
+app.use('/api/migration', migrationRoutes); 
+// ===========================================================================
+
 // --- Apply Security Middleware ---
 app.use('/api/', checkAppCheck); 
 app.use('/api/', checkAuth);
 
-// --- MOUNT ROUTES ---
+// --- MOUNT SECURE ROUTES ---
 app.use('/api/profile', profileRoutes);
 app.use('/api/activity', activityRoutes);
 app.use('/api/emergency-resources', emergencyRoutes);
 app.use('/api/tts', ttsRoutes);
-app.use('/api/migration', migrationRoutes); // <--- NEW ROUTE
 app.use('/api', articleRoutes); 
 
 
@@ -121,11 +126,7 @@ app.use('/api', articleRoutes);
 // Manual Trigger Endpoint
 app.post('/api/fetch-news', async (req, res) => {
   const started = await newsFetcher.run();
-  
-  if (!started) {
-    return res.status(429).json({ message: 'Job is already running. Please wait.' });
-  }
-  
+  if (!started) return res.status(429).json({ message: 'Job is already running. Please wait.' });
   res.status(202).json({ message: 'News fetch job started successfully.' });
 });
 
