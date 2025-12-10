@@ -1,67 +1,67 @@
 // services/clusteringService.js
 const Article = require('../models/articleModel');
 
-// Calculate Cosine Similarity between two vectors
-// Returns a value between -1 and 1. (1 means identical direction/meaning)
-function cosineSimilarity(vecA, vecB) {
-    if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
-    
-    let dotProduct = 0;
-    let normA = 0;
-    let normB = 0;
-    
-    for (let i = 0; i < vecA.length; i++) {
-        dotProduct += vecA[i] * vecB[i];
-        normA += vecA[i] * vecA[i];
-        normB += vecB[i] * vecB[i];
-    }
-    
-    if (normA === 0 || normB === 0) return 0;
-    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
 class ClusteringService {
     
     /**
      * Finds the best matching cluster ID for a new article.
-     * Uses a Hybrid Approach: 
-     * 1. Strong "Smart Vector" match (Semantic Similarity > 0.85)
-     * 2. Fallback to "5-Field" match (Topic + Category + Country + Nouns)
+     * Uses MongoDB Atlas Vector Search for high-performance matching.
      */
     async assignClusterId(newArticleData, embedding) {
         
-        // Window: Look at articles from the last 7 days
+        // Window: Look at articles from the last 7 days to keep clusters relevant
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
         
-        // 1. Try Vector Matching (The "AI Brain")
+        // 1. Try Vector Matching (Database Side)
+        // This runs directly on MongoDB Atlas using the 'vector_index' we configured.
         if (embedding && embedding.length > 0) {
-            // Fetch recent articles that HAVE embeddings
-            // Optimization: We only fetch the specific fields we need to compare
-            const candidates = await Article.find({
-                publishedAt: { $gte: sevenDaysAgo },
-                embedding: { $exists: true, $ne: [] },
-                country: newArticleData.country // Must match country
-            }).select('clusterId embedding headline').lean();
+            try {
+                const candidates = await Article.aggregate([
+                    {
+                        "$vectorSearch": {
+                            "index": "vector_index",
+                            "path": "embedding",
+                            "queryVector": embedding,
+                            "numCandidates": 50, // Look at 50 closest vectors
+                            "limit": 1,          // Return only the best match
+                            "filter": {
+                                "country": { "$eq": newArticleData.country } // Strict Country Filter
+                            }
+                        }
+                    },
+                    {
+                        "$project": {
+                            "clusterId": 1,
+                            "headline": 1,
+                            "publishedAt": 1,
+                            "score": { "$meta": "vectorSearchScore" } // Get the similarity score
+                        }
+                    },
+                    {
+                        "$match": {
+                            "publishedAt": { "$gte": sevenDaysAgo } // Enforce date window
+                        }
+                    }
+                ]);
 
-            let bestMatchId = null;
-            let highestScore = 0;
-            const SIMILARITY_THRESHOLD = 0.85; // High threshold for certainty
+                // Check the result
+                if (candidates.length > 0) {
+                    const bestMatch = candidates[0];
+                    const SIMILARITY_THRESHOLD = 0.85; // High threshold for certainty
 
-            for (const candidate of candidates) {
-                const score = cosineSimilarity(embedding, candidate.embedding);
-                if (score > highestScore) {
-                    highestScore = score;
-                    bestMatchId = candidate.clusterId;
+                    if (bestMatch.score >= SIMILARITY_THRESHOLD) {
+                        console.log(`🔗 Smart Cluster Match (DB): "${newArticleData.headline}" matched w/ score ${bestMatch.score.toFixed(2)}`);
+                        return bestMatch.clusterId;
+                    }
                 }
-            }
-
-            if (highestScore >= SIMILARITY_THRESHOLD && bestMatchId) {
-                console.log(`🔗 Smart Cluster Match: "${newArticleData.headline}" matched w/ score ${highestScore.toFixed(2)}`);
-                return bestMatchId;
+            } catch (error) {
+                console.error("⚠️ Vector Search Error (Falling back to fields):", error.message);
+                // We don't throw here; we allow it to fall back to Step 2
             }
         }
 
-        // 2. Fallback: 5-Field Legacy Match (If vector fails or no embedding)
+        // 2. Fallback: 5-Field Legacy Match 
+        // Used if vector search fails, index is building, or embedding is missing
         if (newArticleData.clusterTopic) {
             const existingCluster = await Article.findOne({
                 clusterTopic: newArticleData.clusterTopic,
