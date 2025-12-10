@@ -4,16 +4,28 @@ const axios = require('axios');
 // We use the 2.5 Flash model for high-speed categorization
 const MODEL_NAME = "gemini-2.5-flash"; 
 
-// --- NEW: Pre-Filter Keywords (Save API Costs) ---
-// If headlines contain these, we trash them immediately without asking AI.
+// --- OPTIMIZATION: Extended Junk Keywords ---
+// These catch common non-news items locally to save AI Token costs.
 const JUNK_KEYWORDS = [
-    'coupon', 'promo code', 'discount code', 'deal of the day', 
-    'horoscope', 'zodiac', 'tarot',
-    'lottery', 'winning numbers', 'powerball', 'mega millions',
-    'wordle', 'crossword', 'sudoku', 'connections hint',
-    'giveaway', 'sweepstakes',
-    'shopping', 'gift guide', 'best buy', 'amazon prime day',
-    'sex position', 'porn', 'xxx'
+    // Shopping & Deals
+    'coupon', 'promo code', 'discount', 'deal of the day', 'price drop',
+    'shopping', 'gift guide', 'best buy', 'amazon prime', 'black friday', 
+    'cyber monday', 'sale', '% off', 'review: ', 'hands-on:',
+    
+    // Puzzles & Gaming Help
+    'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
+    'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\'s answer',
+    
+    // Astrology & Gambling
+    'horoscope', 'zodiac', 'tarot', 'astrology', 'retrograde',
+    'lottery', 'winning numbers', 'powerball', 'mega millions', 'jackpot',
+    
+    // Clickbait / Low Quality
+    'giveaway', 'sweepstakes', 'contest', 'sex position', 'porn', 'xxx',
+    'watch live', 'live stream', 'how to watch', 'what time is',
+    
+    // System Errors
+    '404', 'page not found', 'access denied', 'forbidden', 'login'
 ];
 
 class GatekeeperService {
@@ -23,7 +35,7 @@ class GatekeeperService {
     }
 
     loadApiKeys() {
-        // We reuse the existing GEMINI keys from your .env file
+        // Reuse existing GEMINI keys from .env
         const keys = [];
         for (let i = 1; i <= 20; i++) {
             const key = process.env[`GEMINI_API_KEY_${i}`]?.trim();
@@ -46,7 +58,11 @@ class GatekeeperService {
      */
     isObviousJunk(title) {
         if (!title) return true;
+        if (title.length < 15) return true; // Too short to be a valid news headline
+
         const lowerTitle = title.toLowerCase();
+        
+        // Check exact keyword matches
         return JUNK_KEYWORDS.some(keyword => lowerTitle.includes(keyword));
     }
 
@@ -63,7 +79,7 @@ class GatekeeperService {
 
         // --- 1. INSTANT REJECTION (Cost Saving) ---
         if (this.isObviousJunk(article.title)) {
-            console.log(`🗑️ Pre-Filtered Junk: "${article.title.substring(0, 30)}..."`);
+            console.log(`🗑️ Pre-Filtered Junk: "${article.title.substring(0, 40)}..."`);
             return { category: 'Junk', type: 'Junk', isJunk: true };
         }
 
@@ -79,9 +95,9 @@ class GatekeeperService {
         Description: "${article.description || ''}"
         
         Definitions:
-        - [Hard News]: Politics, Global Conflict, Economy, Justice, Science, Tech, Health, Education. (Requires deep analysis)
-        - [Soft News]: Sports, Entertainment, Lifestyle, Business, Human Interest. (Requires summary only)
-        - [Junk]: Shopping/Deals, Celebrity Gossip, Spam, 404/Error pages.
+        - [Hard News]: Politics, Global Conflict, Economy, Justice, Science, Tech, Health, Education, Environment. (Requires deep analysis)
+        - [Soft News]: Sports, Entertainment, Lifestyle, Business, Human Interest, Travel, Food. (Requires summary only)
+        - [Junk]: Shopping/Deals, Celebrity Gossip, Spam, 404/Error pages, Betting/Gambling.
         
         Respond ONLY in JSON format:
         {
