@@ -1,8 +1,8 @@
-// routes/articleRoutes.js
+// routes/articleRoutes.js (FINAL v4.0 - Smart Trending Velocity)
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
-const asyncHandler = require('../utils/asyncHandler'); // <--- NEW IMPORT
+const asyncHandler = require('../utils/asyncHandler'); 
 
 // Models
 const Article = require('../models/articleModel');
@@ -22,37 +22,64 @@ const mergeResults = (arr1, arr2) => {
     return Array.from(map.values());
 };
 
-// --- 1. Trending Topics ---
+// --- 1. Smart Trending Topics (In Focus) ---
 router.get('/trending', asyncHandler(async (req, res) => {
-    const CACHE_KEY = 'trending_topics';
+    const CACHE_KEY = 'trending_topics_smart';
     
-    // A. Check Database Cache
+    // A. Check Cache
     const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
     if (cachedDoc) {
         res.set('Cache-Control', 'public, max-age=1800'); 
         return res.status(200).json({ topics: cachedDoc.data });
     }
 
-    // B. Calculate
-    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const trending = await Article.aggregate([
-      { $match: { publishedAt: { $gte: oneDayAgo }, clusterTopic: { $ne: null } } },
-      { $group: { _id: "$clusterTopic", count: { $sum: 1 } } },
-      { $sort: { count: -1 } },
-      { $limit: 7 },
-      { $project: { _id: 0, topic: "$_id", count: 1 } }
+    // B. Calculate Logic (48h Window)
+    // We look back 48 hours to capture developing stories
+    const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+    
+    // Step 1: Get Raw Stats from DB
+    const rawStats = await Article.aggregate([
+      { 
+          $match: { 
+              publishedAt: { $gte: twoDaysAgo }, 
+              clusterTopic: { $ne: null } 
+          } 
+      },
+      { 
+          $group: { 
+              _id: "$clusterTopic", 
+              count: { $sum: 1 },
+              latestDate: { $max: "$publishedAt" } // Get the freshest article time
+          } 
+      },
+      { $match: { count: { $gte: 2 } } } // Filter out single-article noise
     ]);
 
+    // Step 2: Calculate Velocity Score in JS
+    // Score = Volume / (HoursSinceLatest + 2)
+    // This gives huge weight to "Freshness"
+    const now = Date.now();
+    const scoredTopics = rawStats.map(t => {
+        const hoursAgo = (now - new Date(t.latestDate).getTime()) / (1000 * 60 * 60);
+        // Add 2 to hoursAgo to prevent division by zero and smooth out the curve
+        const velocityScore = t.count * (10 / (hoursAgo + 2)); 
+        return { topic: t._id, count: t.count, score: velocityScore };
+    });
+
+    // Step 3: Sort by Score & Pick Top 7
+    scoredTopics.sort((a, b) => b.score - a.score);
+    const topTopics = scoredTopics.slice(0, 7);
+
     // C. Save Cache
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); 
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 mins
     await Cache.findOneAndUpdate(
         { key: CACHE_KEY },
-        { data: trending || [], expiresAt },
+        { data: topTopics, expiresAt },
         { upsert: true, new: true }
     );
 
     res.set('Cache-Control', 'public, max-age=1800'); 
-    res.status(200).json({ topics: trending || [] });
+    res.status(200).json({ topics: topTopics });
 }));
 
 // --- 2. Search (Hybrid) ---
