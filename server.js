@@ -15,7 +15,7 @@ const admin = require('firebase-admin');
 const newsFetcher = require('./jobs/newsFetcher');
 
 // --- Import Middleware ---
-const { errorHandler } = require('./middleware/errorMiddleware'); // <--- NEW
+const { errorHandler } = require('./middleware/errorMiddleware');
 
 // --- Routes ---
 const profileRoutes = require('./routes/profileRoutes');
@@ -23,7 +23,9 @@ const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const ttsRoutes = require('./routes/ttsRoutes'); 
-const migrationRoutes = require('./routes/migrationRoutes'); 
+const migrationRoutes = require('./routes/migrationRoutes');
+// --- NEW IMPORT ---
+const assetGenRoutes = require('./routes/assetGenRoutes'); 
 
 // --- Services ---
 const emergencyService = require('./services/emergencyService');
@@ -115,10 +117,7 @@ const checkAuth = async (req, res, next) => {
 };
 
 // --- Apply Security Middleware ---
-// Note: We wrap these in the routes or apply globally. 
-// For now, we keep applying them to /api/ globally.
 app.use('/api/', (req, res, next) => {
-    // We wrap the async middleware calls to catch errors
     checkAppCheck(req, res, () => {
         checkAuth(req, res, next).catch(next);
     }).catch(next);
@@ -131,6 +130,10 @@ app.use('/api/emergency-resources', emergencyRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/migration', migrationRoutes); 
 app.use('/api', articleRoutes); 
+
+// --- NEW: Mount Asset Generation Route ---
+// (Protected by Auth/AppCheck because it's under /api/)
+app.use('/api/assets', assetGenRoutes); 
 
 
 // ================= SYSTEM / BACKGROUND JOBS =================
@@ -159,7 +162,7 @@ if (process.env.MONGODB_URI) {
 }
 
 // --- GLOBAL ERROR HANDLER (Must be last) ---
-app.use(errorHandler); // <--- NEW
+app.use(errorHandler);
 
 const PORT = process.env.PORT || 3001;
 const HOST = '0.0.0.0'; 
