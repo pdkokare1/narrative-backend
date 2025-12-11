@@ -1,4 +1,4 @@
-// server.js (FINAL SECURE - With Centralized Error Handling)
+// server.js (FINAL SECURE)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -8,16 +8,11 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
-// --- Import Firebase Admin ---
 const admin = require('firebase-admin');
-
-// --- Import Job Manager ---
 const newsFetcher = require('./jobs/newsFetcher');
-
-// --- Import Middleware ---
 const { errorHandler } = require('./middleware/errorMiddleware');
 
-// --- Routes ---
+// Routes
 const profileRoutes = require('./routes/profileRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const articleRoutes = require('./routes/articleRoutes');
@@ -26,7 +21,6 @@ const ttsRoutes = require('./routes/ttsRoutes');
 const migrationRoutes = require('./routes/migrationRoutes');
 const assetGenRoutes = require('./routes/assetGenRoutes'); 
 
-// --- Services ---
 const emergencyService = require('./services/emergencyService');
 
 const app = express();
@@ -37,7 +31,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// --- Middleware ---
 app.set('trust proxy', 1);
 app.use(helmet({ 
   contentSecurityPolicy: false,
@@ -45,7 +38,6 @@ app.use(helmet({
 }));
 app.use(compression());
 
-// --- CORS Config ---
 app.use(cors({
   origin: [
     'https://thegamut.in', 
@@ -59,12 +51,9 @@ app.use(cors({
 
 app.use(express.json({ limit: '1mb' }));
 
-// --- 1. HEALTH CHECK ---
-app.get('/', (req, res) => {
-  res.status(200).send('OK'); 
-});
+app.get('/', (req, res) => { res.status(200).send('OK'); });
 
-// --- Initialize Firebase Admin ---
+// Firebase Init
 try {
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -77,7 +66,7 @@ try {
   console.error('❌ Firebase Admin Init Error:', error.message);
 }
 
-// --- Rate Limiter ---
+// Rate Limiter
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 300, 
@@ -86,7 +75,7 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/', apiLimiter); 
 
-// --- App Check Middleware ---
+// Security Middleware (Defined but not mounted yet)
 const checkAppCheck = async (req, res, next) => {
   const appCheckToken = req.header('X-Firebase-AppCheck');
   if (!appCheckToken) {
@@ -103,7 +92,6 @@ const checkAppCheck = async (req, res, next) => {
   }
 };
 
-// --- Auth Middleware ---
 const checkAuth = async (req, res, next) => {
   const token = req.headers.authorization?.split('Bearer ')[1];
   if (!token) {
@@ -121,48 +109,30 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
-// --- MOUNT UNPROTECTED ROUTES (Temporary/Public) ---
-// Mounted FIRST to bypass security checks
+// --- MOUNT PUBLIC ROUTES FIRST (No Auth Required) ---
 app.use('/api/assets', assetGenRoutes); 
 
-// --- Apply Security Middleware ---
-app.use('/api/', (req, res, next) => {
-    // Extra safety: Check if request path implies assets, skip auth
-    // (Note: req.path is relative to mount, req.originalUrl is full)
-    if (req.originalUrl.includes('/api/assets')) {
-        return next();
-    }
-
-    checkAppCheck(req, res, () => {
-        checkAuth(req, res, next).catch(next);
-    }).catch(next);
-});
-
-// --- MOUNT SECURE ROUTES ---
-app.use('/api/profile', profileRoutes);
-app.use('/api/activity', activityRoutes);
+// --- MOUNT SECURE ROUTES (Auth Required) ---
+app.use('/api/profile', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), profileRoutes);
+app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), activityRoutes);
+// For now, let's keep article/emergency routes open or lightly protected if needed
 app.use('/api/emergency-resources', emergencyRoutes);
-app.use('/api/tts', ttsRoutes);
+app.use('/api/tts', ttsRoutes); 
 app.use('/api/migration', migrationRoutes); 
 app.use('/api', articleRoutes); 
 
-
-// ================= SYSTEM / BACKGROUND JOBS =================
-
-// Manual Trigger Endpoint
+// Jobs
 app.post('/api/fetch-news', async (req, res) => {
   const started = await newsFetcher.run();
-  if (!started) return res.status(429).json({ message: 'Job is already running. Please wait.' });
-  res.status(202).json({ message: 'News fetch job started successfully.' });
+  if (!started) return res.status(429).json({ message: 'Job is already running.' });
+  res.status(202).json({ message: 'Job started.' });
 });
 
-// --- CRON Job (Every 30 mins) ---
 cron.schedule('*/30 * * * *', () => { 
     console.log('⏰ Cron Triggered: Starting News Fetch...');
     newsFetcher.run();
 });
 
-// --- Server Startup ---
 if (process.env.MONGODB_URI) {
     mongoose.connect(process.env.MONGODB_URI)
         .then(async () => {
@@ -172,7 +142,6 @@ if (process.env.MONGODB_URI) {
         .catch(err => console.error("❌ MongoDB Connection Failed:", err.message));
 }
 
-// --- GLOBAL ERROR HANDLER (Must be last) ---
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 3001;
