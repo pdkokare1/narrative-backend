@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const ttsService = require('../services/ttsService');
 
-// --- THE SCRIPT DATA ---
+// --- THE 27 GREETING SCRIPTS ---
 const GREETINGS = [
     // --- MIRA (Anchor) ---
     { id: "mira_open_morn_1", text: "Hello. You’re with The Gamut. I’m Mira. Wishing you a very good morning. Let’s start the day with some clarity.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
@@ -39,72 +39,51 @@ const GREETINGS = [
     { id: "shubhi_open_eve_3", text: "Good evening. I’m Shubhi. Wishing you a peaceful night. Let’s close out the day.", voiceId: "AwEl6phyzczpCHHDxyfO" }
 ];
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// --- DIAGNOSTIC TEST ROUTE ---
-router.get('/test', async (req, res) => {
-    const diagnostics = {
-        elevenLabsKey: process.env.ELEVENLABS_API_KEY ? "✅ Present" : "❌ MISSING",
-        cloudinaryName: process.env.CLOUDINARY_CLOUD_NAME ? "✅ Present" : "❌ MISSING",
-        cloudinaryKey: process.env.CLOUDINARY_API_KEY ? "✅ Present" : "❌ MISSING",
-        cloudinarySecret: process.env.CLOUDINARY_API_SECRET ? "✅ Present" : "❌ MISSING"
-    };
-
-    console.log("🔍 Running Diagnostic Test...", diagnostics);
-
-    if (Object.values(diagnostics).includes("❌ MISSING")) {
-        return res.status(500).json({ 
-            message: "Environment Variables Missing", 
-            diagnostics 
-        });
-    }
-
-    try {
-        // Try to generate 1 tiny file
-        const testUrl = await ttsService.generateAndUpload(
-            "Test Audio", 
-            "SmLgXu8CcwHJvjiqq2rw", 
-            null, 
-            "test_diagnostic_file"
-        );
-        res.status(200).json({ message: "System Operational", testUrl, diagnostics });
-    } catch (error) {
-        console.error("Test Failed:", error);
-        res.status(500).json({ message: "Generation Failed", error: error.message, diagnostics });
-    }
-});
-
-// --- MAIN GENERATOR FUNCTION ---
 const runGeneration = async (res) => {
     try {
-        console.log("🚀 Starting Batch Generation for 27 Greetings...");
+        console.log(`🚀 STARTING BATCH: ${GREETINGS.length} items.`);
         const results = [];
         
         for (const item of GREETINGS) {
-            console.log(`Processing: ${item.id}...`);
             try {
                 const url = await ttsService.generateAndUpload(item.text, item.voiceId, null, item.id);
                 results.push({ id: item.id, url, status: 'success' });
-                await sleep(500); 
+                // 1 second pause to be safe
+                await new Promise(r => setTimeout(r, 1000));
             } catch (err) {
                 console.error(`❌ Failed ${item.id}:`, err.message);
                 results.push({ id: item.id, error: err.message, status: 'failed' });
             }
         }
 
-        console.log("✅ Batch Generation Complete!");
+        console.log("✅ BATCH COMPLETE.");
         res.status(200).json({ message: "Batch complete", results });
 
     } catch (error) {
-        console.error("Batch Error:", error);
+        console.error("Batch Fatal Error:", error);
         if (!res.headersSent) res.status(500).json({ error: error.message });
     }
 };
 
-// --- BATCH ROUTES ---
-router.get('/generate-greetings', async (req, res) => { await runGeneration(res); });
-router.post('/generate-greetings', async (req, res) => { await runGeneration(res); });
+// --- ROUTES ---
+// We support both GET and POST so you can just paste URL in browser
+router.get('/generate-greetings', (req, res) => runGeneration(res));
+router.post('/generate-greetings', (req, res) => runGeneration(res));
+
+// --- DIAGNOSTIC ROUTE ---
+router.get('/test', async (req, res) => {
+    console.log("🔍 Test Endpoint Hit");
+    try {
+        // Just verify keys exist
+        const vars = {
+            elevenLabs: !!process.env.ELEVENLABS_API_KEY,
+            cloudinaryName: !!process.env.CLOUDINARY_CLOUD_NAME,
+            cloudinaryKey: !!process.env.CLOUDINARY_API_KEY
+        };
+        res.json({ status: "Online", variables: vars });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
 
 module.exports = router;
