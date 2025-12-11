@@ -1,7 +1,7 @@
 // routes/profileRoutes.js
 const express = require('express');
 const router = express.Router();
-const asyncHandler = require('../utils/asyncHandler'); // <--- NEW IMPORT
+const asyncHandler = require('../utils/asyncHandler');
 
 // Models
 const Profile = require('../models/profileModel');
@@ -21,7 +21,7 @@ router.get('/me', asyncHandler(async (req, res) => {
     res.status(200).json(profile);
 }));
 
-// --- 2. Create Profile ---
+// --- 2. Create / Re-Link Profile (SELF-HEALING FIX) ---
 router.post('/', asyncHandler(async (req, res) => {
     const { username } = req.body;
     const { uid, email } = req.user; 
@@ -32,18 +32,27 @@ router.post('/', asyncHandler(async (req, res) => {
     }
     const cleanUsername = username.trim();
 
-    const existingUsername = await Profile.findOne({ username: cleanUsername }).lean();
-    if (existingUsername) {
+    // A. Check if this Username is taken by a DIFFERENT email
+    const usernameOwner = await Profile.findOne({ username: cleanUsername }).lean();
+    if (usernameOwner && usernameOwner.email !== email) {
         res.status(409);
-        throw new Error('Username already taken');
+        throw new Error('Username already taken by another user.');
     }
 
-    const existingProfile = await Profile.findOne({ userId: uid }).lean();
-    if (existingProfile) {
-        res.status(409);
-        throw new Error('Profile already exists');
+    // B. Check if a profile already exists for this EMAIL (The Orphan Fix)
+    let profile = await Profile.findOne({ email: email });
+
+    if (profile) {
+        // FOUND: This email exists. We assume it's you.
+        // Update the User ID to match your current login (Self-Heal)
+        console.log(`🔧 Re-linking orphan profile for ${email}`);
+        profile.userId = uid;
+        profile.username = cleanUsername; // Update username preference
+        await profile.save();
+        return res.status(200).json(profile);
     }
 
+    // C. Create New (If email is totally new)
     const newProfile = new Profile({ userId: uid, email: email, username: cleanUsername });
     await newProfile.save();
     res.status(201).json(newProfile);
