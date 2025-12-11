@@ -43,8 +43,8 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// POST /api/assets/generate-greetings
-router.post('/generate-greetings', async (req, res) => {
+// --- MAIN GENERATOR FUNCTION ---
+const runGeneration = async (res) => {
     try {
         console.log("🚀 Starting Batch Generation for 27 Greetings...");
         const results = [];
@@ -73,8 +73,20 @@ router.post('/generate-greetings', async (req, res) => {
 
     } catch (error) {
         console.error("Batch Error:", error);
-        res.status(500).json({ error: error.message });
+        if (!res.headersSent) res.status(500).json({ error: error.message });
     }
+};
+
+// --- ROUTES ---
+
+// 1. GET Request (For Browser Triggering)
+router.get('/generate-greetings', async (req, res) => {
+    await runGeneration(res);
+});
+
+// 2. POST Request (Standard)
+router.post('/generate-greetings', async (req, res) => {
+    await runGeneration(res);
 });
 
 module.exports = router;
