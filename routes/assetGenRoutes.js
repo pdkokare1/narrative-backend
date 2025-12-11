@@ -43,6 +43,39 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// --- DIAGNOSTIC TEST ROUTE ---
+router.get('/test', async (req, res) => {
+    const diagnostics = {
+        elevenLabsKey: process.env.ELEVENLABS_API_KEY ? "✅ Present" : "❌ MISSING",
+        cloudinaryName: process.env.CLOUDINARY_CLOUD_NAME ? "✅ Present" : "❌ MISSING",
+        cloudinaryKey: process.env.CLOUDINARY_API_KEY ? "✅ Present" : "❌ MISSING",
+        cloudinarySecret: process.env.CLOUDINARY_API_SECRET ? "✅ Present" : "❌ MISSING"
+    };
+
+    console.log("🔍 Running Diagnostic Test...", diagnostics);
+
+    if (Object.values(diagnostics).includes("❌ MISSING")) {
+        return res.status(500).json({ 
+            message: "Environment Variables Missing", 
+            diagnostics 
+        });
+    }
+
+    try {
+        // Try to generate 1 tiny file
+        const testUrl = await ttsService.generateAndUpload(
+            "Test Audio", 
+            "SmLgXu8CcwHJvjiqq2rw", 
+            null, 
+            "test_diagnostic_file"
+        );
+        res.status(200).json({ message: "System Operational", testUrl, diagnostics });
+    } catch (error) {
+        console.error("Test Failed:", error);
+        res.status(500).json({ message: "Generation Failed", error: error.message, diagnostics });
+    }
+});
+
 // --- MAIN GENERATOR FUNCTION ---
 const runGeneration = async (res) => {
     try {
@@ -52,12 +85,8 @@ const runGeneration = async (res) => {
         for (const item of GREETINGS) {
             console.log(`Processing: ${item.id}...`);
             try {
-                // Call TTS Service with the custom ID
-                // Note: articleId is null because we are passing a customFilename
                 const url = await ttsService.generateAndUpload(item.text, item.voiceId, null, item.id);
                 results.push({ id: item.id, url, status: 'success' });
-                
-                // Safety pause to avoid rate limits
                 await sleep(500); 
             } catch (err) {
                 console.error(`❌ Failed ${item.id}:`, err.message);
@@ -66,10 +95,7 @@ const runGeneration = async (res) => {
         }
 
         console.log("✅ Batch Generation Complete!");
-        res.status(200).json({ 
-            message: "Batch complete", 
-            results 
-        });
+        res.status(200).json({ message: "Batch complete", results });
 
     } catch (error) {
         console.error("Batch Error:", error);
@@ -77,16 +103,8 @@ const runGeneration = async (res) => {
     }
 };
 
-// --- ROUTES ---
-
-// 1. GET Request (For Browser Triggering)
-router.get('/generate-greetings', async (req, res) => {
-    await runGeneration(res);
-});
-
-// 2. POST Request (Standard)
-router.post('/generate-greetings', async (req, res) => {
-    await runGeneration(res);
-});
+// --- BATCH ROUTES ---
+router.get('/generate-greetings', async (req, res) => { await runGeneration(res); });
+router.post('/generate-greetings', async (req, res) => { await runGeneration(res); });
 
 module.exports = router;
