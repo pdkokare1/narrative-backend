@@ -1,4 +1,4 @@
-// routes/profileRoutes.js
+// routes/profileRoutes.js (FINAL v4.1 - Server-Side Caching)
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../utils/asyncHandler');
@@ -7,6 +7,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
 const Article = require('../models/articleModel');
+const Cache = require('../models/cacheModel'); // Added for optimization
 
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req, res) => {
@@ -21,7 +22,7 @@ router.get('/me', asyncHandler(async (req, res) => {
     res.status(200).json(profile);
 }));
 
-// --- 2. Create / Re-Link Profile (SELF-HEALING FIX) ---
+// --- 2. Create / Re-Link Profile (SELF-HEALING) ---
 router.post('/', asyncHandler(async (req, res) => {
     const { username } = req.body;
     const { uid, email } = req.user; 
@@ -32,37 +33,43 @@ router.post('/', asyncHandler(async (req, res) => {
     }
     const cleanUsername = username.trim();
 
-    // A. Check if this Username is taken by a DIFFERENT email
+    // A. Check if Username is taken by SOMEONE ELSE
     const usernameOwner = await Profile.findOne({ username: cleanUsername }).lean();
     if (usernameOwner && usernameOwner.email !== email) {
         res.status(409);
         throw new Error('Username already taken by another user.');
     }
 
-    // B. Check if a profile already exists for this EMAIL (The Orphan Fix)
+    // B. Orphan Check (Relink if email exists)
     let profile = await Profile.findOne({ email: email });
 
     if (profile) {
-        // FOUND: This email exists. We assume it's you.
-        // Update the User ID to match your current login (Self-Heal)
         console.log(`🔧 Re-linking orphan profile for ${email}`);
         profile.userId = uid;
-        profile.username = cleanUsername; // Update username preference
+        profile.username = cleanUsername; 
         await profile.save();
         return res.status(200).json(profile);
     }
 
-    // C. Create New (If email is totally new)
+    // C. Create New
     const newProfile = new Profile({ userId: uid, email: email, username: cleanUsername });
     await newProfile.save();
     res.status(201).json(newProfile);
 }));
 
-// --- 3. Weekly Digest (The "Pulse") ---
+// --- 3. Weekly Digest (Cached) ---
 router.get('/weekly-digest', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const CACHE_KEY = `digest_${userId}`;
 
+    // A. Cache Check
+    const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
+    if (cachedDoc) {
+        return res.status(200).json(cachedDoc.data);
+    }
+
+    // B. Calculation
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const recentLogs = await ActivityLog.aggregate([
       { $match: { userId: userId, action: 'view_analysis', timestamp: { $gte: sevenDaysAgo } } },
       { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'article' } },
@@ -80,10 +87,12 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
 
     recentLogs.forEach(log => {
       leanCounts[log.lean] = (leanCounts[log.lean] || 0) + 1;
+      // Scoring: Left (-2) to Right (+2)
       if (log.lean === 'Left') score -= 2;
       else if (log.lean === 'Left-Leaning') score -= 1;
       else if (log.lean === 'Right-Leaning') score += 1;
       else if (log.lean === 'Right') score += 2;
+      
       if (log.category) categoryCounts[log.category] = (categoryCounts[log.category] || 0) + 1;
     });
 
@@ -109,18 +118,37 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
       .lean();
     }
 
-    res.status(200).json({
+    const resultData = {
       status,
       avgScore,
       articleCount: recentLogs.length,
       recommendation,
       topCategory: Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0]
-    });
+    };
+
+    // C. Save Cache (Expires in 1 hour)
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); 
+    await Cache.findOneAndUpdate(
+        { key: CACHE_KEY },
+        { data: resultData, expiresAt },
+        { upsert: true }
+    );
+
+    res.status(200).json(resultData);
 }));
 
-// --- 4. User Stats (Dashboard Data) ---
+// --- 4. User Stats (Cached) ---
 router.get('/stats', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
+    const CACHE_KEY = `stats_${userId}`;
+
+    // A. Cache Check
+    const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
+    if (cachedDoc) {
+        return res.status(200).json(cachedDoc.data);
+    }
+
+    // B. Heavy Aggregation
     const stats = await ActivityLog.aggregate([
       { $match: { userId: userId } },
       { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' } },
@@ -183,6 +211,15 @@ router.get('/stats', asyncHandler(async (req, res) => {
       topSources_read: stats[0]?.topSources_read || [],
       sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
     };
+
+    // C. Save Cache (Expires in 15 minutes)
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); 
+    await Cache.findOneAndUpdate(
+        { key: CACHE_KEY },
+        { data: results, expiresAt },
+        { upsert: true }
+    );
+
     res.status(200).json(results);
 }));
 
