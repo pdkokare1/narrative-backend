@@ -7,12 +7,9 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 class TTSService {
     constructor() {
         this.apiKey = process.env.ELEVENLABS_API_KEY;
-        
-        // Log startup status (masked key)
         const keyStatus = this.apiKey ? `Present (${this.apiKey.slice(0,4)}...)` : 'MISSING';
         console.log(`🎙️ TTS Service Init | ElevenLabs Key: ${keyStatus}`);
 
-        // Initialize Cloudinary
         cloudinary.config({
             cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
             api_key: process.env.CLOUDINARY_API_KEY,
@@ -24,14 +21,12 @@ class TTSService {
         if (!text) return "";
         let clean = text;
 
-        // --- 1. CURRENCY FIX (Smart Reading) ---
-        // Problem: "$82.7 Billion" -> Read as "82 dollars and 7 cents billion"
-        // Fix: Convert to "82.7 Billion dollars" explicitly
+        // 1. Currency Fix
         clean = clean.replace(/\$([0-9\.,]+)\s?([mM]illion|[bB]illion|[tT]rillion)/gi, (match, num, magnitude) => {
             return `${num} ${magnitude} dollars`;
         });
 
-        // --- 2. Quote Handling ---
+        // 2. Quote Handling
         let quoteOpen = false;
         clean = clean.replace(/["“”]/g, (char) => {
             if (char === '“') return " quote "; 
@@ -40,16 +35,9 @@ class TTSService {
             else { quoteOpen = false; return ""; }
         });
 
-        // --- 3. Punctuation Cleanup ---
-        // Dash Removal
+        // 3. Punctuation Cleanup
         clean = clean.replace(/[-—–]/g, " ");
-        
-        // --- UPDATED: Colon Stop ---
-        // Was: clean.replace(/:/g, ".");
-        // Now: Replaced with ". . " to force a longer, distinct pause.
         clean = clean.replace(/:/g, ". . "); 
-
-        // Normalize spaces
         clean = clean.replace(/\s+/g, " ").trim();
 
         return clean;
@@ -61,9 +49,13 @@ class TTSService {
         }
 
         const safeText = this.cleanTextForNews(text);
+        
+        // --- REVERTED TO HIGH QUALITY ---
+        // Removed '?output_format=mp3_44100_64'. 
+        // We will now store the Master Quality file.
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
 
-        console.log(`🎙️ Generating: "${customFilename || articleId}"...`);
+        console.log(`🎙️ Generating (High Quality): "${customFilename || articleId}"...`);
 
         try {
             const response = await axios.post(url, {
@@ -74,7 +66,6 @@ class TTSService {
                     similarity_boost: 0.75, 
                     style: 0.35,           
                     use_speaker_boost: true,
-                    // Speed is set to 1.0 (Normal) so Frontend controls relative speed
                     speed: 1.0            
                 }
             }, {
@@ -87,10 +78,8 @@ class TTSService {
                 responseType: 'stream' 
             });
 
-            // Determine filename
             const publicId = customFilename ? customFilename : `article_${articleId}`;
 
-            // Upload to Cloudinary
             return new Promise((resolve, reject) => {
                 const uploadStream = cloudinary.uploader.upload_stream(
                     {
