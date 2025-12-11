@@ -31,6 +31,12 @@ const emergencyService = require('./services/emergencyService');
 
 const app = express();
 
+// --- DEBUG: Log every request ---
+app.use((req, res, next) => {
+    console.log(`📥 [REQUEST] ${req.method} ${req.url}`);
+    next();
+});
+
 // --- Middleware ---
 app.set('trust proxy', 1);
 app.use(helmet({ 
@@ -116,15 +122,17 @@ const checkAuth = async (req, res, next) => {
 };
 
 // --- MOUNT UNPROTECTED ROUTES (Temporary/Public) ---
-// We mount this BEFORE the security middleware so you can trigger it easily.
+// Mounted FIRST to bypass security checks
 app.use('/api/assets', assetGenRoutes); 
 
 // --- Apply Security Middleware ---
 app.use('/api/', (req, res, next) => {
-    // Skip security for the assets route we just mounted above if it matches
-    if (req.path.startsWith('/api/assets')) {
+    // Extra safety: Check if request path implies assets, skip auth
+    // (Note: req.path is relative to mount, req.originalUrl is full)
+    if (req.originalUrl.includes('/api/assets')) {
         return next();
     }
+
     checkAppCheck(req, res, () => {
         checkAuth(req, res, next).catch(next);
     }).catch(next);
