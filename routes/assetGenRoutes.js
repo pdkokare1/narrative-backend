@@ -3,9 +3,9 @@ const express = require('express');
 const router = express.Router();
 const ttsService = require('../services/ttsService');
 
-// --- THE 27 GREETING SCRIPTS ---
+// --- THE 27 GREETING SCRIPTS (Updated IDs) ---
 const GREETINGS = [
-    // --- MIRA (Anchor) ---
+    // --- MIRA (Anchor) - Unchanged ---
     { id: "mira_open_morn_1", text: "Hello. You’re with The Gamut. I’m Mira. Wishing you a very good morning. Let’s start the day with some clarity.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
     { id: "mira_open_morn_2", text: "A very good morning to you. I’m Mira. Thank you for joining us. Let’s see the news unfolding around the globe.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
     { id: "mira_open_morn_3", text: "Good morning. I’m Mira. Hoping you have a productive day ahead. Here is your daily briefing.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
@@ -16,27 +16,27 @@ const GREETINGS = [
     { id: "mira_open_eve_2", text: "Hello. Welcome to the evening broadcast. I’m Mira. Thank you for ending your day with us. Let’s wrap up the news.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
     { id: "mira_open_eve_3", text: "Good evening. I’m Mira. Wishing you a relaxing evening ahead. Let’s reflect on the stories that mattered today.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
 
-    // --- RAJAT (Analyst) ---
-    { id: "rajat_open_morn_1", text: "Hello. This is The Gamut. I’m Rajat. Wishing you a focused morning. Let’s get straight to the facts.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_morn_2", text: "Good morning. I’m Rajat. Thank you for listening. Let’s look at the reality behind the headlines.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_morn_3", text: "A very good morning. I’m Rajat. Hoping your day is off to a strong start. Let’s look at the data.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_aft_1", text: "Good afternoon. I’m Rajat. Hoping the day has been productive for you. Let’s track the shifting stories.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_aft_2", text: "Hello. Afternoon. I’m Rajat. Thank you for joining. Let’s break down the complex developments.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_aft_3", text: "Good afternoon. I’m Rajat. Wishing you a good afternoon. Let’s analyze the day so far.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_eve_1", text: "Good evening. I’m Rajat. Hoping you had a successful day. Let’s see what the data tells us tonight.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_eve_2", text: "Hello. Evening. I’m Rajat. Thank you for tuning in. The day is done, but the analysis continues.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
-    { id: "rajat_open_eve_3", text: "Good evening. This is The Gamut. I’m Rajat. Wishing you a restful night. Let’s wrap up the financial day.", voiceId: "czw3FmTwixwtnkpOKXZ0" },
+    // --- RAJAT (Analyst) - UPDATED VOICE ID ---
+    { id: "rajat_open_morn_1", text: "Hello. This is The Gamut. I’m Rajat. Wishing you a focused morning. Let’s get straight to the facts.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_morn_2", text: "Good morning. I’m Rajat. Thank you for listening. Let’s look at the reality behind the headlines.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_morn_3", text: "A very good morning. I’m Rajat. Hoping your day is off to a strong start. Let’s look at the data.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_aft_1", text: "Good afternoon. I’m Rajat. Hoping the day has been productive for you. Let’s track the shifting stories.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_aft_2", text: "Hello. Afternoon. I’m Rajat. Thank you for joining. Let’s break down the complex developments.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_aft_3", text: "Good afternoon. I’m Rajat. Wishing you a good afternoon. Let’s analyze the day so far.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_eve_1", text: "Good evening. I’m Rajat. Hoping you had a successful day. Let’s see what the data tells us tonight.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_eve_2", text: "Hello. Evening. I’m Rajat. Thank you for tuning in. The day is done, but the analysis continues.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_open_eve_3", text: "Good evening. This is The Gamut. I’m Rajat. Wishing you a restful night. Let’s wrap up the financial day.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
 
-    // --- SHUBHI (Curator) ---
-    { id: "shubhi_open_morn_1", text: "Hello! You’re with The Gamut. I’m Shubhi. Wishing you a bright morning. Let’s explore what’s new.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_morn_2", text: "Rise and shine. I’m Shubhi. Thank you for starting your day with us. Let’s kick things off with some energy.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_morn_3", text: "Good morning. I’m Shubhi. Hoping you have an awesome day ahead. Let’s get into the stories.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_aft_1", text: "Good afternoon! I’m Shubhi. Hoping you are having a good day. If you need a break, you’ve come to the right place.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_aft_2", text: "Hello there. Good afternoon. I’m Shubhi. Thank you for listening. Let’s catch up on the buzz.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_aft_3", text: "Good afternoon. I’m Shubhi. Wishing you a smooth afternoon. Let’s see what is trending.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_eve_1", text: "Good evening! I’m Shubhi. Hoping you had a fantastic day. Let’s unwind with some stories.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_eve_2", text: "Hello. Evening! I’m Shubhi. Thank you for joining me. You made it through the day, now let’s relax.", voiceId: "AwEl6phyzczpCHHDxyfO" },
-    { id: "shubhi_open_eve_3", text: "Good evening. I’m Shubhi. Wishing you a peaceful night. Let’s close out the day.", voiceId: "AwEl6phyzczpCHHDxyfO" }
+    // --- SHUBHI (Curator) - UPDATED VOICE ID ---
+    { id: "shubhi_open_morn_1", text: "Hello! You’re with The Gamut. I’m Shubhi. Wishing you a bright morning. Let’s explore what’s new.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_morn_2", text: "Rise and shine. I’m Shubhi. Thank you for starting your day with us. Let’s kick things off with some energy.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_morn_3", text: "Good morning. I’m Shubhi. Hoping you have an awesome day ahead. Let’s get into the stories.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_aft_1", text: "Good afternoon! I’m Shubhi. Hoping you are having a good day. If you need a break, you’ve come to the right place.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_aft_2", text: "Hello there. Good afternoon. I’m Shubhi. Thank you for listening. Let’s catch up on the buzz.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_aft_3", text: "Good afternoon. I’m Shubhi. Wishing you a smooth afternoon. Let’s see what is trending.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_eve_1", text: "Good evening! I’m Shubhi. Hoping you had a fantastic day. Let’s unwind with some stories.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_eve_2", text: "Hello. Evening! I’m Shubhi. Thank you for joining me. You made it through the day, now let’s relax.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_open_eve_3", text: "Good evening. I’m Shubhi. Wishing you a peaceful night. Let’s close out the day.", voiceId: "2n8AzqIsQUPMvb1OgO72" }
 ];
 
 const runGeneration = async (res) => {
@@ -46,6 +46,7 @@ const runGeneration = async (res) => {
         
         for (const item of GREETINGS) {
             try {
+                // Pass 'true' to force overwrite existing files with same name
                 const url = await ttsService.generateAndUpload(item.text, item.voiceId, null, item.id);
                 results.push({ id: item.id, url, status: 'success' });
                 // 1 second pause to be safe
@@ -66,15 +67,12 @@ const runGeneration = async (res) => {
 };
 
 // --- ROUTES ---
-// We support both GET and POST so you can just paste URL in browser
 router.get('/generate-greetings', (req, res) => runGeneration(res));
 router.post('/generate-greetings', (req, res) => runGeneration(res));
 
-// --- DIAGNOSTIC ROUTE ---
 router.get('/test', async (req, res) => {
     console.log("🔍 Test Endpoint Hit");
     try {
-        // Just verify keys exist
         const vars = {
             elevenLabs: !!process.env.ELEVENLABS_API_KEY,
             cloudinaryName: !!process.env.CLOUDINARY_CLOUD_NAME,
