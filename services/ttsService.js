@@ -23,6 +23,17 @@ class TTSService {
     cleanTextForNews(text) {
         if (!text) return "";
         let clean = text;
+
+        // --- 1. CURRENCY FIX (Smart Reading) ---
+        // Problem: "$82.7 Billion" -> Read as "82 dollars and 7 cents billion"
+        // Fix: Convert to "82.7 Billion dollars" explicitly
+        // Regex matches: $ + Number + (optional space) + Million/Billion/Trillion
+        clean = clean.replace(/\$([0-9\.,]+)\s?([mM]illion|[bB]illion|[tT]rillion)/gi, (match, num, magnitude) => {
+            return `${num} ${magnitude} dollars`;
+        });
+
+        // --- 2. Quote Handling ---
+        // "Smart Quotes" or "Straight Quotes" -> "quote ... [silence]"
         let quoteOpen = false;
         clean = clean.replace(/["“”]/g, (char) => {
             if (char === '“') return " quote "; 
@@ -30,9 +41,17 @@ class TTSService {
             if (!quoteOpen) { quoteOpen = true; return " quote "; } 
             else { quoteOpen = false; return ""; }
         });
+
+        // --- 3. Punctuation Cleanup ---
+        // Dash Removal: AI pauses awkwardly for dashes
         clean = clean.replace(/[-—–]/g, " ");
+        
+        // Colon Stop: Force a full stop instead of a list-pause
         clean = clean.replace(/:/g, "."); 
+
+        // Normalize spaces
         clean = clean.replace(/\s+/g, " ").trim();
+
         return clean;
     }
 
@@ -55,7 +74,9 @@ class TTSService {
                     similarity_boost: 0.75, 
                     style: 0.35,           
                     use_speaker_boost: true,
-                    speed: 0.90            
+                    // --- SPEED UPDATE: Set to 1.0 (Normal) ---
+                    // We now handle relative speeds (0.9 vs 1.1) in the Frontend
+                    speed: 1.0            
                 }
             }, {
                 headers: {
@@ -64,7 +85,7 @@ class TTSService {
                     'Accept': 'audio/mpeg'
                 },
                 params: { optimize_streaming_latency: 3 },
-                responseType: 'stream' // We expect a stream
+                responseType: 'stream' 
             });
 
             // Determine filename
@@ -91,10 +112,8 @@ class TTSService {
                     }
                 );
 
-                // Pipe the audio data to the upload stream
                 response.data.pipe(uploadStream);
                 
-                // Handle stream errors
                 response.data.on('error', (err) => {
                     console.error("❌ Stream Error:", err.message);
                     reject(err);
@@ -102,10 +121,7 @@ class TTSService {
             });
 
         } catch (error) {
-            // Enhanced Error Logging
             if (error.response) {
-                // If ElevenLabs returned an error (e.g. 401, 400), read the stream to see the message
-                // Note: Since responseType is stream, we can't just read .data easily without buffering
                 console.error(`❌ ElevenLabs API Error: ${error.response.status}`);
                 throw new Error(`ElevenLabs API Error: ${error.response.status}`);
             } else {
