@@ -7,7 +7,6 @@ const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        // CHANGED: Removed the hardcoded fallback. Now it relies 100% on Railway.
         this.apiKey = process.env.ELEVENLABS_API_KEY;
         
         if (!this.apiKey) {
@@ -24,67 +23,41 @@ class TTSService {
         console.log(`🎙️ TTS Service Ready (Cloudinary + ElevenLabs)`);
     }
 
-    /**
-     * Prepares text for the AI to read naturally.
-     * Rules:
-     * 1. Quotes: Say "quote" only at the START. Silent at the END.
-     * 2. Dashes: Ignore them (replace with space).
-     * 3. Colons: Treat as a full stop.
-     */
     cleanTextForNews(text) {
         if (!text) return "";
         let clean = text;
-
-        // 1. Handle Quotes (Toggle Logic)
-        // We use a counter to know if we are opening or closing a quote.
-        let quoteOpen = false;
         
+        let quoteOpen = false;
         clean = clean.replace(/["“”]/g, (char) => {
-            // Explicit Smart Quotes (if source uses them)
             if (char === '“') return " quote "; 
             if (char === '”') return "";        
-            
-            // Standard Straight Quotes (Toggle)
-            if (!quoteOpen) {
-                quoteOpen = true;
-                return " quote "; // Open -> Say "quote"
-            } else {
-                quoteOpen = false;
-                return "";        // Close -> Silent
-            }
+            if (!quoteOpen) { quoteOpen = true; return " quote "; } 
+            else { quoteOpen = false; return ""; }
         });
 
-        // 2. Handle Dashes: "Ignore" them (Replace with space)
-        // Catches: Hyphen (-), En Dash (–), Em Dash (—)
         clean = clean.replace(/[-—–]/g, " ");
-
-        // 3. Handle Colons: Force a full stop pause
         clean = clean.replace(/:/g, "."); 
-
-        // 4. Normalize spaces (collapse multiple spaces created above)
         clean = clean.replace(/\s+/g, " ").trim();
 
         return clean;
     }
 
-    async generateAndUpload(text, voiceId, articleId) {
+    // UPDATED: Now accepts customFilename
+    async generateAndUpload(text, voiceId, articleId, customFilename = null) {
         if (!this.apiKey) throw new Error("ElevenLabs API Key missing");
 
-        // 1. Clean the text using our new rules
         const safeText = this.cleanTextForNews(text);
-        
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
 
-        // Request Audio Stream
         const response = await axios.post(url, {
             text: safeText,
             model_id: "eleven_turbo_v2",
             voice_settings: {
-                stability: 0.50,       // Balanced consistency
-                similarity_boost: 0.75, // Stays true to the voice actor
-                style: 0.35,           // Slight news-reading flair
+                stability: 0.50,       
+                similarity_boost: 0.75, 
+                style: 0.35,           
                 use_speaker_boost: true,
-                speed: 0.90            // 90% speed for better clarity
+                speed: 0.90            
             }
         }, {
             headers: {
@@ -96,21 +69,25 @@ class TTSService {
             responseType: 'stream'
         });
 
-        // 2. Upload Stream to Cloudinary
+        // Determine the Public ID (Filename) in Cloudinary
+        // If customFilename is provided, use it. Otherwise use article_{id}
+        const publicId = customFilename ? customFilename : `article_${articleId}`;
+
         return new Promise((resolve, reject) => {
             const uploadStream = cloudinary.uploader.upload_stream(
                 {
                     folder: 'the-gamut-audio',
-                    public_id: `article_${articleId}`,
+                    public_id: publicId,
                     resource_type: 'video', 
-                    format: 'mp3'
+                    format: 'mp3',
+                    overwrite: true // Allow overwriting if we regenerate
                 },
                 (error, result) => {
                     if (error) {
                         console.error("Cloudinary Upload Error:", error);
                         reject(error);
                     } else {
-                        console.log(`✅ Audio Saved to Cloudinary: ${result.secure_url}`);
+                        console.log(`✅ Audio Saved: ${publicId}`);
                         resolve(result.secure_url);
                     }
                 }
