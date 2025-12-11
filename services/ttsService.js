@@ -27,13 +27,11 @@ class TTSService {
         // --- 1. CURRENCY FIX (Smart Reading) ---
         // Problem: "$82.7 Billion" -> Read as "82 dollars and 7 cents billion"
         // Fix: Convert to "82.7 Billion dollars" explicitly
-        // Regex matches: $ + Number + (optional space) + Million/Billion/Trillion
         clean = clean.replace(/\$([0-9\.,]+)\s?([mM]illion|[bB]illion|[tT]rillion)/gi, (match, num, magnitude) => {
             return `${num} ${magnitude} dollars`;
         });
 
         // --- 2. Quote Handling ---
-        // "Smart Quotes" or "Straight Quotes" -> "quote ... [silence]"
         let quoteOpen = false;
         clean = clean.replace(/["“”]/g, (char) => {
             if (char === '“') return " quote "; 
@@ -43,11 +41,13 @@ class TTSService {
         });
 
         // --- 3. Punctuation Cleanup ---
-        // Dash Removal: AI pauses awkwardly for dashes
+        // Dash Removal
         clean = clean.replace(/[-—–]/g, " ");
         
-        // Colon Stop: Force a full stop instead of a list-pause
-        clean = clean.replace(/:/g, "."); 
+        // --- UPDATED: Colon Stop ---
+        // Was: clean.replace(/:/g, ".");
+        // Now: Replaced with ". . " to force a longer, distinct pause.
+        clean = clean.replace(/:/g, ". . "); 
 
         // Normalize spaces
         clean = clean.replace(/\s+/g, " ").trim();
@@ -74,8 +74,7 @@ class TTSService {
                     similarity_boost: 0.75, 
                     style: 0.35,           
                     use_speaker_boost: true,
-                    // --- SPEED UPDATE: Set to 1.0 (Normal) ---
-                    // We now handle relative speeds (0.9 vs 1.1) in the Frontend
+                    // Speed is set to 1.0 (Normal) so Frontend controls relative speed
                     speed: 1.0            
                 }
             }, {
