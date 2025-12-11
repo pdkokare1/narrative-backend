@@ -3,50 +3,53 @@ const express = require('express');
 const router = express.Router();
 const ttsService = require('../services/ttsService');
 
-// --- THE 27 GREETING SCRIPTS (Updated IDs) ---
-const GREETINGS = [
-    // --- MIRA (Anchor) - Unchanged ---
-    { id: "mira_open_morn_1", text: "Hello. You’re with The Gamut. I’m Mira. Wishing you a very good morning. Let’s start the day with some clarity.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_morn_2", text: "A very good morning to you. I’m Mira. Thank you for joining us. Let’s see the news unfolding around the globe.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_morn_3", text: "Good morning. I’m Mira. Hoping you have a productive day ahead. Here is your daily briefing.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_aft_1", text: "Good afternoon. Welcome to The Gamut. I’m Mira. Hoping your day is going well. Let’s get you updated.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_aft_2", text: "Hello. It is afternoon in the studio. I’m Mira. Thank you for tuning in. Here are the developments you need to know.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_aft_3", text: "Good afternoon. I’m Mira. Wishing you a good second half of the day. Let’s look at the top stories.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_eve_1", text: "Good evening. You’re tuned in to The Gamut. I’m Mira. Hoping you had a good day. Let’s look at the headlines.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_eve_2", text: "Hello. Welcome to the evening broadcast. I’m Mira. Thank you for ending your day with us. Let’s wrap up the news.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
-    { id: "mira_open_eve_3", text: "Good evening. I’m Mira. Wishing you a relaxing evening ahead. Let’s reflect on the stories that mattered today.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+// --- THE 30 SEGUE SCRIPTS ---
+const SEGUES = [
+    // --- MIRA (Anchor) ---
+    { id: "mira_segue_01", text: "In other developments...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_02", text: "Moving on...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_03", text: "Turning to other news...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_04", text: "Also making headlines...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_05", text: "Staying with the top stories...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_06", text: "Elsewhere in the news...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_07", text: "Shifting our focus...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_08", text: "Focusing now on this...", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_09", text: "Here is another story we are tracking.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
+    { id: "mira_segue_10", text: "Continuing with our coverage.", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
 
-    // --- RAJAT (Analyst) - UPDATED VOICE ID ---
-    { id: "rajat_open_morn_1", text: "Hello. This is The Gamut. I’m Rajat. Wishing you a focused morning. Let’s get straight to the facts.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_morn_2", text: "Good morning. I’m Rajat. Thank you for listening. Let’s look at the reality behind the headlines.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_morn_3", text: "A very good morning. I’m Rajat. Hoping your day is off to a strong start. Let’s look at the data.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_aft_1", text: "Good afternoon. I’m Rajat. Hoping the day has been productive for you. Let’s track the shifting stories.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_aft_2", text: "Hello. Afternoon. I’m Rajat. Thank you for joining. Let’s break down the complex developments.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_aft_3", text: "Good afternoon. I’m Rajat. Wishing you a good afternoon. Let’s analyze the day so far.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_eve_1", text: "Good evening. I’m Rajat. Hoping you had a successful day. Let’s see what the data tells us tonight.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_eve_2", text: "Hello. Evening. I’m Rajat. Thank you for tuning in. The day is done, but the analysis continues.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
-    { id: "rajat_open_eve_3", text: "Good evening. This is The Gamut. I’m Rajat. Wishing you a restful night. Let’s wrap up the financial day.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    // --- RAJAT (Analyst) - Voice: SZQ4R1VKS2t6wmBJpK5H ---
+    { id: "rajat_segue_01", text: "Also in the news...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_02", text: "Looking at other indicators...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_03", text: "In the technology and business sector...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_04", text: "Shifting focus...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_05", text: "Meanwhile, in the industry...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_06", text: "Analyzing the broader impact...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_07", text: "On the corporate front...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_08", text: "There are also developments here...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_09", text: "Let’s look at another key factor.", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
+    { id: "rajat_segue_10", text: "Expanding our view...", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
 
-    // --- SHUBHI (Curator) - UPDATED VOICE ID ---
-    { id: "shubhi_open_morn_1", text: "Hello! You’re with The Gamut. I’m Shubhi. Wishing you a bright morning. Let’s explore what’s new.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_morn_2", text: "Rise and shine. I’m Shubhi. Thank you for starting your day with us. Let’s kick things off with some energy.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_morn_3", text: "Good morning. I’m Shubhi. Hoping you have an awesome day ahead. Let’s get into the stories.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_aft_1", text: "Good afternoon! I’m Shubhi. Hoping you are having a good day. If you need a break, you’ve come to the right place.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_aft_2", text: "Hello there. Good afternoon. I’m Shubhi. Thank you for listening. Let’s catch up on the buzz.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_aft_3", text: "Good afternoon. I’m Shubhi. Wishing you a smooth afternoon. Let’s see what is trending.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_eve_1", text: "Good evening! I’m Shubhi. Hoping you had a fantastic day. Let’s unwind with some stories.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_eve_2", text: "Hello. Evening! I’m Shubhi. Thank you for joining me. You made it through the day, now let’s relax.", voiceId: "2n8AzqIsQUPMvb1OgO72" },
-    { id: "shubhi_open_eve_3", text: "Good evening. I’m Shubhi. Wishing you a peaceful night. Let’s close out the day.", voiceId: "2n8AzqIsQUPMvb1OgO72" }
+    // --- SHUBHI (Curator) - Voice: 2n8AzqIsQUPMvb1OgO72 ---
+    { id: "shubhi_segue_01", text: "And in the world of culture...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_02", text: "Also trending today...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_03", text: "On a different note...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_04", text: "Moving to the lighter side of the news...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_05", text: "And here is a story catching attention...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_06", text: "Checking the social feeds...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_07", text: "In other news...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_08", text: "But wait, there is more...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_09", text: "And check this out...", voiceId: "2n8AzqIsQUPMvb1OgO72" },
+    { id: "shubhi_segue_10", text: "Also in the mix...", voiceId: "2n8AzqIsQUPMvb1OgO72" }
 ];
 
 const runGeneration = async (res) => {
     try {
-        console.log(`🚀 STARTING BATCH: ${GREETINGS.length} items.`);
+        console.log(`🚀 STARTING BATCH: ${SEGUES.length} Segues.`);
         const results = [];
         
-        for (const item of GREETINGS) {
+        for (const item of SEGUES) {
             try {
-                // Pass 'true' to force overwrite existing files with same name
+                // Pass 'true' to force overwrite
                 const url = await ttsService.generateAndUpload(item.text, item.voiceId, null, item.id);
                 results.push({ id: item.id, url, status: 'success' });
                 // 1 second pause to be safe
@@ -67,11 +70,11 @@ const runGeneration = async (res) => {
 };
 
 // --- ROUTES ---
-router.get('/generate-greetings', (req, res) => runGeneration(res));
-router.post('/generate-greetings', (req, res) => runGeneration(res));
+router.get('/generate-segues', (req, res) => runGeneration(res));
+router.post('/generate-segues', (req, res) => runGeneration(res));
 
+// --- DIAGNOSTIC ---
 router.get('/test', async (req, res) => {
-    console.log("🔍 Test Endpoint Hit");
     try {
         const vars = {
             elevenLabs: !!process.env.ELEVENLABS_API_KEY,
