@@ -1,4 +1,4 @@
-// models/articleModel.js (FINAL v3.3 - Audio Caching Added)
+// models/articleModel.js (FINAL v3.4 - Optimized Indexes)
 const mongoose = require('mongoose');
 
 const articleSchema = new mongoose.Schema({
@@ -10,9 +10,8 @@ const articleSchema = new mongoose.Schema({
   url: { type: String, required: true, unique: true, trim: true, index: true },
   imageUrl: { type: String, trim: true },
   
-  // --- NEW: Audio Caching Field ---
+  // Audio Caching Field
   audioUrl: { type: String, default: null }, 
-  // --------------------------------
   
   publishedAt: { type: Date, default: Date.now, index: true },
   
@@ -52,11 +51,12 @@ const articleSchema = new mongoose.Schema({
   recommendations: [String],
   analysisVersion: { type: String, default: '3.0' }
 }, {
-  timestamps: true, // Adds createdAt and updatedAt
+  timestamps: true, 
   autoIndex: process.env.NODE_ENV !== 'production',
 });
 
 // --- SMART SEARCH INDEX ---
+// Keeps full-text search capability
 articleSchema.index({ 
   headline: 'text', 
   summary: 'text', 
@@ -80,23 +80,25 @@ articleSchema.index({
   }
 });
 
-// --- PERFORMANCE INDEXES ---
-articleSchema.index({ category: 1, politicalLean: 1, publishedAt: -1 });
+// --- OPTIMIZED COMPOUND INDEXES ---
+// These specific pairings speed up your exact API queries 
+// while reducing the total work the database does on every save.
+
+// 1. Main Feed Filters (Filter + Sort by Date)
 articleSchema.index({ category: 1, publishedAt: -1 });
 articleSchema.index({ politicalLean: 1, publishedAt: -1 });
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
-articleSchema.index({ country: 1, publishedAt: -1 });
-articleSchema.index({ trustScore: -1, publishedAt: -1 });
-articleSchema.index({ biasScore: 1, publishedAt: -1 });
-articleSchema.index({ clusterId: 1, publishedAt: -1 });
-articleSchema.index({ headline: 1, source: 1, publishedAt: -1 });
-articleSchema.index({ 
-  clusterTopic: 1, 
-  category: 1, 
-  country: 1, 
-  primaryNoun: 1, 
-  secondaryNoun: 1, 
-  publishedAt: -1 
-}, { name: "5_Field_Cluster_Index" });
+articleSchema.index({ country: 1, publishedAt: -1 }); 
+
+// 2. Cluster View (Filter by ID -> Sort by Trust -> Sort by Date)
+// Matches route: /cluster/:id
+articleSchema.index({ clusterId: 1, trustScore: -1, publishedAt: -1 });
+
+// 3. Trending Logic (Filter by Recent Date -> Group by Topic)
+// Matches route: /trending
+articleSchema.index({ publishedAt: -1, clusterTopic: 1 });
+
+// 4. Vector Search metadata filter
+articleSchema.index({ country: 1 }); 
 
 module.exports = mongoose.model('Article', articleSchema);
