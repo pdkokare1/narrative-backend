@@ -24,7 +24,6 @@ const articleRoutes = require('./routes/articleRoutes');
 const emergencyRoutes = require('./routes/emergencyRoutes');
 const ttsRoutes = require('./routes/ttsRoutes'); 
 const migrationRoutes = require('./routes/migrationRoutes');
-// --- NEW IMPORT ---
 const assetGenRoutes = require('./routes/assetGenRoutes'); 
 
 // --- Services ---
@@ -116,8 +115,16 @@ const checkAuth = async (req, res, next) => {
   }
 };
 
+// --- MOUNT UNPROTECTED ROUTES (Temporary/Public) ---
+// We mount this BEFORE the security middleware so you can trigger it easily.
+app.use('/api/assets', assetGenRoutes); 
+
 // --- Apply Security Middleware ---
 app.use('/api/', (req, res, next) => {
+    // Skip security for the assets route we just mounted above if it matches
+    if (req.path.startsWith('/api/assets')) {
+        return next();
+    }
     checkAppCheck(req, res, () => {
         checkAuth(req, res, next).catch(next);
     }).catch(next);
@@ -130,10 +137,6 @@ app.use('/api/emergency-resources', emergencyRoutes);
 app.use('/api/tts', ttsRoutes);
 app.use('/api/migration', migrationRoutes); 
 app.use('/api', articleRoutes); 
-
-// --- NEW: Mount Asset Generation Route ---
-// (Protected by Auth/AppCheck because it's under /api/)
-app.use('/api/assets', assetGenRoutes); 
 
 
 // ================= SYSTEM / BACKGROUND JOBS =================
