@@ -1,7 +1,7 @@
 // services/aiService.js
 const axios = require('axios');
-const { getAnalysisPrompt } = require('../utils/prompts');
-const KeyManager = require('../utils/KeyManager'); // <--- NEW: Central Manager
+const promptManager = require('../utils/promptManager'); // <--- NEW: Use Manager
+const KeyManager = require('../utils/KeyManager');
 
 // --- CONSTANTS ---
 const EMBEDDING_MODEL = "text-embedding-004";
@@ -14,7 +14,6 @@ function sleep(ms) {
 
 class AIService {
   constructor() {
-    // 1. Initialize Keys via Manager
     KeyManager.loadKeys('GEMINI', 'GEMINI');
     console.log(`🤖 AI Service Initialized`);
   }
@@ -27,10 +26,11 @@ class AIService {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       let apiKey = '';
       try {
-        // 2. Get Valid Key from Manager
         apiKey = KeyManager.getKey('GEMINI');
         
-        const prompt = getAnalysisPrompt(article);
+        // --- NEW: Get Dynamic Prompt ---
+        const prompt = await promptManager.getAnalysisPrompt(article);
+        
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
         const response = await axios.post(url, {
@@ -50,7 +50,6 @@ class AIService {
           ]
         }, { timeout: 60000 });
 
-        // 3. Report Success (Resets error counters)
         KeyManager.reportSuccess(apiKey);
         
         return this.parseResponse(response.data);
@@ -60,7 +59,6 @@ class AIService {
         const status = error.response?.status;
         
         if (status === 429) {
-             // 4. Report Rate Limit (Triggers Cooldown)
              KeyManager.reportFailure(apiKey, true);
              await sleep(500); 
         } else if (status >= 500) {
@@ -68,7 +66,6 @@ class AIService {
             KeyManager.reportFailure(apiKey, false);
             await sleep(2000 * attempt); 
         } else {
-            // General failure (e.g. 400 Bad Request)
             KeyManager.reportFailure(apiKey, false); 
             break; 
         }
