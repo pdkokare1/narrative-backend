@@ -1,4 +1,4 @@
-// routes/profileRoutes.js (FINAL v4.1 - Server-Side Caching)
+// routes/profileRoutes.js (FINAL v5.0 - Redis Caching)
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../utils/asyncHandler');
@@ -7,7 +7,9 @@ const asyncHandler = require('../utils/asyncHandler');
 const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
 const Article = require('../models/articleModel');
-const Cache = require('../models/cacheModel'); // Added for optimization
+
+// Cache
+const redis = require('../utils/redisClient'); // <--- NEW: Import Redis
 
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req, res) => {
@@ -22,7 +24,7 @@ router.get('/me', asyncHandler(async (req, res) => {
     res.status(200).json(profile);
 }));
 
-// --- 2. Create / Re-Link Profile (SELF-HEALING) ---
+// --- 2. Create / Re-Link Profile ---
 router.post('/', asyncHandler(async (req, res) => {
     const { username } = req.body;
     const { uid, email } = req.user; 
@@ -57,15 +59,15 @@ router.post('/', asyncHandler(async (req, res) => {
     res.status(201).json(newProfile);
 }));
 
-// --- 3. Weekly Digest (Cached) ---
+// --- 3. Weekly Digest (Redis Cached) ---
 router.get('/weekly-digest', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const CACHE_KEY = `digest_${userId}`;
 
-    // A. Cache Check
-    const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
-    if (cachedDoc) {
-        return res.status(200).json(cachedDoc.data);
+    // A. Cache Check (Redis)
+    const cachedData = await redis.get(CACHE_KEY);
+    if (cachedData) {
+        return res.status(200).json(cachedData);
     }
 
     // B. Calculation
@@ -87,7 +89,6 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
 
     recentLogs.forEach(log => {
       leanCounts[log.lean] = (leanCounts[log.lean] || 0) + 1;
-      // Scoring: Left (-2) to Right (+2)
       if (log.lean === 'Left') score -= 2;
       else if (log.lean === 'Left-Leaning') score -= 1;
       else if (log.lean === 'Right-Leaning') score += 1;
@@ -126,26 +127,21 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
       topCategory: Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0]
     };
 
-    // C. Save Cache (Expires in 1 hour)
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); 
-    await Cache.findOneAndUpdate(
-        { key: CACHE_KEY },
-        { data: resultData, expiresAt },
-        { upsert: true }
-    );
+    // C. Save Cache (Redis TTL: 3600s = 1 hour)
+    await redis.set(CACHE_KEY, resultData, 3600);
 
     res.status(200).json(resultData);
 }));
 
-// --- 4. User Stats (Cached) ---
+// --- 4. User Stats (Redis Cached) ---
 router.get('/stats', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const CACHE_KEY = `stats_${userId}`;
 
-    // A. Cache Check
-    const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
-    if (cachedDoc) {
-        return res.status(200).json(cachedDoc.data);
+    // A. Cache Check (Redis)
+    const cachedData = await redis.get(CACHE_KEY);
+    if (cachedData) {
+        return res.status(200).json(cachedData);
     }
 
     // B. Heavy Aggregation
@@ -212,13 +208,8 @@ router.get('/stats', asyncHandler(async (req, res) => {
       sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
     };
 
-    // C. Save Cache (Expires in 15 minutes)
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); 
-    await Cache.findOneAndUpdate(
-        { key: CACHE_KEY },
-        { data: results, expiresAt },
-        { upsert: true }
-    );
+    // C. Save Cache (Redis TTL: 900s = 15 minutes)
+    await redis.set(CACHE_KEY, results, 900);
 
     res.status(200).json(results);
 }));
