@@ -1,6 +1,6 @@
 // jobs/newsFetcher.js
 // Orchestrates the Fetch -> Filter -> Analyze -> Save pipeline.
-// UPDATED: Parallel AI Processing for ~40% speed boost per article.
+// UPDATED: Optimized for BullMQ (Stateless Execution)
 
 const newsService = require('../services/newsService');
 const gatekeeper = require('../services/gatekeeperService'); 
@@ -9,14 +9,13 @@ const clusteringService = require('../services/clusteringService');
 const Article = require('../models/articleModel');
 const logger = require('../utils/logger'); 
 
-let isFetchRunning = false;
-
 // Helper for delays
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // --- Main Worker Function ---
+// Note: We removed the 'isFetchRunning' check because BullMQ handles concurrency now.
 async function fetchAndAnalyzeNews() {
   logger.info('🔄 Job Started: Fetching news...');
   
@@ -33,7 +32,7 @@ async function fetchAndAnalyzeNews() {
     const rawArticles = await newsService.fetchNews(); 
     if (!rawArticles || rawArticles.length === 0) {
         logger.warn('Job: No new articles found.');
-        return;
+        return stats; // Return stats to the queue manager
     }
 
     stats.totalFetched = rawArticles.length;
@@ -56,15 +55,17 @@ async function fetchAndAnalyzeNews() {
             else if (res === 'ERROR') stats.errors++;
         });
         
-        // Safety buffer: 2 seconds between batches
+        // Safety buffer: 2 seconds between batches to respect rate limits
         await sleep(2000); 
     }
 
     // --- FINAL REPORT (Structured Log) ---
     logger.info('Job Complete: News Processing Summary', { stats });
+    return stats;
 
   } catch (error) {
     logger.error(`❌ Job Critical Failure: ${error.message}`);
+    throw error; // Let BullMQ know this job failed so it logs the error correctly
   }
 }
 
@@ -87,7 +88,7 @@ async function processSingleArticle(article) {
         logger.info(`🔍 Analyzing [${gatekeeperResult.type}]: "${article.title.substring(0, 30)}..."`);
 
         // --- 3 & 4. PARALLEL AI PROCESSING (The Efficiency Boost) ---
-        // We run Analysis and Embedding simultaneously instead of waiting for one to finish
+        // We run Analysis and Embedding simultaneously
         const textToEmbed = `${article.title}. ${article.description}`;
         
         const [analysis, embedding] = await Promise.all([
@@ -127,12 +128,11 @@ async function processSingleArticle(article) {
             secondaryNoun: analysis.secondaryNoun,
             keyFindings: analysis.keyFindings || [],
             recommendations: analysis.recommendations || [],
-            analysisVersion: '3.3-Parallel', 
+            analysisVersion: '3.3-Queue', // Updated version tag
             embedding: embedding || []
         };
         
         // 6. CLUSTERING & SAVE
-        // Clustering still needs to happen last because it depends on the data created above
         newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding);
         
         await Article.create(newArticleData);
@@ -147,21 +147,6 @@ async function processSingleArticle(article) {
 
 // --- Public Interface ---
 module.exports = {
-    // Check if job is currently running
-    isRunning: () => isFetchRunning,
-
-    // Trigger the job safely
-    run: async () => {
-        if (isFetchRunning) {
-            logger.warn("⚠️ Job skipped: Previous job still running.");
-            return false; 
-        }
-        isFetchRunning = true;
-
-        // Run async (don't wait for it to finish)
-        fetchAndAnalyzeNews().finally(() => { 
-            isFetchRunning = false; 
-        });
-        return true; // Successfully started
-    }
+    // Only expose the runner logic now
+    run: fetchAndAnalyzeNews
 };
