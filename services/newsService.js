@@ -1,9 +1,10 @@
-// services/newsService.js (FINAL v3.1 - With Headline Formatting)
+// services/newsService.js (FINAL v3.2 - Centralized Key Manager)
 const axios = require('axios');
+const KeyManager = require('../utils/KeyManager'); // <--- NEW: Central Manager
 
 // --- Helper Functions ---
 
-// 1. Headline Formatter (New Rule)
+// 1. Headline Formatter
 function formatHeadline(title) {
     if (!title) return "No Title";
     let clean = title.trim();
@@ -12,7 +13,6 @@ function formatHeadline(title) {
     clean = clean.charAt(0).toUpperCase() + clean.slice(1);
     
     // Rule B: Force Period at end (unless it ends in ? or !)
-    // We also check for quotes closing a sentence like: " ...said."
     if (!/[.!?]["']?$/.test(clean)) {
         clean += ".";
     }
@@ -59,99 +59,44 @@ function removeDuplicatesAndClean(articles) {
 // --- NewsService Class ---
 class NewsService {
   constructor() {
-    this.gnewsKeys = this.loadApiKeys('GNEWS');
-    this.newsapiKeys = this.loadApiKeys('NEWS_API'); 
-    this.currentGNewsIndex = 0;
-    this.currentNewsAPIIndex = 0;
-    this.keyUsageCount = new Map();
-    this.keyErrorCount = new Map();
-
-    [...this.gnewsKeys, ...this.newsapiKeys].forEach(key => {
-        if (key) {
-            this.keyUsageCount.set(key, 0);
-            this.keyErrorCount.set(key, 0);
-        }
-    });
-    console.log(`📰 News Service Initialized.`);
-  }
-
-  loadApiKeys(providerPrefix) {
-    const keys = [];
-    for (let i = 1; i <= 20; i++) {
-      const key = process.env[`${providerPrefix}_API_KEY_${i}`]?.trim();
-      if (key) keys.push(key);
-    }
-    const defaultKey = process.env[`${providerPrefix}_API_KEY`]?.trim();
-    if (keys.length === 0 && defaultKey) keys.push(defaultKey);
-
-    if (keys.length === 0) console.warn(`⚠️ No ${providerPrefix} API keys found.`);
-    else console.log(`🔑 Loaded ${keys.length} ${providerPrefix} API key(s).`);
-    return keys;
-  }
-
-  getNextKey(keys, currentIndex) {
-      if (!keys || keys.length === 0) return { key: null, nextIndex: 0 };
-      const key = keys[currentIndex];
-      const nextIndex = (currentIndex + 1) % keys.length;
-      return { key, nextIndex };
-  }
-
-  getNextGNewsKey() {
-      const { key, nextIndex } = this.getNextKey(this.gnewsKeys, this.currentGNewsIndex);
-      this.currentGNewsIndex = nextIndex;
-      return key;
-  }
-
-  getNextNewsAPIKey() {
-      const { key, nextIndex } = this.getNextKey(this.newsapiKeys, this.currentNewsAPIIndex);
-      this.currentNewsAPIIndex = nextIndex;
-      return key;
-  }
-
-  recordSuccess(apiKey) {
-    if (apiKey && this.keyUsageCount.has(apiKey)) {
-        this.keyUsageCount.set(apiKey, (this.keyUsageCount.get(apiKey) || 0) + 1);
-        this.keyErrorCount.set(apiKey, 0); 
-    }
-  }
-
-  recordError(apiKey, apiName = "NewsAPI") {
-    if (apiKey && this.keyErrorCount.has(apiKey)) {
-        const currentErrors = (this.keyErrorCount.get(apiKey) || 0) + 1;
-        this.keyErrorCount.set(apiKey, currentErrors);
-        console.warn(`📈 Error count for ${apiName} key ...${apiKey.slice(-4)} increased to ${currentErrors}`);
-    }
+    // 1. Initialize Keys via Manager
+    KeyManager.loadKeys('GNEWS', 'GNEWS');
+    KeyManager.loadKeys('NEWS_API', 'NEWS_API');
+    console.log(`堂 News Service Initialized`);
   }
 
   // --- Main Fetch Logic ---
   async fetchNews() {
     let allArticles = [];
     
-    // 1. GNews Fetch
-    if (this.gnewsKeys.length > 0) {
-      console.log('📡 Fetching from GNews...');
-      const gnewsRequests = [
-        { params: { country: 'us', max: 15 }, name: 'GNews-US' }, 
-        { params: { country: 'in', max: 15 }, name: 'GNews-IN' },
-        { params: { topic: 'world', lang: 'en', max: 15 }, name: 'GNews-World' }
-      ];
+    // 1. GNews Fetch (Try block ensures flow continues if GNews fails)
+    try {
+        console.log('藤 Fetching from GNews...');
+        const gnewsRequests = [
+            { params: { country: 'us', max: 15 }, name: 'GNews-US' }, 
+            { params: { country: 'in', max: 15 }, name: 'GNews-IN' },
+            { params: { topic: 'world', lang: 'en', max: 15 }, name: 'GNews-World' }
+        ];
 
-      const gnewsResults = await Promise.allSettled(
-        gnewsRequests.map(req => this.fetchFromGNews(req.params, req.name))
-      );
+        const gnewsResults = await Promise.allSettled(
+            gnewsRequests.map(req => this.fetchFromGNews(req.params, req.name))
+        );
 
-      gnewsResults.forEach((result) => {
-        if (result.status === 'fulfilled' && result.value.length > 0) {
-          allArticles.push(...result.value);
-        }
-      });
+        gnewsResults.forEach((result) => {
+            if (result.status === 'fulfilled' && result.value.length > 0) {
+            allArticles.push(...result.value);
+            }
+        });
+    } catch (err) {
+        console.warn("GNews fetch skipped/failed:", err.message);
     }
 
     // 2. NewsAPI Fallback
-    const needsFallback = this.newsapiKeys.length > 0 && (this.gnewsKeys.length === 0 || allArticles.length < 15);
+    // Only fetch if GNews didn't return enough articles
+    const needsFallback = allArticles.length < 15;
 
     if (needsFallback) {
-      console.log('📡 Fetching fallback from NewsAPI...');
+      console.log('藤 Fetching fallback from NewsAPI...');
       const newsapiRequests = [
          { params: { country: 'us', pageSize: 15 }, name: 'NewsAPI-US', endpoint: 'top-headlines' },
          { params: { country: 'in', pageSize: 15 }, name: 'NewsAPI-IN', endpoint: 'top-headlines' },
@@ -169,7 +114,7 @@ class NewsService {
       });
     }
 
-    // 3. Clean & Deduplicate (Uses formatHeadline internally now)
+    // 3. Clean & Deduplicate
     const uniqueArticles = removeDuplicatesAndClean(allArticles);
     uniqueArticles.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
 
@@ -178,8 +123,12 @@ class NewsService {
 
   // --- GNews Call ---
   async fetchFromGNews(params, sourceName) {
-    const apiKey = this.getNextGNewsKey();
-    if (!apiKey) return Promise.reject(new Error("No GNews Key"));
+    let apiKey = '';
+    try {
+        apiKey = KeyManager.getKey('GNEWS');
+    } catch (e) {
+        return Promise.reject(new Error("No GNews Keys available"));
+    }
 
     const url = 'https://gnews.io/api/v4/top-headlines';
     try {
@@ -189,19 +138,26 @@ class NewsService {
       });
 
       if (!response.data?.articles?.length) return [];
-      this.recordSuccess(apiKey);
+      
+      KeyManager.reportSuccess(apiKey);
       return this.transformGNewsArticles(response.data.articles);
 
     } catch (error) {
-      this.recordError(apiKey, sourceName);
+      // 429 = Too Many Requests, 403 = Forbidden (Quota or Invalid)
+      const isRateLimit = error.response?.status === 429 || error.response?.status === 403;
+      KeyManager.reportFailure(apiKey, isRateLimit);
       return Promise.reject(error);
     }
   }
 
   // --- NewsAPI Call ---
   async fetchFromNewsAPI(params, sourceName, endpointType) {
-      const apiKey = this.getNextNewsAPIKey();
-      if (!apiKey) return Promise.reject(new Error("No NewsAPI Key"));
+      let apiKey = '';
+      try {
+          apiKey = KeyManager.getKey('NEWS_API');
+      } catch (e) {
+          return Promise.reject(new Error("No NewsAPI Keys available"));
+      }
 
       const url = `https://newsapi.org/v2/${endpointType}`;
       try {
@@ -211,16 +167,19 @@ class NewsService {
           });
 
          if (!response.data?.articles?.length) return [];
-         this.recordSuccess(apiKey);
+         
+         KeyManager.reportSuccess(apiKey);
          return this.transformNewsAPIArticles(response.data.articles);
 
       } catch (error) {
-          this.recordError(apiKey, sourceName);
+          // 429 = Too Many Requests
+          const isRateLimit = error.response?.status === 429;
+          KeyManager.reportFailure(apiKey, isRateLimit);
           return Promise.reject(error);
       }
   }
 
-  // --- Transformers (Now using formatHeadline logic via removeDuplicatesAndClean) ---
+  // --- Transformers (Unchanged) ---
   transformGNewsArticles(articles) {
     if (!Array.isArray(articles)) return [];
     return articles.map(article => ({
