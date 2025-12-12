@@ -1,5 +1,5 @@
 // utils/promptManager.js
-// const Prompt = require('../models/promptModel'); // <--- TEMP: Commented out to fix crash
+const Prompt = require('../models/aiPrompts'); // <--- UPDATED to new filename
 const redis = require('./redisClient');
 const logger = require('./logger');
 
@@ -57,7 +57,7 @@ Respond ONLY in valid JSON.
 
 class PromptManager {
     
-    // --- 1. Fetch Logic (Cache -> Fallback) ---
+    // --- 1. Fetch Logic (Cache -> DB -> Fallback) ---
     async getTemplate(type = 'ANALYSIS') {
         const CACHE_KEY = `PROMPT_${type}`;
 
@@ -69,8 +69,7 @@ class PromptManager {
             // Redis failure shouldn't stop us
         }
 
-        // B. Try MongoDB (DISABLED FOR RECOVERY)
-        /*
+        // B. Try MongoDB
         try {
             const doc = await Prompt.findOne({ type, active: true }).sort({ version: -1 }).lean();
             if (doc && doc.text) {
@@ -81,7 +80,6 @@ class PromptManager {
         } catch (e) {
             logger.warn(`⚠️ Prompt DB Fetch failed: ${e.message}`);
         }
-        */
 
         // C. Fallback
         return DEFAULT_ANALYSIS_PROMPT;
