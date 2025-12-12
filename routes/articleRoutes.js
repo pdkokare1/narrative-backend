@@ -1,8 +1,10 @@
-// routes/articleRoutes.js (FINAL v5.0 - Redis Caching)
+// routes/articleRoutes.js (FINAL v5.1 - Secured & Validated)
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
-const asyncHandler = require('../utils/asyncHandler'); 
+const asyncHandler = require('../utils/asyncHandler');
+const validate = require('../middleware/validate'); // <--- NEW
+const schemas = require('../utils/validationSchemas'); // <--- NEW
 
 // Models
 const Article = require('../models/articleModel');
@@ -10,7 +12,7 @@ const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
 
 // Cache
-const redis = require('../utils/redisClient'); // <--- NEW: Import Redis
+const redis = require('../utils/redisClient');
 
 // --- Helper: Merge & Deduplicate Arrays ---
 const mergeResults = (arr1, arr2) => {
@@ -73,16 +75,11 @@ router.get('/trending', asyncHandler(async (req, res) => {
     res.status(200).json({ topics: topTopics });
 }));
 
-// --- 2. Search (Hybrid) ---
-router.get('/search', asyncHandler(async (req, res) => {
-    const query = req.query.q;
-    if (!query || query.trim().length === 0) {
-        res.status(400);
-        throw new Error('Query required');
-    }
-
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50);
-    const cleanQuery = query.trim();
+// --- 2. Search (Hybrid & Validated) ---
+// Protected by 'validate(schemas.search, 'query')'
+router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req, res) => {
+    const { q, limit } = req.query; // Already validated & defaulted by Joi
+    const cleanQuery = q.trim();
 
     const textPromise = Article.find(
       { $text: { $search: cleanQuery } },
@@ -161,14 +158,11 @@ router.get('/articles/for-you', asyncHandler(async (req, res) => {
     res.status(200).json({ articles: result, meta: { basedOnCategory: favoriteCategory, usualLean: usualLean } });
 }));
 
-// --- 4. Save/Unsave Article ---
-router.post('/articles/:id/save', asyncHandler(async (req, res) => {
+// --- 4. Save/Unsave Article (Validated) ---
+// Protected by 'validate(schemas.saveArticle, 'params')'
+router.post('/articles/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { uid } = req.user;
-    if (!mongoose.Types.ObjectId.isValid(id)) {
-        res.status(400);
-        throw new Error('Invalid article ID');
-    }
 
     const articleObjectId = new mongoose.Types.ObjectId(id);
     const profile = await Profile.findOne({ userId: uid });
@@ -203,15 +197,11 @@ router.get('/articles/saved', asyncHandler(async (req, res) => {
     res.status(200).json({ articles: profile.savedArticles || [] });
 }));
 
-// --- 6. Cluster Fetch (Redis Cached) ---
-router.get('/cluster/:clusterId', asyncHandler(async (req, res) => {
-    const clusterIdNum = parseInt(req.params.clusterId);
-    if (isNaN(clusterIdNum)) {
-        res.status(400);
-        throw new Error('Invalid cluster ID');
-    }
-
-    const CACHE_KEY = `cluster_view_${clusterIdNum}`;
+// --- 6. Cluster Fetch (Redis Cached & Validated) ---
+// Protected by 'validate(schemas.clusterView, 'params')'
+router.get('/cluster/:clusterId', validate(schemas.clusterView, 'params'), asyncHandler(async (req, res) => {
+    const { clusterId } = req.params; // Guaranteed number by Joi
+    const CACHE_KEY = `cluster_view_${clusterId}`;
 
     // A. Check Redis
     const cachedCluster = await redis.get(CACHE_KEY);
@@ -221,7 +211,7 @@ router.get('/cluster/:clusterId', asyncHandler(async (req, res) => {
     }
 
     // B. Query DB
-    const articles = await Article.find({ clusterId: clusterIdNum }).sort({ trustScore: -1, publishedAt: -1 }).lean();
+    const articles = await Article.find({ clusterId }).sort({ trustScore: -1, publishedAt: -1 }).lean();
 
     const grouped = articles.reduce((acc, article) => {
       const lean = article.politicalLean || 'Not Applicable';
@@ -234,30 +224,22 @@ router.get('/cluster/:clusterId', asyncHandler(async (req, res) => {
 
     const responseData = { ...grouped, stats: { total: articles.length } };
 
-    // C. Save to Redis (TTL: 600s = 10 mins)
+    // C. Save to Redis
     await redis.set(CACHE_KEY, responseData, 600);
 
     res.set('Cache-Control', 'public, max-age=600');
     res.status(200).json(responseData);
 }));
 
-// --- 7. Main Feed ---
-router.get('/articles', asyncHandler(async (req, res) => {
-    const filters = {
-      category: req.query.category && req.query.category !== 'All Categories' ? String(req.query.category) : null,
-      lean: req.query.lean && req.query.lean !== 'All Leans' ? String(req.query.lean) : null,
-      region: req.query.region && req.query.region !== 'All' ? String(req.query.region) : null,
-      articleType: req.query.articleType && req.query.articleType !== 'All Types' ? String(req.query.articleType) : null,
-      quality: req.query.quality,
-      sort: String(req.query.sort || 'Latest First'),
-      limit: Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50),
-      offset: Math.max(parseInt(req.query.offset) || 0, 0),
-    };
+// --- 7. Main Feed (Validated) ---
+// Protected by 'validate(schemas.feedFilters, 'query')'
+router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(async (req, res) => {
+    const filters = req.query; // Data is already cleaner/typed by Joi
 
     const matchStage = {};
-    if (filters.category) matchStage.category = filters.category;
-    if (filters.lean) matchStage.politicalLean = filters.lean;
-    if (filters.region) matchStage.country = filters.region;
+    if (filters.category && filters.category !== 'All Categories') matchStage.category = filters.category;
+    if (filters.lean && filters.lean !== 'All Leans') matchStage.politicalLean = filters.lean;
+    if (filters.region && filters.region !== 'All') matchStage.country = filters.region;
     
     if (filters.articleType === 'Hard News') matchStage.analysisType = 'Full';
     else if (filters.articleType === 'Opinion & Reviews') matchStage.analysisType = 'SentimentOnly';
