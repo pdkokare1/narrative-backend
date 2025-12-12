@@ -1,4 +1,4 @@
-// server.js (FINAL SECURE)
+// server.js (FINAL SECURE - Structured Logging)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -11,6 +11,7 @@ require('dotenv').config();
 const admin = require('firebase-admin');
 const newsFetcher = require('./jobs/newsFetcher');
 const { errorHandler } = require('./middleware/errorMiddleware');
+const logger = require('./utils/logger'); // <--- NEW: Import Logger
 
 // Routes
 const profileRoutes = require('./routes/profileRoutes');
@@ -25,9 +26,10 @@ const emergencyService = require('./services/emergencyService');
 
 const app = express();
 
-// --- DEBUG: Log every request ---
+// --- 1. Structured Request Logging ---
 app.use((req, res, next) => {
-    console.log(`📥 [REQUEST] ${req.method} ${req.url}`);
+    // Log as 'http' level so it's filterable
+    logger.http(`${req.method} ${req.url}`);
     next();
 });
 
@@ -60,10 +62,10 @@ try {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
-    console.log('✅ Firebase Admin SDK Initialized');
+    logger.info('Firebase Admin SDK Initialized');
   }
 } catch (error) {
-  console.error('❌ Firebase Admin Init Error:', error.message);
+  logger.error(`Firebase Admin Init Error: ${error.message}`);
 }
 
 // Rate Limiter
@@ -75,7 +77,7 @@ const apiLimiter = rateLimit({
 });
 app.use('/api/', apiLimiter); 
 
-// Security Middleware (Defined but not mounted yet)
+// Security Middleware
 const checkAppCheck = async (req, res, next) => {
   const appCheckToken = req.header('X-Firebase-AppCheck');
   if (!appCheckToken) {
@@ -86,7 +88,7 @@ const checkAppCheck = async (req, res, next) => {
     await admin.appCheck().verifyToken(appCheckToken);
     next(); 
   } catch (err) {
-    console.warn('⚠️ App Check Error:', err.message);
+    logger.warn(`App Check Error: ${err.message}`);
     res.status(403);
     throw new Error('Forbidden: Invalid App Check token.');
   }
@@ -103,19 +105,16 @@ const checkAuth = async (req, res, next) => {
     req.user = decodedToken;
     next();
   } catch (error) {
-    console.warn('⚠️ Auth Error:', error.code, error.message);
+    logger.warn(`Auth Error: ${error.code || 'Unknown'} - ${error.message}`);
     res.status(403);
     throw new Error('Forbidden: Invalid or expired token');
   }
 };
 
-// --- MOUNT PUBLIC ROUTES FIRST (No Auth Required) ---
+// --- Mount Routes ---
 app.use('/api/assets', assetGenRoutes); 
-
-// --- MOUNT SECURE ROUTES (Auth Required) ---
 app.use('/api/profile', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), profileRoutes);
 app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), activityRoutes);
-// For now, let's keep article/emergency routes open or lightly protected if needed
 app.use('/api/emergency-resources', emergencyRoutes);
 app.use('/api/tts', ttsRoutes); 
 app.use('/api/migration', migrationRoutes); 
@@ -128,18 +127,20 @@ app.post('/api/fetch-news', async (req, res) => {
   res.status(202).json({ message: 'Job started.' });
 });
 
+// Cron Schedule
 cron.schedule('*/30 * * * *', () => { 
-    console.log('⏰ Cron Triggered: Starting News Fetch...');
+    logger.info('⏰ Cron Triggered: Starting News Fetch...');
     newsFetcher.run();
 });
 
+// Database Connection
 if (process.env.MONGODB_URI) {
     mongoose.connect(process.env.MONGODB_URI)
         .then(async () => {
-            console.log('✅ MongoDB Connected');
+            logger.info('MongoDB Connected');
             await emergencyService.initializeEmergencyContacts();
         })
-        .catch(err => console.error("❌ MongoDB Connection Failed:", err.message));
+        .catch(err => logger.error(`MongoDB Connection Failed: ${err.message}`));
 }
 
 app.use(errorHandler);
@@ -148,7 +149,7 @@ const PORT = process.env.PORT || 3001;
 const HOST = '0.0.0.0'; 
 
 app.listen(PORT, HOST, () => {
-    console.log(`🚀 Server running on http://${HOST}:${PORT}`);
+    logger.info(`Server running on http://${HOST}:${PORT}`);
 });
 
 module.exports = app;
