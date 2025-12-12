@@ -5,6 +5,7 @@ const gatekeeper = require('../services/gatekeeperService');
 const aiService = require('../services/aiService'); 
 const clusteringService = require('../services/clusteringService');
 const Article = require('../models/articleModel');
+const logger = require('../utils/logger'); // <--- NEW: Import Logger
 
 let isFetchRunning = false;
 
@@ -15,7 +16,7 @@ function sleep(ms) {
 
 // --- Main Worker Function ---
 async function fetchAndAnalyzeNews() {
-  console.log('🔄 Job Started: Fetching news...');
+  logger.info('🔄 Job Started: Fetching news...');
   
   // Job Stats
   const stats = {
@@ -29,18 +30,18 @@ async function fetchAndAnalyzeNews() {
   try {
     const rawArticles = await newsService.fetchNews(); 
     if (!rawArticles || rawArticles.length === 0) {
-        console.log('Oscars: No new articles found.');
+        logger.warn('Job: No new articles found.');
         return;
     }
 
     stats.totalFetched = rawArticles.length;
-    console.log(`📡 Fetched ${stats.totalFetched} articles. Starting processing...`);
+    logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting processing...`);
 
     // --- PARALLEL PROCESSING (Batch Size 3) ---
     const BATCH_SIZE = 3; 
     for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
         const batch = rawArticles.slice(i, i + BATCH_SIZE);
-        console.log(`⚡ Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(rawArticles.length/BATCH_SIZE)}`);
+        logger.debug(`⚡ Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(rawArticles.length/BATCH_SIZE)}`);
         
         // Process batch and update stats
         const results = await Promise.all(batch.map(article => processSingleArticle(article)));
@@ -57,21 +58,11 @@ async function fetchAndAnalyzeNews() {
         await sleep(2000); 
     }
 
-    // --- FINAL REPORT ---
-    console.log(`
-    ===============================================
-    📊 JOB COMPLETE: News Processing Summary
-    ===============================================
-    📥 Fetched:    ${stats.totalFetched}
-    ✅ Saved:      ${stats.saved}
-    🗑️  Junk:       ${stats.junk} (Filtered)
-    ♻️  Duplicates: ${stats.duplicates}
-    ❌ Errors:     ${stats.errors}
-    ===============================================
-    `);
+    // --- FINAL REPORT (Structured Log) ---
+    logger.info('Job Complete: News Processing Summary', { stats });
 
   } catch (error) {
-    console.error('❌ Job Critical Failure:', error.message);
+    logger.error(`❌ Job Critical Failure: ${error.message}`);
   }
 }
 
@@ -88,11 +79,10 @@ async function processSingleArticle(article) {
         const gatekeeperResult = await gatekeeper.evaluateArticle(article);
         
         if (gatekeeperResult.isJunk) {
-            // Log logic is handled inside gatekeeperService, we just return status
             return 'JUNK';
         }
 
-        console.log(`🔍 Analyzing [${gatekeeperResult.type}]: "${article.title.substring(0, 30)}..."`);
+        logger.info(`🔍 Analyzing [${gatekeeperResult.type}]: "${article.title.substring(0, 30)}..."`);
 
         // 3. THE ANALYST (The Brain)
         const analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
@@ -106,18 +96,12 @@ async function processSingleArticle(article) {
             headline: article.title,
             summary: analysis.summary,
             source: article.source?.name,
-            
-            // Use the cleaner category from Gatekeeper/AI
             category: gatekeeperResult.category || analysis.category, 
             politicalLean: analysis.politicalLean,
-            
             url: article.url,
             imageUrl: article.urlToImage,
             publishedAt: article.publishedAt,
-            
-            // Set type based on Gatekeeper
             analysisType: gatekeeperResult.type === 'Hard News' ? 'Full' : 'SentimentOnly',
-            
             sentiment: analysis.sentiment,
             biasScore: analysis.biasScore, 
             biasLabel: analysis.biasLabel,
@@ -130,19 +114,15 @@ async function processSingleArticle(article) {
             reliabilityComponents: analysis.reliabilityComponents || {},
             trustScore: analysis.trustScore, 
             trustLevel: analysis.trustLevel,
-            
             coverageLeft: analysis.coverageLeft || 0,
             coverageCenter: analysis.coverageCenter || 0,
             coverageRight: analysis.coverageRight || 0,
-            
             clusterTopic: analysis.clusterTopic,
             country: analysis.country,
             primaryNoun: analysis.primaryNoun,
             secondaryNoun: analysis.secondaryNoun,
-            
             keyFindings: analysis.keyFindings || [],
             recommendations: analysis.recommendations || [],
-            
             analysisVersion: '3.2-Robust', 
             embedding: embedding || []
         };
@@ -151,11 +131,11 @@ async function processSingleArticle(article) {
         newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding);
         
         await Article.create(newArticleData);
-        console.log(`✅ Saved: ${newArticleData.headline.substring(0, 30)}...`);
+        logger.info(`✅ Saved: ${newArticleData.headline.substring(0, 30)}...`);
         return 'SAVED';
 
     } catch (error) {
-        console.error(`❌ Article Error (${article?.title?.substring(0,15)}...): ${error.message}`);
+        logger.error(`❌ Article Error (${article?.title?.substring(0,15)}...): ${error.message}`);
         return 'ERROR';
     }
 }
@@ -168,7 +148,7 @@ module.exports = {
     // Trigger the job safely
     run: async () => {
         if (isFetchRunning) {
-            console.warn("⚠️ Job skipped: Previous job still running.");
+            logger.warn("⚠️ Job skipped: Previous job still running.");
             return false; 
         }
         isFetchRunning = true;
