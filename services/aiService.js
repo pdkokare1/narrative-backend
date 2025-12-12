@@ -1,19 +1,12 @@
 // services/aiService.js
 const axios = require('axios');
 const { getAnalysisPrompt } = require('../utils/prompts');
+const KeyManager = require('../utils/KeyManager'); // <--- NEW: Central Manager
 
 // --- CONSTANTS ---
 const EMBEDDING_MODEL = "text-embedding-004";
 const FLASH_MODEL = "gemini-2.5-flash"; 
 const PRO_MODEL = "gemini-2.5-pro";     
-
-// Key Statuses
-const KEY_STATUS = {
-    ACTIVE: 'active',
-    COOLDOWN: 'cooldown',
-    FAILED: 'failed'
-};
-const COOLDOWN_MINUTES = 10;
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -21,70 +14,9 @@ function sleep(ms) {
 
 class AIService {
   constructor() {
-    this.apiKeys = this.loadApiKeys();
-    this.currentKeyIndex = 0;
-    this.keyStatus = new Map(); // Maps key to {status, lastFailed}
-    
-    this.apiKeys.forEach(key => {
-      this.keyStatus.set(key, { status: KEY_STATUS.ACTIVE, lastFailed: 0 });
-    });
-    console.log(`🤖 AI Service Initialized: ${this.apiKeys.length} keys loaded.`);
-  }
-
-  loadApiKeys() {
-    const keys = [];
-    for (let i = 1; i <= 20; i++) {
-      const key = process.env[`GEMINI_API_KEY_${i}`]?.trim();
-      if (key) keys.push(key);
-    }
-    const defaultKey = process.env.GEMINI_API_KEY?.trim();
-    if (keys.length === 0 && defaultKey) keys.push(defaultKey);
-    
-    if (keys.length === 0) console.warn("⚠️ No Gemini API keys found.");
-    return keys;
-  }
-
-  getValidApiKey() {
-    if (this.apiKeys.length === 0) throw new Error("No Gemini Keys available");
-    
-    for (let i = 0; i < this.apiKeys.length; i++) {
-        const key = this.apiKeys[this.currentKeyIndex];
-        const statusObj = this.keyStatus.get(key);
-
-        // Check if cooldown period is over
-        if (statusObj.status === KEY_STATUS.COOLDOWN) {
-            const cooldownEnd = statusObj.lastFailed + COOLDOWN_MINUTES * 60 * 1000;
-            if (Date.now() > cooldownEnd) {
-                this.keyStatus.set(key, { status: KEY_STATUS.ACTIVE, lastFailed: 0 });
-                console.log(`✅ Key ...${key.slice(-4)} cooldown ended. Back online.`);
-                return key;
-            }
-        }
-        
-        // Return active key
-        if (statusObj.status === KEY_STATUS.ACTIVE) {
-            this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-            return key;
-        }
-
-        // Move to next key if current one is on cooldown or failed
-        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-    }
-
-    throw new Error("All Gemini API keys are currently exhausted or on cooldown.");
-  }
-
-  recordFailure(apiKey, isRateLimit = false) {
-    if (apiKey) {
-        if (isRateLimit) {
-            this.keyStatus.set(apiKey, { status: KEY_STATUS.COOLDOWN, lastFailed: Date.now() });
-            console.warn(`❌ Rate Limit Hit on key ...${apiKey.slice(-4)}. Starting ${COOLDOWN_MINUTES}m cooldown.`);
-        } else {
-            // For general 400/500 errors, just mark it as failed (maybe permanently if it happens too much, but we keep it simple for now)
-            console.error(`⚠️ Permanent Error on key ...${apiKey.slice(-4)}. Skipping.`);
-            this.keyStatus.set(apiKey, { status: KEY_STATUS.FAILED, lastFailed: Date.now() });
-        }
-    }
+    // 1. Initialize Keys via Manager
+    KeyManager.loadKeys('GEMINI', 'GEMINI');
+    console.log(`🤖 AI Service Initialized`);
   }
 
   // --- Main Analysis Function ---
@@ -95,7 +27,8 @@ class AIService {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       let apiKey = '';
       try {
-        apiKey = this.getValidApiKey();
+        // 2. Get Valid Key from Manager
+        apiKey = KeyManager.getKey('GEMINI');
         
         const prompt = getAnalysisPrompt(article);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
@@ -117,11 +50,8 @@ class AIService {
           ]
         }, { timeout: 60000 });
 
-        // On success, reset the key status if it was temporarily failed/cooldown
-        const statusObj = this.keyStatus.get(apiKey);
-        if (statusObj && statusObj.status !== KEY_STATUS.ACTIVE) {
-             this.keyStatus.set(apiKey, { status: KEY_STATUS.ACTIVE, lastFailed: 0 });
-        }
+        // 3. Report Success (Resets error counters)
+        KeyManager.reportSuccess(apiKey);
         
         return this.parseResponse(response.data);
 
@@ -130,13 +60,16 @@ class AIService {
         const status = error.response?.status;
         
         if (status === 429) {
-             this.recordFailure(apiKey, true); // Rate Limit Hit -> Cooldown
-             await sleep(500); // Small pause before retrying with a new key
+             // 4. Report Rate Limit (Triggers Cooldown)
+             KeyManager.reportFailure(apiKey, true);
+             await sleep(500); 
         } else if (status >= 500) {
             console.warn(`⏳ AI Service (${targetModel}) 5xx Retry ${attempt}/${maxRetries}...`);
+            KeyManager.reportFailure(apiKey, false);
             await sleep(2000 * attempt); 
         } else {
-            this.recordFailure(apiKey, false); // General failure -> Mark as failed
+            // General failure (e.g. 400 Bad Request)
+            KeyManager.reportFailure(apiKey, false); 
             break; 
         }
       }
@@ -149,7 +82,7 @@ class AIService {
       if (!text) return null;
       let apiKey = '';
       try {
-          apiKey = this.getValidApiKey(); // Use the same rotation logic
+          apiKey = KeyManager.getKey('GEMINI');
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
           const safeText = text.substring(0, 8000); 
 
@@ -159,22 +92,19 @@ class AIService {
           });
 
           if (response.data?.embedding?.values) {
-              const statusObj = this.keyStatus.get(apiKey);
-              if (statusObj && statusObj.status !== KEY_STATUS.ACTIVE) {
-                   this.keyStatus.set(apiKey, { status: KEY_STATUS.ACTIVE, lastFailed: 0 });
-              }
+              KeyManager.reportSuccess(apiKey);
               return response.data.embedding.values;
           }
           return null;
       } catch (error) {
           const status = error.response?.status;
           if (status === 429) {
-              this.recordFailure(apiKey, true); // Rate Limit Hit -> Cooldown
+              KeyManager.reportFailure(apiKey, true);
           } else {
-              this.recordFailure(apiKey, false); // General failure
+              KeyManager.reportFailure(apiKey, false);
           }
           console.error(`❌ Embedding Failed: ${error.message}`);
-          throw new Error("Embedding service failure."); // Throw to stop the migration loop
+          throw new Error("Embedding service failure."); 
       }
   }
 
