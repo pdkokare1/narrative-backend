@@ -1,46 +1,28 @@
-// In file: models/profileModel.js
+// models/promptModel.js
 const mongoose = require('mongoose');
 
-const profileSchema = new mongoose.Schema({
-  // This links the profile to the Firebase Auth user
-  userId: { 
+const promptSchema = new mongoose.Schema({
+  type: { 
     type: String, 
     required: true, 
     unique: true, 
-    index: true 
+    enum: ['ANALYSIS', 'GATEKEEPER', 'ENTITY_EXTRACTION'] 
   },
-  email: { 
+  text: { 
     type: String, 
-    required: true, 
-    unique: true 
+    required: true 
   },
-  username: { 
-    type: String, 
-    required: true, 
-    unique: true, 
-    trim: true 
-  },
-  // We will use this for User Stats!
-  articlesViewedCount: { 
-    type: Number, 
-    default: 0 
-  },
-  comparisonsViewedCount: {
+  version: {
     type: Number,
-    default: 0
+    default: 1
   },
-  articlesSharedCount: {
-    type: Number,
-    default: 0
+  active: {
+    type: Boolean,
+    default: true
   },
-  // --- ADD THIS ---
-  savedArticles: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Article' // This links to your Article model
-  }]
-  // --- END ADD ---
+  description: String
 }, {
-  timestamps: true // Adds createdAt and updatedAt
+  timestamps: true
 });
 
-module.exports = mongoose.model('Profile', profileSchema);
+module.exports = mongoose.model('Prompt', promptSchema);
