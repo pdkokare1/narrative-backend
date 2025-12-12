@@ -1,4 +1,4 @@
-// routes/articleRoutes.js (FINAL v4.0 - Smart Trending Velocity)
+// routes/articleRoutes.js (FINAL v5.0 - Redis Caching)
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
@@ -8,7 +8,9 @@ const asyncHandler = require('../utils/asyncHandler');
 const Article = require('../models/articleModel');
 const Profile = require('../models/profileModel');
 const ActivityLog = require('../models/activityLogModel');
-const Cache = require('../models/cacheModel'); 
+
+// Cache
+const redis = require('../utils/redisClient'); // <--- NEW: Import Redis
 
 // --- Helper: Merge & Deduplicate Arrays ---
 const mergeResults = (arr1, arr2) => {
@@ -22,22 +24,20 @@ const mergeResults = (arr1, arr2) => {
     return Array.from(map.values());
 };
 
-// --- 1. Smart Trending Topics (In Focus) ---
+// --- 1. Smart Trending Topics (Redis Cached) ---
 router.get('/trending', asyncHandler(async (req, res) => {
     const CACHE_KEY = 'trending_topics_smart';
     
-    // A. Check Cache
-    const cachedDoc = await Cache.findOne({ key: CACHE_KEY }).lean();
-    if (cachedDoc) {
+    // A. Check Redis
+    const cachedData = await redis.get(CACHE_KEY);
+    if (cachedData) {
         res.set('Cache-Control', 'public, max-age=1800'); 
-        return res.status(200).json({ topics: cachedDoc.data });
+        return res.status(200).json({ topics: cachedData });
     }
 
     // B. Calculate Logic (48h Window)
-    // We look back 48 hours to capture developing stories
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     
-    // Step 1: Get Raw Stats from DB
     const rawStats = await Article.aggregate([
       { 
           $match: { 
@@ -49,34 +49,25 @@ router.get('/trending', asyncHandler(async (req, res) => {
           $group: { 
               _id: "$clusterTopic", 
               count: { $sum: 1 },
-              latestDate: { $max: "$publishedAt" } // Get the freshest article time
+              latestDate: { $max: "$publishedAt" } 
           } 
       },
-      { $match: { count: { $gte: 2 } } } // Filter out single-article noise
+      { $match: { count: { $gte: 2 } } } 
     ]);
 
-    // Step 2: Calculate Velocity Score in JS
-    // Score = Volume / (HoursSinceLatest + 2)
-    // This gives huge weight to "Freshness"
+    // Calculate Velocity Score
     const now = Date.now();
     const scoredTopics = rawStats.map(t => {
         const hoursAgo = (now - new Date(t.latestDate).getTime()) / (1000 * 60 * 60);
-        // Add 2 to hoursAgo to prevent division by zero and smooth out the curve
         const velocityScore = t.count * (10 / (hoursAgo + 2)); 
         return { topic: t._id, count: t.count, score: velocityScore };
     });
 
-    // Step 3: Sort by Score & Pick Top 7
     scoredTopics.sort((a, b) => b.score - a.score);
     const topTopics = scoredTopics.slice(0, 7);
 
-    // C. Save Cache
-    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 mins
-    await Cache.findOneAndUpdate(
-        { key: CACHE_KEY },
-        { data: topTopics, expiresAt },
-        { upsert: true, new: true }
-    );
+    // C. Save to Redis (TTL: 1800s = 30 mins)
+    await redis.set(CACHE_KEY, topTopics, 1800);
 
     res.set('Cache-Control', 'public, max-age=1800'); 
     res.status(200).json({ topics: topTopics });
@@ -93,13 +84,11 @@ router.get('/search', asyncHandler(async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 12, 1), 50);
     const cleanQuery = query.trim();
 
-    // Text Search
     const textPromise = Article.find(
       { $text: { $search: cleanQuery } },
       { score: { $meta: 'textScore' } }
     ).sort({ score: { $meta: 'textScore' }, publishedAt: -1 }).limit(limit).lean();
 
-    // Regex Search
     const regex = new RegExp(cleanQuery, 'i');
     const regexPromise = Article.find({
         $or: [{ headline: regex }, { clusterTopic: regex }, { category: regex }]
@@ -109,7 +98,6 @@ router.get('/search', asyncHandler(async (req, res) => {
     let combined = mergeResults(textResults, regexResults);
     const total = combined.length;
     
-    // Slice for page
     const results = combined.slice(0, limit).map(a => ({ ...a, clusterCount: 1 }));
 
     res.set('Cache-Control', 'public, max-age=600');
@@ -165,7 +153,6 @@ router.get('/articles/for-you', asyncHandler(async (req, res) => {
       ...challengeArticles.map(a => ({ ...a, suggestionType: 'Challenge' }))
     ];
 
-    // Shuffle
     for (let i = result.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [result[i], result[j]] = [result[j], result[i]];
@@ -216,7 +203,7 @@ router.get('/articles/saved', asyncHandler(async (req, res) => {
     res.status(200).json({ articles: profile.savedArticles || [] });
 }));
 
-// --- 6. Cluster Fetch ---
+// --- 6. Cluster Fetch (Redis Cached) ---
 router.get('/cluster/:clusterId', asyncHandler(async (req, res) => {
     const clusterIdNum = parseInt(req.params.clusterId);
     if (isNaN(clusterIdNum)) {
@@ -224,6 +211,16 @@ router.get('/cluster/:clusterId', asyncHandler(async (req, res) => {
         throw new Error('Invalid cluster ID');
     }
 
+    const CACHE_KEY = `cluster_view_${clusterIdNum}`;
+
+    // A. Check Redis
+    const cachedCluster = await redis.get(CACHE_KEY);
+    if (cachedCluster) {
+        res.set('Cache-Control', 'public, max-age=600');
+        return res.status(200).json(cachedCluster);
+    }
+
+    // B. Query DB
     const articles = await Article.find({ clusterId: clusterIdNum }).sort({ trustScore: -1, publishedAt: -1 }).lean();
 
     const grouped = articles.reduce((acc, article) => {
@@ -235,8 +232,13 @@ router.get('/cluster/:clusterId', asyncHandler(async (req, res) => {
       return acc;
     }, { left: [], center: [], right: [], reviews: [] }); 
 
+    const responseData = { ...grouped, stats: { total: articles.length } };
+
+    // C. Save to Redis (TTL: 600s = 10 mins)
+    await redis.set(CACHE_KEY, responseData, 600);
+
     res.set('Cache-Control', 'public, max-age=600');
-    res.status(200).json({ ...grouped, stats: { total: articles.length } });
+    res.status(200).json(responseData);
 }));
 
 // --- 7. Main Feed ---
