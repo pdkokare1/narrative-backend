@@ -1,10 +1,10 @@
-// routes/articleRoutes.js (FINAL v5.1 - Secured & Validated)
+// routes/articleRoutes.js (FINAL v5.2 - Search Caching Added)
 const express = require('express');
 const mongoose = require('mongoose');
 const router = express.Router();
 const asyncHandler = require('../utils/asyncHandler');
-const validate = require('../middleware/validate'); // <--- NEW
-const schemas = require('../utils/validationSchemas'); // <--- NEW
+const validate = require('../middleware/validate'); 
+const schemas = require('../utils/validationSchemas'); 
 
 // Models
 const Article = require('../models/articleModel');
@@ -75,12 +75,25 @@ router.get('/trending', asyncHandler(async (req, res) => {
     res.status(200).json({ topics: topTopics });
 }));
 
-// --- 2. Search (Hybrid & Validated) ---
+// --- 2. Search (Hybrid, Validated & Cached) ---
 // Protected by 'validate(schemas.search, 'query')'
 router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req, res) => {
     const { q, limit } = req.query; // Already validated & defaulted by Joi
-    const cleanQuery = q.trim();
+    const cleanQuery = q.trim().toLowerCase(); // Normalize case for caching
 
+    // --- NEW: Aggressive Caching Strategy ---
+    // We cache based on query and limit. 
+    // TTL: 1 Hour (3600s). Search results don't need to be live-live.
+    const CACHE_KEY = `search:${cleanQuery}:${limit}`;
+
+    const cachedSearch = await redis.get(CACHE_KEY);
+    if (cachedSearch) {
+        res.set('X-Cache', 'HIT'); // Debug header
+        res.set('Cache-Control', 'public, max-age=3600');
+        return res.status(200).json(cachedSearch);
+    }
+
+    // --- DB SEARCH (Expensive) ---
     const textPromise = Article.find(
       { $text: { $search: cleanQuery } },
       { score: { $meta: 'textScore' } }
@@ -96,9 +109,17 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
     const total = combined.length;
     
     const results = combined.slice(0, limit).map(a => ({ ...a, clusterCount: 1 }));
+    
+    const responsePayload = { articles: results, pagination: { total } };
 
+    // Save to Redis (Only cache if we found results)
+    if (results.length > 0) {
+        await redis.set(CACHE_KEY, responsePayload, 3600);
+    }
+
+    res.set('X-Cache', 'MISS');
     res.set('Cache-Control', 'public, max-age=600');
-    res.status(200).json({ articles: results, pagination: { total } });
+    res.status(200).json(responsePayload);
 }));
 
 // --- 3. "Balanced For You" Feed ---
