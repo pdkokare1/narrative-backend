@@ -1,10 +1,14 @@
-// routes/emergencyRoutes.js
+// routes/emergencyRoutes.js (FINAL v5.1 - Secured)
 const express = require('express');
 const router = express.Router();
 const emergencyService = require('../services/emergencyService');
 const asyncHandler = require('../utils/asyncHandler');
+const validate = require('../middleware/validate'); // <--- NEW
+const schemas = require('../utils/validationSchemas'); // <--- NEW
 
-router.get('/', asyncHandler(async (req, res) => {
+// --- GET Emergency Contacts (Validated) ---
+// Protected by 'validate(schemas.emergencyFilters, 'query')'
+router.get('/', validate(schemas.emergencyFilters, 'query'), asyncHandler(async (req, res) => {
     const filters = {
       scope: req.query.scope,
       country: req.query.country
