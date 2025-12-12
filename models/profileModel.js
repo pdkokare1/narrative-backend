@@ -42,5 +42,5 @@ const profileSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// CRITICAL: This must define 'Profile', NOT 'Prompt'
+// CRITICAL FIX: The name here MUST be 'Profile', not 'Prompt'
 module.exports = mongoose.model('Profile', profileSchema);
