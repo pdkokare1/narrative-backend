@@ -1,11 +1,11 @@
 // services/gatekeeperService.js
 const axios = require('axios');
+const KeyManager = require('../utils/KeyManager'); // <--- NEW: Central Manager
 
 // We use the 2.5 Flash model for high-speed categorization
 const MODEL_NAME = "gemini-2.5-flash"; 
 
 // --- OPTIMIZATION: Extended Junk Keywords ---
-// These catch common non-news items locally to save AI Token costs.
 const JUNK_KEYWORDS = [
     // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop',
@@ -30,27 +30,10 @@ const JUNK_KEYWORDS = [
 
 class GatekeeperService {
     constructor() {
-        this.apiKeys = this.loadApiKeys();
-        this.currentKeyIndex = 0;
-    }
-
-    loadApiKeys() {
-        // Reuse existing GEMINI keys from .env
-        const keys = [];
-        for (let i = 1; i <= 20; i++) {
-            const key = process.env[`GEMINI_API_KEY_${i}`]?.trim();
-            if (key) keys.push(key);
-        }
-        const defaultKey = process.env.GEMINI_API_KEY?.trim();
-        if (keys.length === 0 && defaultKey) keys.push(defaultKey);
-        return keys;
-    }
-
-    getNextApiKey() {
-        if (this.apiKeys.length === 0) throw new Error("No API Keys available for Gatekeeper");
-        const key = this.apiKeys[this.currentKeyIndex];
-        this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
-        return key;
+        // 1. Initialize Keys via Manager (Reusing GEMINI keys)
+        // Note: Gatekeeper uses the same pool as AI Service, which is fine.
+        // If you want separate quotas, you could use a different prefix like 'GATEKEEPER'.
+        KeyManager.loadKeys('GEMINI', 'GEMINI');
     }
 
     /**
@@ -84,56 +67,62 @@ class GatekeeperService {
         }
 
         // --- 2. AI EVALUATION ---
-        const apiKey = this.getNextApiKey();
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
-
-        // Minimal prompt to save tokens and speed up response
-        const prompt = `
-        Task: Classify this news article based on its headline and description.
-        
-        Headline: "${article.title}"
-        Description: "${article.description || ''}"
-        
-        Definitions:
-        - [Hard News]: Politics, Global Conflict, Economy, Justice, Science, Tech, Health, Education, Environment. (Requires deep analysis)
-        - [Soft News]: Sports, Entertainment, Lifestyle, Business, Human Interest, Travel, Food. (Requires summary only)
-        - [Junk]: Shopping/Deals, Celebrity Gossip, Spam, 404/Error pages, Betting/Gambling.
-        
-        Respond ONLY in JSON format:
-        {
-            "category": "Specific Category Name",
-            "type": "Hard News" | "Soft News" | "Junk",
-            "isJunk": boolean
-        }`;
-
+        let apiKey = '';
         try {
+            // 2. Get Valid Key
+            apiKey = KeyManager.getKey('GEMINI');
+            
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+
+            const prompt = `
+            Task: Classify this news article based on its headline and description.
+            
+            Headline: "${article.title}"
+            Description: "${article.description || ''}"
+            
+            Definitions:
+            - [Hard News]: Politics, Global Conflict, Economy, Justice, Science, Tech, Health, Education, Environment. (Requires deep analysis)
+            - [Soft News]: Sports, Entertainment, Lifestyle, Business, Human Interest, Travel, Food. (Requires summary only)
+            - [Junk]: Shopping/Deals, Celebrity Gossip, Spam, 404/Error pages, Betting/Gambling.
+            
+            Respond ONLY in JSON format:
+            {
+                "category": "Specific Category Name",
+                "type": "Hard News" | "Soft News" | "Junk",
+                "isJunk": boolean
+            }`;
+
             const response = await axios.post(url, {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: { 
                     responseMimeType: "application/json", 
-                    temperature: 0.1 // Low temperature for consistent categorization
+                    temperature: 0.1 
                 }
-            }, { timeout: 10000 }); // Fast timeout (10s) because Flash is quick
+            }, { timeout: 10000 }); 
+
+            // 3. Report Success
+            KeyManager.reportSuccess(apiKey);
 
             const text = response.data.candidates[0].content.parts[0].text;
-            // Sanitize and parse JSON
             const result = JSON.parse(text.replace(/```json|```/g, '').trim());
 
             return {
                 ...result,
-                // Assign the Model Recommendation based on type
-                // Hard News -> Expensive Pro Model
-                // Soft News -> Cheap Flash Model
                 recommendedModel: result.type === 'Hard News' ? 'gemini-2.5-pro' : 'gemini-2.5-flash'
             };
 
         } catch (error) {
+            // 4. Report Failure
+            const status = error.response?.status;
+            if (status === 429) {
+                KeyManager.reportFailure(apiKey, true);
+            } else {
+                KeyManager.reportFailure(apiKey, false);
+            }
+
             console.error(`Gatekeeper Error for "${article.title.substring(0, 20)}...":`, error.message);
             
-            // Fallback Logic:
-            // If the Gatekeeper fails (e.g., network glitch), we play it safe:
-            // 1. Assume it is NOT junk (so we don't lose news).
-            // 2. Default to Flash model to save costs on potential errors.
+            // Fallback Logic
             return { 
                 category: 'Other', 
                 type: 'Soft News', 
