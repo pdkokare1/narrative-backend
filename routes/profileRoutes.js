@@ -1,7 +1,9 @@
-// routes/profileRoutes.js (FINAL v5.0 - Redis Caching)
+// routes/profileRoutes.js (FINAL v5.1 - Secured)
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../utils/asyncHandler');
+const validate = require('../middleware/validate'); // <--- NEW
+const schemas = require('../utils/validationSchemas'); // <--- NEW
 
 // Models
 const Profile = require('../models/profileModel');
@@ -9,7 +11,7 @@ const ActivityLog = require('../models/activityLogModel');
 const Article = require('../models/articleModel');
 
 // Cache
-const redis = require('../utils/redisClient'); // <--- NEW: Import Redis
+const redis = require('../utils/redisClient');
 
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req, res) => {
@@ -24,15 +26,11 @@ router.get('/me', asyncHandler(async (req, res) => {
     res.status(200).json(profile);
 }));
 
-// --- 2. Create / Re-Link Profile ---
-router.post('/', asyncHandler(async (req, res) => {
+// --- 2. Create / Re-Link Profile (VALIDATED) ---
+// Now protected by 'validate(schemas.createProfile)'
+router.post('/', validate(schemas.createProfile), asyncHandler(async (req, res) => {
     const { username } = req.body;
     const { uid, email } = req.user; 
-
-    if (!username || username.trim().length < 3) {
-      res.status(400);
-      throw new Error('Username must be at least 3 characters');
-    }
     const cleanUsername = username.trim();
 
     // A. Check if Username is taken by SOMEONE ELSE
@@ -64,7 +62,7 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const CACHE_KEY = `digest_${userId}`;
 
-    // A. Cache Check (Redis)
+    // A. Cache Check
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
         return res.status(200).json(cachedData);
@@ -127,7 +125,7 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
       topCategory: Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0]
     };
 
-    // C. Save Cache (Redis TTL: 3600s = 1 hour)
+    // C. Save Cache (1 hr)
     await redis.set(CACHE_KEY, resultData, 3600);
 
     res.status(200).json(resultData);
@@ -138,13 +136,13 @@ router.get('/stats', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const CACHE_KEY = `stats_${userId}`;
 
-    // A. Cache Check (Redis)
+    // A. Cache Check
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
         return res.status(200).json(cachedData);
     }
 
-    // B. Heavy Aggregation
+    // B. Aggregation
     const stats = await ActivityLog.aggregate([
       { $match: { userId: userId } },
       { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' } },
@@ -208,7 +206,7 @@ router.get('/stats', asyncHandler(async (req, res) => {
       sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
     };
 
-    // C. Save Cache (Redis TTL: 900s = 15 minutes)
+    // C. Save Cache (15 mins)
     await redis.set(CACHE_KEY, results, 900);
 
     res.status(200).json(results);
