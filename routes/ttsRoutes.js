@@ -1,19 +1,18 @@
-// routes/ttsRoutes.js
+// routes/ttsRoutes.js (FINAL v5.1 - Secured)
 const express = require('express');
 const router = express.Router();
 const ttsService = require('../services/ttsService');
 const Article = require('../models/articleModel'); 
 const asyncHandler = require('../utils/asyncHandler');
+const validate = require('../middleware/validate'); // <--- NEW
+const schemas = require('../utils/validationSchemas'); // <--- NEW
 
-router.post('/get-audio', asyncHandler(async (req, res) => {
+// --- Generate/Get Audio (Validated) ---
+// Protected by 'validate(schemas.getAudio)'
+router.post('/get-audio', validate(schemas.getAudio), asyncHandler(async (req, res) => {
     const { text, voiceId, articleId } = req.body;
 
-    if (!articleId) {
-        res.status(400);
-        throw new Error("Article ID is required for caching.");
-    }
-
-    // 1. Check Database first
+    // 1. Check Database first (Cache Hit)
     const article = await Article.findById(articleId);
     
     if (article && article.audioUrl) {
@@ -21,7 +20,7 @@ router.post('/get-audio', asyncHandler(async (req, res) => {
     }
 
     // 2. Cache Miss: Generate New Audio
-    const targetVoiceId = voiceId || '21m00Tcm4TlvDq8ikWAM'; 
+    const targetVoiceId = voiceId || '21m00Tcm4TlvDq8ikWAM'; // Default voice if none provided
     const newAudioUrl = await ttsService.generateAndUpload(text, targetVoiceId, articleId);
 
     // 3. Save to Database
