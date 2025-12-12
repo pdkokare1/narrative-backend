@@ -1,4 +1,4 @@
-// server.js (FINAL SECURE - Structured Logging)
+// server.js (FINAL SECURE - Structured Logging & Task Queues)
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -9,9 +9,10 @@ const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const admin = require('firebase-admin');
-const newsFetcher = require('./jobs/newsFetcher');
+// --- UPDATED: Import Queue Manager instead of direct fetcher ---
+const queueManager = require('./jobs/queueManager'); 
 const { errorHandler } = require('./middleware/errorMiddleware');
-const logger = require('./utils/logger'); // <--- NEW: Import Logger
+const logger = require('./utils/logger'); 
 
 // Routes
 const profileRoutes = require('./routes/profileRoutes');
@@ -28,7 +29,6 @@ const app = express();
 
 // --- 1. Structured Request Logging ---
 app.use((req, res, next) => {
-    // Log as 'http' level so it's filterable
     logger.http(`${req.method} ${req.url}`);
     next();
 });
@@ -120,17 +120,17 @@ app.use('/api/tts', ttsRoutes);
 app.use('/api/migration', migrationRoutes); 
 app.use('/api', articleRoutes); 
 
-// Jobs
+// --- UPDATED: Jobs Endpoint (Now uses Queue) ---
 app.post('/api/fetch-news', async (req, res) => {
-  const started = await newsFetcher.run();
-  if (!started) return res.status(429).json({ message: 'Job is already running.' });
-  res.status(202).json({ message: 'Job started.' });
+  // Instead of running it directly, we add it to the queue
+  await queueManager.addFetchJob('manual-trigger', { source: 'api' });
+  res.status(202).json({ message: 'News fetch job added to queue.' });
 });
 
-// Cron Schedule
-cron.schedule('*/30 * * * *', () => { 
-    logger.info('⏰ Cron Triggered: Starting News Fetch...');
-    newsFetcher.run();
+// --- UPDATED: Cron Schedule (Now uses Queue) ---
+cron.schedule('*/30 * * * *', async () => { 
+    logger.info('⏰ Cron Triggered: Scheduling News Fetch...');
+    await queueManager.addFetchJob('cron-schedule', { source: 'cron' });
 });
 
 // Database Connection
