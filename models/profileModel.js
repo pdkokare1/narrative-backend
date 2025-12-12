@@ -37,10 +37,18 @@ const profileSchema = new mongoose.Schema({
   savedArticles: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Article' // Links to Article model
-  }]
+  }],
+  // --- NEW: Push Notification Token ---
+  fcmToken: {
+    type: String,
+    default: null
+  },
+  notificationsEnabled: {
+    type: Boolean,
+    default: false
+  }
 }, {
   timestamps: true
 });
 
-// CRITICAL FIX: The name here MUST be 'Profile', not 'Prompt'
 module.exports = mongoose.model('Profile', profileSchema);
