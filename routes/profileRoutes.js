@@ -1,9 +1,9 @@
-// routes/profileRoutes.js (FINAL v5.1 - Secured)
+// routes/profileRoutes.js (FINAL v5.2 - Notifications Added)
 const express = require('express');
 const router = express.Router();
 const asyncHandler = require('../utils/asyncHandler');
-const validate = require('../middleware/validate'); // <--- NEW
-const schemas = require('../utils/validationSchemas'); // <--- NEW
+const validate = require('../middleware/validate'); 
+const schemas = require('../utils/validationSchemas'); 
 
 // Models
 const Profile = require('../models/profileModel');
@@ -16,7 +16,7 @@ const redis = require('../utils/redisClient');
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req, res) => {
     const profile = await Profile.findOne({ userId: req.user.uid })
-      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles')
+      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled')
       .lean();
     
     if (!profile) {
@@ -27,7 +27,6 @@ router.get('/me', asyncHandler(async (req, res) => {
 }));
 
 // --- 2. Create / Re-Link Profile (VALIDATED) ---
-// Now protected by 'validate(schemas.createProfile)'
 router.post('/', validate(schemas.createProfile), asyncHandler(async (req, res) => {
     const { username } = req.body;
     const { uid, email } = req.user; 
@@ -57,7 +56,26 @@ router.post('/', validate(schemas.createProfile), asyncHandler(async (req, res) 
     res.status(201).json(newProfile);
 }));
 
-// --- 3. Weekly Digest (Redis Cached) ---
+// --- 3. Save Notification Token (NEW) ---
+router.post('/save-token', asyncHandler(async (req, res) => {
+    const { token } = req.body;
+    const { uid } = req.user;
+
+    if (!token) {
+        res.status(400);
+        throw new Error('Token is required');
+    }
+
+    await Profile.findOneAndUpdate(
+        { userId: uid }, 
+        { fcmToken: token, notificationsEnabled: true },
+        { new: true }
+    );
+
+    res.status(200).json({ message: 'Notification token saved' });
+}));
+
+// --- 4. Weekly Digest (Redis Cached) ---
 router.get('/weekly-digest', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const CACHE_KEY = `digest_${userId}`;
@@ -131,7 +149,7 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
     res.status(200).json(resultData);
 }));
 
-// --- 4. User Stats (Redis Cached) ---
+// --- 5. User Stats (Redis Cached) ---
 router.get('/stats', asyncHandler(async (req, res) => {
     const userId = req.user.uid;
     const CACHE_KEY = `stats_${userId}`;
