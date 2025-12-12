@@ -1,10 +1,9 @@
 // utils/promptManager.js
-const Prompt = require('../models/promptModel');
+// const Prompt = require('../models/promptModel'); // <--- TEMP: Commented out to fix crash
 const redis = require('./redisClient');
 const logger = require('./logger');
 
 // --- DEFAULT HARDCODED PROMPT (Fallback) ---
-// This ensures the system works even if the DB is empty.
 const DEFAULT_ANALYSIS_PROMPT = `
 Role: You are a Lead Editor for a global news wire.
 Task: Rewrite the following story into a breaking news brief.
@@ -58,7 +57,7 @@ Respond ONLY in valid JSON.
 
 class PromptManager {
     
-    // --- 1. Fetch Logic (Cache -> DB -> Fallback) ---
+    // --- 1. Fetch Logic (Cache -> Fallback) ---
     async getTemplate(type = 'ANALYSIS') {
         const CACHE_KEY = `PROMPT_${type}`;
 
@@ -70,7 +69,8 @@ class PromptManager {
             // Redis failure shouldn't stop us
         }
 
-        // B. Try MongoDB
+        // B. Try MongoDB (DISABLED FOR RECOVERY)
+        /*
         try {
             const doc = await Prompt.findOne({ type, active: true }).sort({ version: -1 }).lean();
             if (doc && doc.text) {
@@ -81,13 +81,13 @@ class PromptManager {
         } catch (e) {
             logger.warn(`⚠️ Prompt DB Fetch failed: ${e.message}`);
         }
+        */
 
         // C. Fallback
         return DEFAULT_ANALYSIS_PROMPT;
     }
 
     // --- 2. Interpolation Logic ---
-    // Replaces {{variable}} with actual data
     interpolate(template, data) {
         return template.replace(/\{\{(\w+)\}\}/g, (match, key) => {
             return data[key] !== undefined ? data[key] : match;
