@@ -12,32 +12,20 @@ import * as admin from 'firebase-admin';
 // Load environment variables
 dotenv.config();
 
-// Import local modules (Ignoring type checks for JS files during transition)
-// @ts-ignore
+// Import local modules
 import queueManager from './jobs/queueManager';
-// @ts-ignore
 import { errorHandler } from './middleware/errorMiddleware';
-// @ts-ignore
 import logger from './utils/logger';
-// @ts-ignore
 import emergencyService from './services/emergencyService';
 
 // Import Routes
-// @ts-ignore
 import profileRoutes from './routes/profileRoutes';
-// @ts-ignore
 import activityRoutes from './routes/activityRoutes';
-// @ts-ignore
 import articleRoutes from './routes/articleRoutes';
-// @ts-ignore
 import emergencyRoutes from './routes/emergencyRoutes';
-// @ts-ignore
 import ttsRoutes from './routes/ttsRoutes';
-// @ts-ignore
 import migrationRoutes from './routes/migrationRoutes';
-// @ts-ignore
 import assetGenRoutes from './routes/assetGenRoutes';
-// @ts-ignore
 import shareRoutes from './routes/shareRoutes';
 
 // Extend Express Request interface to include 'user'
@@ -136,7 +124,7 @@ const checkAuth = async (req: Request, res: Response, next: NextFunction) => {
 };
 
 // --- Mount Routes ---
-app.use('/share', shareRoutes); // New Social Proxy Route
+app.use('/share', shareRoutes); 
 app.use('/api/assets', assetGenRoutes); 
 app.use('/api/profile', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), profileRoutes);
 app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), activityRoutes);
