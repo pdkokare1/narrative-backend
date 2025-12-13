@@ -1,7 +1,7 @@
 // utils/promptManager.ts
 import Prompt from '../models/aiPrompts';
-import redis = require('./redisClient');
-import logger = require('./logger');
+import redis from './redisClient';
+import logger from './logger';
 
 const DEFAULT_ANALYSIS_PROMPT = `
 Role: You are a Lead Editor for a global news wire.
@@ -66,4 +66,4 @@ class PromptManager {
     }
 }
 
-export = new PromptManager();
+export default new PromptManager();
