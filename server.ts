@@ -37,6 +37,8 @@ import ttsRoutes from './routes/ttsRoutes';
 import migrationRoutes from './routes/migrationRoutes';
 // @ts-ignore
 import assetGenRoutes from './routes/assetGenRoutes';
+// @ts-ignore
+import shareRoutes from './routes/shareRoutes';
 
 // Extend Express Request interface to include 'user'
 declare global {
@@ -134,6 +136,7 @@ const checkAuth = async (req: Request, res: Response, next: NextFunction) => {
 };
 
 // --- Mount Routes ---
+app.use('/share', shareRoutes); // New Social Proxy Route
 app.use('/api/assets', assetGenRoutes); 
 app.use('/api/profile', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), profileRoutes);
 app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), activityRoutes);
