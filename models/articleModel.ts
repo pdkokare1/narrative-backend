@@ -1,14 +1,14 @@
 // models/articleModel.ts
 import mongoose, { Schema, Document, Model } from 'mongoose';
-import { IArticle } from '../types'; // Importing our new "Blueprint"
+import { IArticle } from '../types';
 
-// 1. Define the Document Type (Combines Mongoose features with our Interface)
-export interface ArticleDocument extends IArticle, Document {
+// FIX: We use "Omit" to exclude '_id' from IArticle so it doesn't conflict with Mongoose's Document._id
+export interface ArticleDocument extends Omit<IArticle, '_id'>, Document {
   createdAt: Date;
   updatedAt: Date;
 }
 
-// 2. Define the Schema (The Rules for MongoDB)
+// 2. Define the Schema
 const articleSchema = new Schema<ArticleDocument>({
   headline: { type: String, required: true, trim: true },
   summary: { type: String, required: true, trim: true },
