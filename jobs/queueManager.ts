@@ -1,12 +1,12 @@
-// jobs/queueManager.js
-const { Queue, Worker } = require('bullmq');
-const newsFetcher = require('./newsFetcher');
-const logger = require('../utils/logger');
+// jobs/queueManager.ts
+import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
+import newsFetcher from './newsFetcher';
+// @ts-ignore
+import logger from '../utils/logger';
 
 // --- 1. Redis Connection Config ---
-// BullMQ needs a specific connection setup. We parse the REDIS_URL from Railway.
 const redisUrl = process.env.REDIS_URL;
-let connectionConfig;
+let connectionConfig: ConnectionOptions | undefined;
 
 if (redisUrl) {
     try {
@@ -16,14 +16,12 @@ if (redisUrl) {
             port: Number(url.port),
             password: url.password,
             username: url.username,
-            // BullMQ requires this specifically for stability
             maxRetriesPerRequest: null 
         };
-        // Handle TLS (Railway Redis usually requires this if not on a private network)
         if (url.protocol === 'rediss:') {
             connectionConfig.tls = { rejectUnauthorized: false };
         }
-    } catch (e) {
+    } catch (e: any) {
         logger.error(`❌ Invalid REDIS_URL: ${e.message}`);
     }
 }
@@ -33,18 +31,18 @@ const QUEUE_NAME = 'news-fetch-queue';
 const newsQueue = new Queue(QUEUE_NAME, { 
     connection: connectionConfig,
     defaultJobOptions: {
-        removeOnComplete: 100, // Keep last 100 logs
-        removeOnFail: 500,     // Keep error logs for debugging
-        attempts: 3,           // Retry 3 times if it fails
+        removeOnComplete: 100, 
+        removeOnFail: 500,     
+        attempts: 3,           
         backoff: {
             type: 'exponential',
-            delay: 5000        // Wait 5s, then 10s, etc.
+            delay: 5000        
         }
     }
 });
 
-// --- 3. Define the Worker (The Processor) ---
-const newsWorker = new Worker(QUEUE_NAME, async (job) => {
+// --- 3. Define the Worker ---
+const newsWorker = new Worker(QUEUE_NAME, async (job: Job) => {
     logger.info(`👷 Worker started job: ${job.name} (ID: ${job.id})`);
     
     try {
@@ -52,36 +50,37 @@ const newsWorker = new Worker(QUEUE_NAME, async (job) => {
         const result = await newsFetcher.run();
         
         if (!result) {
-            // If run() returned false, it means it was already running or skipped
             return { status: 'skipped', reason: 'concurrent_execution' };
         }
         return { status: 'completed' };
-    } catch (err) {
+    } catch (err: any) {
         logger.error(`❌ Worker Job Failed: ${err.message}`);
-        throw err; // Throwing triggers the BullMQ retry logic
+        throw err; 
     }
 }, { 
     connection: connectionConfig,
-    concurrency: 1 // Only run 1 fetch job at a time to prevent rate limits
+    concurrency: 1 
 });
 
-// --- 4. Event Listeners (Monitoring) ---
-newsWorker.on('completed', (job) => {
+// --- 4. Event Listeners ---
+newsWorker.on('completed', (job: Job) => {
     logger.info(`✅ Job ${job.id} completed successfully.`);
 });
 
-newsWorker.on('failed', (job, err) => {
-    logger.error(`🔥 Job ${job.id} failed: ${err.message}`);
+newsWorker.on('failed', (job: Job | undefined, err: Error) => {
+    if (job) {
+        logger.error(`🔥 Job ${job.id} failed: ${err.message}`);
+    } else {
+        logger.error(`🔥 Job failed (no ID): ${err.message}`);
+    }
 });
 
-// --- 5. Public API ---
-module.exports = {
-    // Add a job to the queue
-    addFetchJob: async (name = 'scheduled-fetch', data = {}) => {
+// --- 5. Export ---
+const queueManager = {
+    addFetchJob: async (name: string = 'scheduled-fetch', data: any = {}) => {
         return await newsQueue.add(name, data);
     },
     
-    // Get queue status (for admin dashboards)
     getStats: async () => {
         const [waiting, active, completed, failed] = await Promise.all([
             newsQueue.getWaitingCount(),
@@ -92,3 +91,5 @@ module.exports = {
         return { waiting, active, completed, failed };
     }
 };
+
+export default queueManager;
