@@ -71,7 +71,6 @@ async function processSingleArticle(article: any): Promise<string> {
                 clusterTopic: existingMatch.clusterTopic,
                 country: 'Global',
                 clusterId: existingMatch.clusterId,
-                // Ensure we don't clone the ID
             };
         } else {
             // New Analysis required
@@ -115,7 +114,8 @@ async function processSingleArticle(article: any): Promise<string> {
         return isSemanticSkip ? 'SAVED_SEMANTIC' : 'SAVED_FRESH';
 
     } catch (error: any) {
-        logger.error(`❌ Article Pipeline Error (${article?.title?.substring(0,15)}...): ${error.message}`);
+        // Reduced log noise for common errors
+        logger.error(`❌ Article Pipeline Error: ${error.message}`);
         return 'ERROR_PIPELINE';
     }
 }
@@ -140,7 +140,7 @@ async function fetchAndAnalyzeNews() {
     logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline...`);
 
     // B. Process in Batches
-    const BATCH_SIZE = 3; 
+    const BATCH_SIZE = 5; // Increased from 3 to 5 for efficiency
     for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
         const batch = rawArticles.slice(i, i + BATCH_SIZE);
         
@@ -154,7 +154,8 @@ async function fetchAndAnalyzeNews() {
             else stats.errors++;
         });
         
-        await sleep(2000); // Rate limit safety
+        // Slight pause to be nice to external APIs
+        if (i + BATCH_SIZE < rawArticles.length) await sleep(1000); 
     }
 
     logger.info('Job Complete: Summary', { stats });
@@ -166,4 +167,4 @@ async function fetchAndAnalyzeNews() {
   }
 }
 
-export = { run: fetchAndAnalyzeNews };
+export default { run: fetchAndAnalyzeNews };
