@@ -7,4 +7,4 @@ const asyncHandler = (fn: AsyncFunction) => (req: Request, res: Response, next: 
   Promise.resolve(fn(req, res, next)).catch(next);
 };
 
-export = asyncHandler;
+export default asyncHandler;
