@@ -24,7 +24,9 @@ class AIService {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       let apiKey = '';
       try {
-        apiKey = KeyManager.getKey('GEMINI');
+        // Updated: await getKey
+        apiKey = await KeyManager.getKey('GEMINI');
+        
         const prompt = await promptManager.getAnalysisPrompt(article);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
@@ -45,14 +47,14 @@ class AIService {
         const status = error.response?.status;
         
         if (status === 429) {
-             KeyManager.reportFailure(apiKey, true);
+             await KeyManager.reportFailure(apiKey, true);
              await sleep(500); 
         } else if (status >= 500) {
             console.warn(`⏳ AI Service (${targetModel}) 5xx Retry ${attempt}/${maxRetries}...`);
-            KeyManager.reportFailure(apiKey, false);
+            await KeyManager.reportFailure(apiKey, false);
             await sleep(2000 * attempt); 
         } else {
-            KeyManager.reportFailure(apiKey, false); 
+            await KeyManager.reportFailure(apiKey, false); 
             break; 
         }
       }
@@ -64,7 +66,9 @@ class AIService {
       if (!text) return null;
       let apiKey = '';
       try {
-          apiKey = KeyManager.getKey('GEMINI');
+          // Updated: await getKey
+          apiKey = await KeyManager.getKey('GEMINI');
+          
           const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
           const safeText = text.substring(0, 8000); 
 
@@ -81,9 +85,9 @@ class AIService {
       } catch (error: any) {
           const status = error.response?.status;
           if (status === 429) {
-              KeyManager.reportFailure(apiKey, true);
+              await KeyManager.reportFailure(apiKey, true);
           } else {
-              KeyManager.reportFailure(apiKey, false);
+              await KeyManager.reportFailure(apiKey, false);
           }
           console.error(`❌ Embedding Failed: ${error.message}`);
           throw new Error("Embedding service failure."); 
