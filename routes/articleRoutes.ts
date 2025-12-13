@@ -1,11 +1,8 @@
 // routes/articleRoutes.ts
 import express, { Request, Response } from 'express';
 import mongoose from 'mongoose';
-// @ts-ignore
 import asyncHandler from '../utils/asyncHandler';
-// @ts-ignore
 import validate from '../middleware/validate';
-// @ts-ignore
 import schemas from '../utils/validationSchemas';
 
 // Models
@@ -14,7 +11,6 @@ import Profile from '../models/profileModel';
 import ActivityLog from '../models/activityLogModel';
 
 // Cache
-// @ts-ignore
 import redis from '../utils/redisClient';
 
 const router = express.Router();
