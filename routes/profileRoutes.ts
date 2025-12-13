@@ -1,20 +1,17 @@
-// routes/profileRoutes.js (FINAL v5.2 - Notifications Added)
-const express = require('express');
+// routes/profileRoutes.ts
+import express, { Request, Response } from 'express';
+import asyncHandler from '../utils/asyncHandler';
+import validate from '../middleware/validate';
+import schemas from '../utils/validationSchemas';
+import Profile from '../models/profileModel';
+import ActivityLog from '../models/activityLogModel';
+import Article from '../models/articleModel';
+import redis from '../utils/redisClient';
+
 const router = express.Router();
-const asyncHandler = require('../utils/asyncHandler');
-const validate = require('../middleware/validate'); 
-const schemas = require('../utils/validationSchemas'); 
-
-// Models
-const Profile = require('../models/profileModel');
-const ActivityLog = require('../models/activityLogModel');
-const Article = require('../models/articleModel');
-
-// Cache
-const redis = require('../utils/redisClient');
 
 // --- 1. GET Profile ---
-router.get('/me', asyncHandler(async (req, res) => {
+router.get('/me', asyncHandler(async (req: Request, res: Response) => {
     const profile = await Profile.findOne({ userId: req.user.uid })
       .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled')
       .lean();
@@ -26,8 +23,8 @@ router.get('/me', asyncHandler(async (req, res) => {
     res.status(200).json(profile);
 }));
 
-// --- 2. Create / Re-Link Profile (VALIDATED) ---
-router.post('/', validate(schemas.createProfile), asyncHandler(async (req, res) => {
+// --- 2. Create / Re-Link Profile ---
+router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Request, res: Response) => {
     const { username } = req.body;
     const { uid, email } = req.user; 
     const cleanUsername = username.trim();
@@ -56,8 +53,8 @@ router.post('/', validate(schemas.createProfile), asyncHandler(async (req, res) 
     res.status(201).json(newProfile);
 }));
 
-// --- 3. Save Notification Token (NEW) ---
-router.post('/save-token', asyncHandler(async (req, res) => {
+// --- 3. Save Notification Token ---
+router.post('/save-token', asyncHandler(async (req: Request, res: Response) => {
     const { token } = req.body;
     const { uid } = req.user;
 
@@ -76,7 +73,7 @@ router.post('/save-token', asyncHandler(async (req, res) => {
 }));
 
 // --- 4. Weekly Digest (Redis Cached) ---
-router.get('/weekly-digest', asyncHandler(async (req, res) => {
+router.get('/weekly-digest', asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user.uid;
     const CACHE_KEY = `digest_${userId}`;
 
@@ -100,10 +97,10 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
     }
 
     let score = 0;
-    const leanCounts = {};
-    const categoryCounts = {};
+    const leanCounts: Record<string, number> = {};
+    const categoryCounts: Record<string, number> = {};
 
-    recentLogs.forEach(log => {
+    recentLogs.forEach((log: any) => {
       leanCounts[log.lean] = (leanCounts[log.lean] || 0) + 1;
       if (log.lean === 'Left') score -= 2;
       else if (log.lean === 'Left-Leaning') score -= 1;
@@ -143,24 +140,21 @@ router.get('/weekly-digest', asyncHandler(async (req, res) => {
       topCategory: Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0]
     };
 
-    // C. Save Cache (1 hr)
     await redis.set(CACHE_KEY, resultData, 3600);
 
     res.status(200).json(resultData);
 }));
 
 // --- 5. User Stats (Redis Cached) ---
-router.get('/stats', asyncHandler(async (req, res) => {
+router.get('/stats', asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user.uid;
     const CACHE_KEY = `stats_${userId}`;
 
-    // A. Cache Check
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
         return res.status(200).json(cachedData);
     }
 
-    // B. Aggregation
     const stats = await ActivityLog.aggregate([
       { $match: { userId: userId } },
       { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' } },
@@ -224,10 +218,9 @@ router.get('/stats', asyncHandler(async (req, res) => {
       sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
     };
 
-    // C. Save Cache (15 mins)
     await redis.set(CACHE_KEY, results, 900);
 
     res.status(200).json(results);
 }));
 
-module.exports = router;
+export default router;
