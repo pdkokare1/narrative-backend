@@ -1,14 +1,13 @@
-// services/aiService.js
-const axios = require('axios');
-const promptManager = require('../utils/promptManager'); // <--- NEW: Use Manager
-const KeyManager = require('../utils/KeyManager');
+// services/aiService.ts
+import axios from 'axios';
+import promptManager from '../utils/promptManager';
+import KeyManager from '../utils/KeyManager';
+import { IArticle } from '../types';
 
-// --- CONSTANTS ---
 const EMBEDDING_MODEL = "text-embedding-004";
-const FLASH_MODEL = "gemini-2.5-flash"; 
 const PRO_MODEL = "gemini-2.5-pro";     
 
-function sleep(ms) {
+function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
@@ -18,8 +17,7 @@ class AIService {
     console.log(`🤖 AI Service Initialized`);
   }
 
-  // --- Main Analysis Function ---
-  async analyzeArticle(article, targetModel = PRO_MODEL) {
+  async analyzeArticle(article: any, targetModel: string = PRO_MODEL): Promise<Partial<IArticle>> {
     const maxRetries = 2;
     let lastError = null;
 
@@ -27,10 +25,7 @@ class AIService {
       let apiKey = '';
       try {
         apiKey = KeyManager.getKey('GEMINI');
-        
-        // --- NEW: Get Dynamic Prompt ---
         const prompt = await promptManager.getAnalysisPrompt(article);
-        
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
         const response = await axios.post(url, {
@@ -38,23 +33,14 @@ class AIService {
           generationConfig: {
             responseMimeType: "application/json",
             temperature: 0.3,
-            topK: 32,
-            topP: 0.95,
             maxOutputTokens: 8192 
-          },
-          safetySettings: [
-            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-          ]
+          }
         }, { timeout: 60000 });
 
         KeyManager.reportSuccess(apiKey);
-        
         return this.parseResponse(response.data);
 
-      } catch (error) {
+      } catch (error: any) {
         lastError = error;
         const status = error.response?.status;
         
@@ -74,8 +60,7 @@ class AIService {
     throw lastError || new Error(`AI Analysis failed after ${maxRetries} attempts.`);
   }
 
-  // --- Vector Embedding Function ---
-  async createEmbedding(text) {
+  async createEmbedding(text: string): Promise<number[] | null> {
       if (!text) return null;
       let apiKey = '';
       try {
@@ -93,7 +78,7 @@ class AIService {
               return response.data.embedding.values;
           }
           return null;
-      } catch (error) {
+      } catch (error: any) {
           const status = error.response?.status;
           if (status === 429) {
               KeyManager.reportFailure(apiKey, true);
@@ -105,8 +90,7 @@ class AIService {
       }
   }
 
-  // --- Response Parser (Unchanged) ---
-  parseResponse(data) {
+  private parseResponse(data: any): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates');
         
@@ -126,7 +110,7 @@ class AIService {
         parsed.sentiment = parsed.sentiment || 'Neutral';
         parsed.politicalLean = parsed.politicalLean || 'Not Applicable';
         
-        const toNum = (v) => Math.round(Number(v) || 0);
+        const toNum = (v: any) => Math.round(Number(v) || 0);
         parsed.biasScore = toNum(parsed.biasScore);
         parsed.credibilityScore = toNum(parsed.credibilityScore);
         parsed.reliabilityScore = toNum(parsed.reliabilityScore);
@@ -138,10 +122,10 @@ class AIService {
 
         return parsed;
 
-    } catch (error) {
+    } catch (error: any) {
         throw new Error(`Failed to parse AI JSON: ${error.message}`);
     }
   }
 }
 
-module.exports = new AIService();
+export = new AIService();
