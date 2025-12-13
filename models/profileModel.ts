@@ -1,17 +1,24 @@
 // models/profileModel.ts
 import mongoose, { Schema, Document, Model } from 'mongoose';
-import { IUserProfile } from '../types';
+import { IUserProfile, IBadge } from '../types';
 
-// We explicitly tell TypeScript that 'savedArticles' are ObjectIds inside the database,
-// overriding the string[] definition from our generic interface.
+// We explicitly tell TypeScript that 'savedArticles' are ObjectIds inside the database
 export interface ProfileDocument extends Omit<IUserProfile, 'savedArticles'>, Document {
   savedArticles: mongoose.Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
 }
 
+const badgeSchema = new Schema<IBadge>({
+  id: { type: String, required: true },
+  label: { type: String, required: true },
+  icon: { type: String, required: true },
+  description: { type: String, required: true },
+  earnedAt: { type: Date, default: Date.now }
+}, { _id: false }); // No separate ID for badges inside the array
+
 const profileSchema = new Schema<ProfileDocument>({
-  // This links the profile to the Firebase Auth user
+  // Auth Link
   userId: { 
     type: String, 
     required: true, 
@@ -29,33 +36,26 @@ const profileSchema = new Schema<ProfileDocument>({
     unique: true, 
     trim: true 
   },
+  
   // User Stats
-  articlesViewedCount: { 
-    type: Number, 
-    default: 0 
-  },
-  comparisonsViewedCount: {
-    type: Number,
-    default: 0
-  },
-  articlesSharedCount: {
-    type: Number,
-    default: 0
-  },
+  articlesViewedCount: { type: Number, default: 0 },
+  comparisonsViewedCount: { type: Number, default: 0 },
+  articlesSharedCount: { type: Number, default: 0 },
+  
+  // Gamification (NEW)
+  currentStreak: { type: Number, default: 0 },
+  lastActiveDate: { type: Date, default: Date.now },
+  badges: [badgeSchema],
+
   // Saved Articles Link
   savedArticles: [{
     type: Schema.Types.ObjectId,
-    ref: 'Article' // Links to Article model
+    ref: 'Article' 
   }],
+  
   // Push Notification Token
-  fcmToken: {
-    type: String,
-    default: null
-  },
-  notificationsEnabled: {
-    type: Boolean,
-    default: false
-  }
+  fcmToken: { type: String, default: null },
+  notificationsEnabled: { type: Boolean, default: false }
 }, {
   timestamps: true
 });
