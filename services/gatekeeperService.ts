@@ -72,7 +72,9 @@ class GatekeeperService {
         // --- STEP 2: AI Check (Cost) ---
         let apiKey = '';
         try {
-            apiKey = KeyManager.getKey('GEMINI');
+            // Updated: await getKey
+            apiKey = await KeyManager.getKey('GEMINI');
+            
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
 
             const prompt = `
@@ -103,9 +105,9 @@ class GatekeeperService {
         } catch (error: any) {
             const status = error.response?.status;
             if (status === 429) {
-                KeyManager.reportFailure(apiKey, true);
+                await KeyManager.reportFailure(apiKey, true);
             } else {
-                KeyManager.reportFailure(apiKey, false);
+                await KeyManager.reportFailure(apiKey, false);
             }
             console.error(`Gatekeeper Error for "${article.title.substring(0, 20)}...":`, error.message);
             
