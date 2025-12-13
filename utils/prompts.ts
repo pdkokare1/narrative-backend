@@ -1,30 +1,16 @@
-// utils/prompts.js
-// FINAL v4.1: Direct Reporting & Strict Title Accuracy
+// utils/prompts.ts
 
-// --- 1. PERSONALITY CONFIGURATION ---
 const AI_PERSONALITY = {
-    // Length of the summary (Soft limit)
     MAX_WORDS: 75, 
-    
-    // Tone: "Direct Reporting"
     TONE: "Objective, authoritative, and direct (News Wire Style)",
-    
-    // How harsh should it be on bias?
     BIAS_STRICTNESS: "Strict. Flag subtle framing, omission, and emotional language.",
-    
-    // Words the AI should AVOID (Meta-commentary & Clichés)
     FORBIDDEN_WORDS: "delves, underscores, crucial, tapestry, landscape, moreover, notably, the article, the report, the author, discusses, highlights, according to"
 };
 
-// --- 2. STYLE GUIDELINES ---
 const STYLE_RULES = `
 Style Guidelines:
 - **DIRECT REPORTING:** Act as the primary source. Do NOT say "The article states" or "The report highlights." Just state the facts.
 - **TITLE ACCURACY:** Use the EXACT titles found in the source text.
-  - If the text says "President Trump", use "President".
-  - If the text says "Former President", use "Former President".
-  - If the text says "President-elect", use "President-elect".
-  - **CRITICAL:** Do NOT use your internal training data to assign titles. If the text does not use a title, refer to the person by name only.
 - Tone: ${AI_PERSONALITY.TONE}.
 - Length: Around ${AI_PERSONALITY.MAX_WORDS} words.
 - Structure: Use short, punchy sentences suitable for audio reading.
@@ -32,10 +18,9 @@ Style Guidelines:
 - Vocabulary: Do NOT use these words: ${AI_PERSONALITY.FORBIDDEN_WORDS}.
 `;
 
-/**
- * Generates the specific AI prompt based on the Gatekeeper's classification.
- */
-const getAnalysisPrompt = (article) => {
+// We use 'any' for the article input here because it comes from external APIs (GNews/NewsAPI)
+// and doesn't match our internal database model yet.
+export const getAnalysisPrompt = (article: any): string => {
   const title = article?.title || "No Title";
   const desc = article?.description || "No Description";
   const content = article?.content || ""; 
@@ -56,7 +41,6 @@ Date: ${date}
 1. **Summarize (News Wire Style)**:
    ${STYLE_RULES}
    - Report the "Who, What, When, Where, Why" immediately.
-   - Do not summarize the *existence* of the article (e.g., "This piece covers..."). Summarize the *event* (e.g., "Stock markets crashed today...").
 
 2. **Categorize**:
    - Choose ONE: Politics, Business, Economy, Global Conflict, Tech, Science, Health, Justice, Sports, Entertainment, Lifestyle, Crypto & Finance, Gaming.
@@ -100,5 +84,3 @@ Respond ONLY in valid JSON. Do not add markdown blocks.
   "recommendations": []
 }`;
 };
-
-module.exports = { getAnalysisPrompt };
