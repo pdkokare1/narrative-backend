@@ -60,7 +60,16 @@ export interface IArticle {
   updatedAt?: Date;
 }
 
-// --- 2. User Profile Interface ---
+// --- 2. Gamification Interfaces ---
+export interface IBadge {
+  id: string;        // e.g., 'streak_5', 'read_balanced'
+  label: string;     // e.g., '5 Day Streak'
+  icon: string;      // e.g., '🔥'
+  description: string;
+  earnedAt: Date;
+}
+
+// --- 3. User Profile Interface ---
 // Defines a user account.
 export interface IUserProfile {
   userId: string; // Firebase UID
@@ -72,6 +81,11 @@ export interface IUserProfile {
   comparisonsViewedCount: number;
   articlesSharedCount: number;
   
+  // Gamification
+  currentStreak: number;
+  lastActiveDate?: Date; // To calculate streaks
+  badges: IBadge[];
+  
   // Relationships
   savedArticles: string[]; // Array of Article IDs
   
@@ -80,7 +94,7 @@ export interface IUserProfile {
   notificationsEnabled: boolean;
 }
 
-// --- 3. Activity Log Interface ---
+// --- 4. Activity Log Interface ---
 // Defines a user action (view, share, etc.)
 export interface IActivityLog {
   userId: string;
@@ -89,7 +103,7 @@ export interface IActivityLog {
   timestamp?: Date;
 }
 
-// --- 4. Emergency Contact Interface ---
+// --- 5. Emergency Contact Interface ---
 export interface IEmergencyContact {
   category: string;
   serviceName: string;
@@ -101,7 +115,7 @@ export interface IEmergencyContact {
   isGlobal: boolean;
 }
 
-// --- 5. AI Prompt Interface ---
+// --- 6. AI Prompt Interface ---
 export interface IAIPrompt {
   type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION';
   text: string;
