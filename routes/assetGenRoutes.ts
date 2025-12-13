@@ -46,12 +46,14 @@ const SEGUES = [
 const runGeneration = async (res: Response) => {
     try {
         console.log(`🚀 STARTING SEGUE BATCH: ${SEGUES.length} items.`);
-        const results = [];
+        // FIX: Explicitly type the array as any[] to allow pushing objects
+        const results: any[] = [];
         
         for (const item of SEGUES) {
             try {
                 const url = await ttsService.generateAndUpload(item.text, item.voiceId, null, item.id);
                 results.push({ id: item.id, url, status: 'success' });
+                // 1 second safety pause
                 await new Promise(r => setTimeout(r, 1000));
             } catch (err: any) {
                 console.error(`❌ Failed ${item.id}:`, err.message);
