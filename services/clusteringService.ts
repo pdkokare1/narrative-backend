@@ -11,7 +11,8 @@ class ClusteringService {
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
         try {
-            const candidates = await Article.aggregate([
+            // FIX: We cast the pipeline to 'any' because TypeScript doesn't know $vectorSearch yet
+            const pipeline: any = [
                 {
                     "$vectorSearch": {
                         "index": "vector_index",
@@ -33,7 +34,9 @@ class ClusteringService {
                     }
                 },
                 { "$match": { "publishedAt": { "$gte": oneDayAgo } } }
-            ]);
+            ];
+
+            const candidates = await Article.aggregate(pipeline);
 
             if (candidates.length > 0 && candidates[0].score >= 0.92) {
                 return candidates[0] as IArticle;
@@ -50,7 +53,8 @@ class ClusteringService {
         // 1. Try Vector Matching
         if (embedding && embedding.length > 0) {
             try {
-                const candidates = await Article.aggregate([
+                // FIX: Cast pipeline to 'any'
+                const pipeline: any = [
                     {
                         "$vectorSearch": {
                             "index": "vector_index",
@@ -63,7 +67,9 @@ class ClusteringService {
                     },
                     { "$project": { "clusterId": 1, "score": { "$meta": "vectorSearchScore" } } },
                     { "$match": { "publishedAt": { "$gte": sevenDaysAgo } } }
-                ]);
+                ];
+
+                const candidates = await Article.aggregate(pipeline);
 
                 if (candidates.length > 0 && candidates[0].score >= 0.82) {
                     return candidates[0].clusterId;
@@ -94,7 +100,7 @@ class ClusteringService {
                 { new: true, upsert: true }
             );
             
-            let newId = counterDoc.data;
+            let newId = counterDoc?.data;
 
             if (newId === 1) {
                 const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select('clusterId').lean();
