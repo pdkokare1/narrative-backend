@@ -11,8 +11,14 @@ interface IKey {
 class KeyManager {
     private keys: Map<string, IKey>;
     private providerIndices: Map<string, number>;
-    private readonly COOLDOWN_TIME = 10 * 60 * 1000;
+    private readonly COOLDOWN_TIME = 10 * 60 * 1000; // 10 minutes
     private readonly MAX_ERRORS_BEFORE_COOLDOWN = 5;
+    
+    // Circuit Breaker State
+    private globalCircuitBreaker: boolean = false;
+    private circuitBreakerResetTime: number = 0;
+    private consecutiveGlobalErrors: number = 0;
+    private readonly GLOBAL_ERROR_THRESHOLD = 20;
 
     constructor() {
         this.keys = new Map();
@@ -43,7 +49,21 @@ class KeyManager {
         console.log(`🔐 KeyManager: Loaded ${foundKeys.length} keys for ${providerName}`);
     }
 
+    private checkCircuitBreaker() {
+        if (this.globalCircuitBreaker) {
+            if (Date.now() > this.circuitBreakerResetTime) {
+                console.log("🟢 Global Circuit Breaker RESET. Resuming operations.");
+                this.globalCircuitBreaker = false;
+                this.consecutiveGlobalErrors = 0;
+            } else {
+                throw new Error("⛔ Global Circuit Breaker Active. API requests suspended.");
+            }
+        }
+    }
+
     public getKey(providerName: string): string {
+        this.checkCircuitBreaker();
+
         const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
         if (allKeys.length === 0) throw new Error(`No keys configured for ${providerName}`);
 
@@ -52,6 +72,8 @@ class KeyManager {
 
         while (attempts < allKeys.length) {
             const keyObj = allKeys[currentIndex];
+            
+            // Check if cooldown expired
             if (keyObj.status === 'cooldown') {
                 const timeInCooldown = Date.now() - keyObj.lastFailed;
                 if (timeInCooldown > this.COOLDOWN_TIME) {
@@ -60,11 +82,13 @@ class KeyManager {
                     console.log(`✅ KeyManager: Key ...${keyObj.key.slice(-4)} revived for ${providerName}`);
                 }
             }
+
             if (keyObj.status === 'active') {
                 this.providerIndices.set(providerName, (currentIndex + 1) % allKeys.length);
                 keyObj.lastUsed = Date.now();
                 return keyObj.key;
             }
+            
             currentIndex = (currentIndex + 1) % allKeys.length;
             attempts++;
         }
@@ -77,11 +101,23 @@ class KeyManager {
             keyObj.errorCount = 0;
             if (keyObj.status !== 'active') keyObj.status = 'active';
         }
+        // Reduce global error count on success
+        if (this.consecutiveGlobalErrors > 0) this.consecutiveGlobalErrors--;
     }
 
     public reportFailure(key: string, isRateLimit: boolean = false): void {
+        this.consecutiveGlobalErrors++;
+        
+        // Trigger Circuit Breaker if too many failures across the board
+        if (this.consecutiveGlobalErrors >= this.GLOBAL_ERROR_THRESHOLD) {
+            this.globalCircuitBreaker = true;
+            this.circuitBreakerResetTime = Date.now() + (5 * 60 * 1000); // 5 minutes
+            console.error("⛔ CRITICAL: Too many API failures. Global Circuit Breaker TRIPPED.");
+        }
+
         const keyObj = this.keys.get(key);
         if (!keyObj) return;
+        
         keyObj.lastFailed = Date.now();
         if (isRateLimit) {
             keyObj.status = 'cooldown';
