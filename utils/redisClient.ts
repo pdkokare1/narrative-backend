@@ -1,6 +1,6 @@
 // utils/redisClient.ts
 import { createClient, RedisClientType } from 'redis';
-import logger = require('./logger');
+import logger from './logger';
 
 let client: RedisClientType | null = null;
 
@@ -35,6 +35,7 @@ const initRedis = async () => {
     }
 };
 
+// Initialize immediately
 initRedis();
 
 const redisClient = {
@@ -60,4 +61,4 @@ const redisClient = {
     isReady: (): boolean => !!(client && client.isOpen)
 };
 
-export = redisClient;
+export default redisClient;
