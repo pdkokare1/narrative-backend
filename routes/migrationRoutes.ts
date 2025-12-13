@@ -1,15 +1,14 @@
-// routes/migrationRoutes.js
-const express = require('express');
+// routes/migrationRoutes.ts
+import express, { Request, Response } from 'express';
+import Article from '../models/articleModel';
+// @ts-ignore
+import aiService from '../services/aiService';
+
 const router = express.Router();
-const Article = require('../models/articleModel');
-const aiService = require('../services/aiService');
 
 // POST /api/migration/backfill
-// Gives AI vectors to 10 old articles at a time
-router.post('/backfill', async (req, res) => {
+router.post('/backfill', async (req: Request, res: Response) => {
     try {
-        // 1. Find articles that DON'T have a vector yet
-        // We limit to 10 to prevent the server from timing out
         const articlesToFix = await Article.find({
             $or: [
                 { embedding: { $exists: false } },
@@ -23,13 +22,9 @@ router.post('/backfill', async (req, res) => {
 
         let successCount = 0;
 
-        // 2. Loop through and fix them
         for (const article of articlesToFix) {
             try {
-                // Generate the text to analyze
                 const textToEmbed = `${article.headline}. ${article.summary}`;
-                
-                // Ask AI for the vector
                 const embedding = await aiService.createEmbedding(textToEmbed);
 
                 if (embedding) {
@@ -38,12 +33,11 @@ router.post('/backfill', async (req, res) => {
                     successCount++;
                     console.log(`✅ Optimized: ${article.headline.substring(0, 30)}...`);
                 }
-            } catch (err) {
+            } catch (err: any) {
                 console.error(`❌ Failed to fix article ${article._id}:`, err.message);
             }
         }
 
-        // 3. Check how many are left
         const remaining = await Article.countDocuments({
             $or: [{ embedding: { $exists: false } }, { embedding: { $size: 0 } }]
         });
@@ -60,4 +54,4 @@ router.post('/backfill', async (req, res) => {
     }
 });
 
-module.exports = router;
+export default router;
