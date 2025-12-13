@@ -1,8 +1,8 @@
-// utils/redisClient.js
-const { createClient } = require('redis');
-const logger = require('./logger');
+// utils/redisClient.ts
+import { createClient, RedisClientType } from 'redis';
+import logger = require('./logger');
 
-let client = null;
+let client: RedisClientType | null = null;
 
 const initRedis = async () => {
     if (!process.env.REDIS_URL) {
@@ -14,33 +14,31 @@ const initRedis = async () => {
         client = createClient({
             url: process.env.REDIS_URL,
             socket: {
-                reconnectStrategy: (retries) => {
+                reconnectStrategy: (retries: number) => {
                     if (retries > 10) {
                         logger.error("❌ Redis max retries reached. Giving up.");
                         return new Error("Redis Retry Limit");
                     }
-                    return Math.min(retries * 100, 3000); // Backoff strategy
+                    return Math.min(retries * 100, 3000);
                 }
             }
         });
 
-        client.on('error', (err) => logger.warn(`Redis Client Error: ${err.message}`));
+        client.on('error', (err: Error) => logger.warn(`Redis Client Error: ${err.message}`));
         client.on('connect', () => logger.info('✅ Redis Connected'));
 
         await client.connect();
         return client;
-    } catch (err) {
+    } catch (err: any) {
         logger.error(`❌ Redis Connection Failed: ${err.message}`);
         return null;
     }
 };
 
-// Initialize immediately but don't block
 initRedis();
 
-module.exports = {
-    // Helper: Get parsed JSON
-    get: async (key) => {
+const redisClient = {
+    get: async (key: string): Promise<any | null> => {
         if (!client || !client.isOpen) return null;
         try {
             const data = await client.get(key);
@@ -50,16 +48,16 @@ module.exports = {
         }
     },
 
-    // Helper: Set stringified JSON with Expiry (TTL in seconds)
-    set: async (key, data, ttlSeconds = 900) => {
+    set: async (key: string, data: any, ttlSeconds: number = 900): Promise<void> => {
         if (!client || !client.isOpen) return;
         try {
             await client.set(key, JSON.stringify(data), { EX: ttlSeconds });
-        } catch (e) {
+        } catch (e: any) {
             logger.warn(`Redis Set Error: ${e.message}`);
         }
     },
     
-    // Check health
-    isReady: () => client && client.isOpen
+    isReady: (): boolean => !!(client && client.isOpen)
 };
+
+export = redisClient;
