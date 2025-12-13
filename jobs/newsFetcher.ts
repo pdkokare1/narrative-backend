@@ -11,75 +11,55 @@ function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchAndAnalyzeNews() {
-  logger.info('🔄 Job Started: Fetching news...');
-  
-  const stats = {
-      totalFetched: 0, saved: 0, duplicates: 0,
-      junk: 0, errors: 0, semanticSkips: 0 
-  };
+// --- PIPELINE STEPS ---
 
-  try {
-    const rawArticles = await newsService.fetchNews(); 
-    if (!rawArticles || rawArticles.length === 0) {
-        logger.warn('Job: No new articles found.');
-        return stats; 
-    }
-
-    stats.totalFetched = rawArticles.length;
-    logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting processing...`);
-
-    const BATCH_SIZE = 3; 
-    for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
-        const batch = rawArticles.slice(i, i + BATCH_SIZE);
-        logger.debug(`⚡ Processing batch ${Math.floor(i/BATCH_SIZE) + 1}/${Math.ceil(rawArticles.length/BATCH_SIZE)}`);
-        
-        const results = await Promise.all(batch.map(article => processSingleArticle(article)));
-        
-        results.forEach(res => {
-            if (res === 'SAVED') stats.saved++;
-            else if (res === 'DUPLICATE') stats.duplicates++;
-            else if (res === 'SEMANTIC_SKIP') stats.semanticSkips++;
-            else if (res === 'JUNK') stats.junk++;
-            else if (res === 'ERROR') stats.errors++;
-        });
-        
-        await sleep(2000); 
-    }
-
-    logger.info('Job Complete: News Processing Summary', { stats });
-    return stats;
-
-  } catch (error: any) {
-    logger.error(`❌ Job Critical Failure: ${error.message}`);
-    throw error; 
-  }
+// Step 1: Filter Duplicates (URL Check)
+async function isDuplicate(url: string): Promise<boolean> {
+    if (!url) return true;
+    return await Article.exists({ url }) !== null;
 }
+
+// Step 2: Semantic Check (Save $$$ by finding similar articles)
+async function findExistingAnalysis(embedding: number[] | undefined, country: string = 'Global') {
+    if (!embedding) return null;
+    return await clusteringService.findSemanticDuplicate(embedding, country);
+}
+
+// Step 3: Full AI Analysis
+async function performDeepAnalysis(article: any, model: string) {
+    return await aiService.analyzeArticle(article, model);
+}
+
+// --- MAIN PROCESSOR ---
 
 async function processSingleArticle(article: any): Promise<string> {
     try {
-        if (!article?.url || !article?.title) return 'ERROR';
+        if (!article?.url || !article?.title) return 'ERROR_INVALID';
         
-        const exists = await Article.exists({ url: article.url });
-        if (exists) return 'DUPLICATE';
+        // 1. Quick Dedupe
+        if (await isDuplicate(article.url)) return 'DUPLICATE_URL';
 
+        // 2. Gatekeeper (Junk Filter)
         const gatekeeperResult = await gatekeeper.evaluateArticle(article);
-        if (gatekeeperResult.isJunk) return 'JUNK';
+        if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
-        logger.info(`🔍 Analyzing [${gatekeeperResult.type}]: "${article.title.substring(0, 30)}..."`);
+        logger.info(`🔍 Processing [${gatekeeperResult.type}]: "${article.title.substring(0, 30)}..."`);
 
+        // 3. Create Embedding (Vector)
         const textToEmbed = `${article.title}. ${article.description}`;
         const embedding = await aiService.createEmbedding(textToEmbed);
 
-        const existingMatch = await clusteringService.findSemanticDuplicate(embedding || undefined, 'Global');
-
+        // 4. Semantic Search (Cost Saver)
+        const existingMatch = await findExistingAnalysis(embedding || undefined, 'Global');
+        
         let analysis: Partial<IArticle>;
         let isSemanticSkip = false;
 
         if (existingMatch) {
-            console.log(`💰 Saving Money! Inheriting analysis from: "${existingMatch.headline.substring(0,20)}..."`);
+            logger.info(`💰 Cost Saver! Inheriting analysis from: "${existingMatch.headline.substring(0,20)}..."`);
             isSemanticSkip = true;
             
+            // Clone the expensive data
             analysis = {
                 summary: existingMatch.summary, 
                 category: existingMatch.category,
@@ -90,23 +70,26 @@ async function processSingleArticle(article: any): Promise<string> {
                 analysisType: existingMatch.analysisType || 'Full', 
                 clusterTopic: existingMatch.clusterTopic,
                 country: 'Global',
-                clusterId: existingMatch.clusterId 
+                clusterId: existingMatch.clusterId,
+                // Ensure we don't clone the ID
             };
         } else {
-            analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
+            // New Analysis required
+            analysis = await performDeepAnalysis(article, gatekeeperResult.recommendedModel);
         }
 
+        // 5. Construct & Save
         const newArticleData: Partial<IArticle> = {
             headline: article.title,
-            summary: analysis.summary!,
+            summary: analysis.summary || "Summary Unavailable",
             source: article.source?.name,
-            category: analysis.category!, 
-            politicalLean: analysis.politicalLean!,
+            category: analysis.category || "General", 
+            politicalLean: analysis.politicalLean || "Not Applicable",
             url: article.url,
             imageUrl: article.urlToImage,
             publishedAt: article.publishedAt,
-            analysisType: analysis.analysisType!,
-            sentiment: analysis.sentiment!,
+            analysisType: analysis.analysisType || 'Full',
+            sentiment: analysis.sentiment || 'Neutral',
             
             biasScore: analysis.biasScore || 0,
             credibilityScore: analysis.credibilityScore || 0,
@@ -123,18 +106,64 @@ async function processSingleArticle(article: any): Promise<string> {
             embedding: embedding || []
         };
         
+        // Final Cluster Check (if not inherited)
         if (!newArticleData.clusterId) {
             newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding || undefined);
         }
         
         await Article.create(newArticleData);
-        logger.info(`✅ Saved ${isSemanticSkip ? '(Inherited)' : ''}: ${newArticleData.headline?.substring(0, 30)}...`);
-        return isSemanticSkip ? 'SEMANTIC_SKIP' : 'SAVED';
+        return isSemanticSkip ? 'SAVED_SEMANTIC' : 'SAVED_FRESH';
 
     } catch (error: any) {
-        logger.error(`❌ Article Error (${article?.title?.substring(0,15)}...): ${error.message}`);
-        return 'ERROR';
+        logger.error(`❌ Article Pipeline Error (${article?.title?.substring(0,15)}...): ${error.message}`);
+        return 'ERROR_PIPELINE';
     }
+}
+
+async function fetchAndAnalyzeNews() {
+  logger.info('🔄 Job Started: Fetching news...');
+  
+  const stats = {
+      totalFetched: 0, savedFresh: 0, savedSemantic: 0,
+      duplicates: 0, junk: 0, errors: 0
+  };
+
+  try {
+    // A. Fetch
+    const rawArticles = await newsService.fetchNews(); 
+    if (!rawArticles || rawArticles.length === 0) {
+        logger.warn('Job: No new articles found.');
+        return stats; 
+    }
+
+    stats.totalFetched = rawArticles.length;
+    logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline...`);
+
+    // B. Process in Batches
+    const BATCH_SIZE = 3; 
+    for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
+        const batch = rawArticles.slice(i, i + BATCH_SIZE);
+        
+        const results = await Promise.all(batch.map(article => processSingleArticle(article)));
+        
+        results.forEach(res => {
+            if (res === 'SAVED_FRESH') stats.savedFresh++;
+            else if (res === 'SAVED_SEMANTIC') stats.savedSemantic++;
+            else if (res === 'DUPLICATE_URL') stats.duplicates++;
+            else if (res === 'JUNK_CONTENT') stats.junk++;
+            else stats.errors++;
+        });
+        
+        await sleep(2000); // Rate limit safety
+    }
+
+    logger.info('Job Complete: Summary', { stats });
+    return stats;
+
+  } catch (error: any) {
+    logger.error(`❌ Job Critical Failure: ${error.message}`);
+    throw error; 
+  }
 }
 
 export = { run: fetchAndAnalyzeNews };
