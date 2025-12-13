@@ -1,7 +1,15 @@
-// models/articleModel.js (FINAL v3.4 - Optimized Indexes)
-const mongoose = require('mongoose');
+// models/articleModel.ts
+import mongoose, { Schema, Document, Model } from 'mongoose';
+import { IArticle } from '../types'; // Importing our new "Blueprint"
 
-const articleSchema = new mongoose.Schema({
+// 1. Define the Document Type (Combines Mongoose features with our Interface)
+export interface ArticleDocument extends IArticle, Document {
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+// 2. Define the Schema (The Rules for MongoDB)
+const articleSchema = new Schema<ArticleDocument>({
   headline: { type: String, required: true, trim: true },
   summary: { type: String, required: true, trim: true },
   source: { type: String, required: true, trim: true },
@@ -22,13 +30,13 @@ const articleSchema = new mongoose.Schema({
   // Scores
   biasScore: { type: Number, default: 0, min: 0, max: 100 },
   biasLabel: String,
-  biasComponents: mongoose.Schema.Types.Mixed,
+  biasComponents: Schema.Types.Mixed,
   credibilityScore: { type: Number, default: 0, min: 0, max: 100 },
   credibilityGrade: String,
-  credibilityComponents: mongoose.Schema.Types.Mixed,
+  credibilityComponents: Schema.Types.Mixed,
   reliabilityScore: { type: Number, default: 0, min: 0, max: 100 },
   reliabilityGrade: String,
-  reliabilityComponents: mongoose.Schema.Types.Mixed,
+  reliabilityComponents: Schema.Types.Mixed,
   trustScore: { type: Number, default: 0, min: 0, max: 100 },
   trustLevel: String,
   
@@ -56,7 +64,6 @@ const articleSchema = new mongoose.Schema({
 });
 
 // --- SMART SEARCH INDEX ---
-// Keeps full-text search capability
 articleSchema.index({ 
   headline: 'text', 
   summary: 'text', 
@@ -81,24 +88,14 @@ articleSchema.index({
 });
 
 // --- OPTIMIZED COMPOUND INDEXES ---
-// These specific pairings speed up your exact API queries 
-// while reducing the total work the database does on every save.
-
-// 1. Main Feed Filters (Filter + Sort by Date)
 articleSchema.index({ category: 1, publishedAt: -1 });
 articleSchema.index({ politicalLean: 1, publishedAt: -1 });
 articleSchema.index({ analysisType: 1, publishedAt: -1 });
 articleSchema.index({ country: 1, publishedAt: -1 }); 
-
-// 2. Cluster View (Filter by ID -> Sort by Trust -> Sort by Date)
-// Matches route: /cluster/:id
 articleSchema.index({ clusterId: 1, trustScore: -1, publishedAt: -1 });
-
-// 3. Trending Logic (Filter by Recent Date -> Group by Topic)
-// Matches route: /trending
 articleSchema.index({ publishedAt: -1, clusterTopic: 1 });
-
-// 4. Vector Search metadata filter
 articleSchema.index({ country: 1 }); 
 
-module.exports = mongoose.model('Article', articleSchema);
+const Article: Model<ArticleDocument> = mongoose.model<ArticleDocument>('Article', articleSchema);
+
+export default Article;
