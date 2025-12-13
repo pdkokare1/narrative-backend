@@ -1,6 +1,8 @@
-// middleware/errorMiddleware.js
-const errorHandler = (err, req, res, next) => {
-  // Default to 500 (Server Error) if status code isn't set
+// middleware/errorMiddleware.ts
+import { Request, Response, NextFunction } from 'express';
+
+const errorHandler = (err: any, req: Request, res: Response, next: NextFunction) => {
+  // Default to 500 (Server Error) if status code isn't set or is 200
   const statusCode = res.statusCode === 200 ? 500 : res.statusCode;
 
   console.error('🔥 Error:', err.message);
@@ -13,4 +15,4 @@ const errorHandler = (err, req, res, next) => {
   });
 };
 
-module.exports = { errorHandler };
+export { errorHandler };
