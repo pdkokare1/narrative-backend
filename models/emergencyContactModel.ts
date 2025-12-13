@@ -1,7 +1,13 @@
-// models/emergencyContactModel.js
-const mongoose = require('mongoose');
+// models/emergencyContactModel.ts
+import mongoose, { Schema, Document, Model } from 'mongoose';
+import { IEmergencyContact } from '../types';
 
-const emergencyContactSchema = new mongoose.Schema({
+export interface EmergencyContactDocument extends IEmergencyContact, Document {
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const emergencyContactSchema = new Schema<EmergencyContactDocument>({
   category: { 
     type: String, 
     required: true, 
@@ -18,7 +24,6 @@ const emergencyContactSchema = new mongoose.Schema({
     type: String, 
     required: true 
   },
-  // Scope helps us filter between "National" vs "Local"
   scope: { 
     type: String, 
     required: true, 
@@ -33,7 +38,6 @@ const emergencyContactSchema = new mongoose.Schema({
     default: 'India', 
     index: true 
   },
-  // Use this to show/hide generic global numbers if we add them later
   isGlobal: { 
     type: Boolean, 
     default: false 
@@ -42,4 +46,6 @@ const emergencyContactSchema = new mongoose.Schema({
   timestamps: true
 });
 
-module.exports = mongoose.model('EmergencyContact', emergencyContactSchema);
+const EmergencyContact: Model<EmergencyContactDocument> = mongoose.model<EmergencyContactDocument>('EmergencyContact', emergencyContactSchema);
+
+export default EmergencyContact;
