@@ -1,17 +1,13 @@
-// services/clusteringService.js (FINAL v5.1 - Semantic De-Duplication + Inheritance)
-const Article = require('../models/articleModel');
-const Cache = require('../models/cacheModel');
+// services/clusteringService.ts
+import Article from '../models/articleModel';
+import Cache from '../models/cacheModel';
+import { IArticle } from '../types';
 
 class ClusteringService {
     
-    /**
-     * NEW: Checks for a semantic duplicate (92%+ similarity).
-     * Returns the existing article with ALL scores so we can inherit them.
-     */
-    async findSemanticDuplicate(embedding, country) {
+    async findSemanticDuplicate(embedding: number[] | undefined, country: string): Promise<IArticle | null> {
         if (!embedding || embedding.length === 0) return null;
 
-        // Look back 24 hours only (duplicates happen in the same news cycle)
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
         try {
@@ -24,50 +20,30 @@ class ClusteringService {
                         "numCandidates": 10, 
                         "limit": 1,          
                         "filter": {
-                            "country": { "$eq": country } // Strict Country Filter
+                            "country": { "$eq": country }
                         }
                     }
                 },
                 {
                     "$project": {
-                        "clusterId": 1,
-                        "headline": 1,
-                        "category": 1,
-                        // --- IMPORTANT: Fetch data needed for Inheritance ---
-                        "politicalLean": 1,
-                        "biasScore": 1,
-                        "trustScore": 1,
-                        "sentiment": 1,
-                        "summary": 1,
-                        "analysisType": 1,
-                        "clusterTopic": 1,
-                        // ----------------------------------------------------
+                        "clusterId": 1, "headline": 1, "category": 1,
+                        "politicalLean": 1, "biasScore": 1, "trustScore": 1,
+                        "sentiment": 1, "summary": 1, "analysisType": 1, "clusterTopic": 1,
                         "score": { "$meta": "vectorSearchScore" } 
                     }
                 },
-                {
-                    "$match": {
-                        "publishedAt": { "$gte": oneDayAgo } 
-                    }
-                }
+                { "$match": { "publishedAt": { "$gte": oneDayAgo } } }
             ]);
 
-            // Threshold: 0.92 = Content is virtually identical (Syndication)
             if (candidates.length > 0 && candidates[0].score >= 0.92) {
-                return candidates[0];
+                return candidates[0] as IArticle;
             }
-        } catch (error) {
-            // Proceed without dedup if vector search fails
-            return null;
-        }
+        } catch (error) { /* Ignore */ }
         
         return null;
     }
 
-    /**
-     * Finds the best matching cluster ID for a new article.
-     */
-    async assignClusterId(newArticleData, embedding) {
+    async assignClusterId(newArticleData: Partial<IArticle>, embedding: number[] | undefined): Promise<number> {
         
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
         
@@ -82,25 +58,15 @@ class ClusteringService {
                             "queryVector": embedding,
                             "numCandidates": 50, 
                             "limit": 1,          
-                            "filter": {
-                                "country": { "$eq": newArticleData.country } 
-                            }
+                            "filter": { "country": { "$eq": newArticleData.country } }
                         }
                     },
-                    {
-                        "$project": {
-                            "clusterId": 1,
-                            "score": { "$meta": "vectorSearchScore" } 
-                        }
-                    },
+                    { "$project": { "clusterId": 1, "score": { "$meta": "vectorSearchScore" } } },
                     { "$match": { "publishedAt": { "$gte": sevenDaysAgo } } }
                 ]);
 
-                if (candidates.length > 0) {
-                    // 0.82 is a good "Topical" match (same story, different text)
-                    if (candidates[0].score >= 0.82) {
-                        return candidates[0].clusterId;
-                    }
+                if (candidates.length > 0 && candidates[0].score >= 0.82) {
+                    return candidates[0].clusterId;
                 }
             } catch (error) { /* Silent fallback */ }
         }
@@ -130,10 +96,9 @@ class ClusteringService {
             
             let newId = counterDoc.data;
 
-            // Safety check for first run
             if (newId === 1) {
                 const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select('clusterId').lean();
-                if (maxIdDoc?.clusterId > 0) {
+                if (maxIdDoc?.clusterId && maxIdDoc.clusterId > 0) {
                     newId = maxIdDoc.clusterId + 1;
                     await Cache.findOneAndUpdate(
                         { key: 'GLOBAL_CLUSTER_ID_COUNTER' },
@@ -149,4 +114,4 @@ class ClusteringService {
     }
 }
 
-module.exports = new ClusteringService();
+export = new ClusteringService();
