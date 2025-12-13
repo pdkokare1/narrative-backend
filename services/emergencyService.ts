@@ -26,7 +26,7 @@ const emergencyData: Partial<IEmergencyContact>[] = [
     category: "Primary Emergency",
     serviceName: "Fire & Rescue",
     description: "Fire emergencies, rescue operations",
-    number": "101 or 112",
+    number: "101 or 112",
     scope: "All India",
     hours: "24×7",
     country: "India"
@@ -63,9 +63,9 @@ const emergencyData: Partial<IEmergencyContact>[] = [
     serviceName: "Women Helpline - Domestic Abuse",
     description: "Domestic violence support",
     number: "181",
-    "scope": "All India",
-    "hours": "24×7",
-    "country": "India"
+    scope: "All India",
+    hours: "24×7",
+    country: "India"
   },
   {
     category: "Women & Child Safety",
@@ -137,7 +137,7 @@ const emergencyData: Partial<IEmergencyContact>[] = [
     number: "1800110031",
     scope: "All India",
     hours: "24×7",
-    country": "India"
+    country: "India"
   },
   {
     category: "Health & Medical",
@@ -221,7 +221,7 @@ const emergencyData: Partial<IEmergencyContact>[] = [
     country: "India"
   },
   {
-    category": "Organ & Donation",
+    category: "Organ & Donation",
     serviceName: "National Organ Donation & Transplant",
     description: "Organ donation information, coordination",
     number: "1800-103-7100",
@@ -403,8 +403,8 @@ const emergencyData: Partial<IEmergencyContact>[] = [
   {
     category: "Maharashtra - Mumbai",
     serviceName: "Central Railways RPF",
-    description": "Railway emergency (Central region)",
-    number": "1275",
+    description: "Railway emergency (Central region)",
+    number: "1275",
     scope: "Mumbai",
     hours: "24×7",
     country: "India"
@@ -557,7 +557,7 @@ const emergencyData: Partial<IEmergencyContact>[] = [
     category: "Maharashtra - Mumbai",
     serviceName: "Bombay Hospital Emergency",
     description: "Private medical facility",
-    number": "022-22067676 or 40511111",
+    number: "022-22067676 or 40511111",
     scope: "Mumbai",
     hours: "24×7",
     country: "India"
@@ -849,8 +849,6 @@ async function initializeEmergencyContacts() {
     const count = await EmergencyContact.countDocuments();
     if (count === 0) {
       console.log('🚑 Seeding Emergency Contacts...');
-      // Re-add the full list here if you are deploying from scratch, 
-      // but usually, data is already in Mongo.
       await EmergencyContact.insertMany(emergencyData);
       console.log('✅ Emergency Contacts Seeded Successfully');
     }
