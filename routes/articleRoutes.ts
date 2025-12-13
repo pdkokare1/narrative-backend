@@ -1,21 +1,26 @@
-// routes/articleRoutes.js (FINAL v5.2 - Search Caching Added)
-const express = require('express');
-const mongoose = require('mongoose');
-const router = express.Router();
-const asyncHandler = require('../utils/asyncHandler');
-const validate = require('../middleware/validate'); 
-const schemas = require('../utils/validationSchemas'); 
+// routes/articleRoutes.ts
+import express, { Request, Response } from 'express';
+import mongoose from 'mongoose';
+// @ts-ignore
+import asyncHandler from '../utils/asyncHandler';
+// @ts-ignore
+import validate from '../middleware/validate';
+// @ts-ignore
+import schemas from '../utils/validationSchemas';
 
 // Models
-const Article = require('../models/articleModel');
-const Profile = require('../models/profileModel');
-const ActivityLog = require('../models/activityLogModel');
+import Article from '../models/articleModel';
+import Profile from '../models/profileModel';
+import ActivityLog from '../models/activityLogModel';
 
 // Cache
-const redis = require('../utils/redisClient');
+// @ts-ignore
+import redis from '../utils/redisClient';
+
+const router = express.Router();
 
 // --- Helper: Merge & Deduplicate Arrays ---
-const mergeResults = (arr1, arr2) => {
+const mergeResults = (arr1: any[], arr2: any[]): any[] => {
     const map = new Map();
     [...arr1, ...arr2].forEach(item => {
         const id = item._id.toString();
@@ -27,7 +32,7 @@ const mergeResults = (arr1, arr2) => {
 };
 
 // --- 1. Smart Trending Topics (Redis Cached) ---
-router.get('/trending', asyncHandler(async (req, res) => {
+router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     const CACHE_KEY = 'trending_topics_smart';
     
     // A. Check Redis
@@ -59,13 +64,13 @@ router.get('/trending', asyncHandler(async (req, res) => {
 
     // Calculate Velocity Score
     const now = Date.now();
-    const scoredTopics = rawStats.map(t => {
+    const scoredTopics = rawStats.map((t: any) => {
         const hoursAgo = (now - new Date(t.latestDate).getTime()) / (1000 * 60 * 60);
         const velocityScore = t.count * (10 / (hoursAgo + 2)); 
         return { topic: t._id, count: t.count, score: velocityScore };
     });
 
-    scoredTopics.sort((a, b) => b.score - a.score);
+    scoredTopics.sort((a: any, b: any) => b.score - a.score);
     const topTopics = scoredTopics.slice(0, 7);
 
     // C. Save to Redis (TTL: 1800s = 30 mins)
@@ -76,24 +81,19 @@ router.get('/trending', asyncHandler(async (req, res) => {
 }));
 
 // --- 2. Search (Hybrid, Validated & Cached) ---
-// Protected by 'validate(schemas.search, 'query')'
-router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req, res) => {
-    const { q, limit } = req.query; // Already validated & defaulted by Joi
-    const cleanQuery = q.trim().toLowerCase(); // Normalize case for caching
+router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req: Request, res: Response) => {
+    const { q, limit } = req.query as any; 
+    const cleanQuery = q.trim().toLowerCase(); 
 
-    // --- NEW: Aggressive Caching Strategy ---
-    // We cache based on query and limit. 
-    // TTL: 1 Hour (3600s). Search results don't need to be live-live.
     const CACHE_KEY = `search:${cleanQuery}:${limit}`;
 
     const cachedSearch = await redis.get(CACHE_KEY);
     if (cachedSearch) {
-        res.set('X-Cache', 'HIT'); // Debug header
+        res.set('X-Cache', 'HIT'); 
         res.set('Cache-Control', 'public, max-age=3600');
         return res.status(200).json(cachedSearch);
     }
 
-    // --- DB SEARCH (Expensive) ---
     const textPromise = Article.find(
       { $text: { $search: cleanQuery } },
       { score: { $meta: 'textScore' } }
@@ -112,7 +112,6 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
     
     const responsePayload = { articles: results, pagination: { total } };
 
-    // Save to Redis (Only cache if we found results)
     if (results.length > 0) {
         await redis.set(CACHE_KEY, responsePayload, 3600);
     }
@@ -123,7 +122,7 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
 }));
 
 // --- 3. "Balanced For You" Feed ---
-router.get('/articles/for-you', asyncHandler(async (req, res) => {
+router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response) => {
     res.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
     const userId = req.user.uid;
 
@@ -145,8 +144,8 @@ router.get('/articles/for-you', asyncHandler(async (req, res) => {
     let usualLean = 'Center';
 
     if (logs.length > 0) {
-      const cats = {}; const leans = {};
-      logs.forEach(l => {
+      const cats: any = {}; const leans: any = {};
+      logs.forEach((l: any) => {
         if(l.article.category) cats[l.article.category] = (cats[l.article.category] || 0) + 1;
         if(l.article.politicalLean) leans[l.article.politicalLean] = (leans[l.article.politicalLean] || 0) + 1;
       });
@@ -156,7 +155,7 @@ router.get('/articles/for-you', asyncHandler(async (req, res) => {
       if (sortedLeans.length) usualLean = sortedLeans[0];
     }
 
-    let challengeLeans = [];
+    let challengeLeans: string[] = [];
     if (['Left', 'Left-Leaning'].includes(usualLean)) challengeLeans = ['Right', 'Right-Leaning', 'Center'];
     else if (['Right', 'Right-Leaning'].includes(usualLean)) challengeLeans = ['Left', 'Left-Leaning', 'Center'];
     else challengeLeans = ['Left', 'Right'];
@@ -179,9 +178,8 @@ router.get('/articles/for-you', asyncHandler(async (req, res) => {
     res.status(200).json({ articles: result, meta: { basedOnCategory: favoriteCategory, usualLean: usualLean } });
 }));
 
-// --- 4. Save/Unsave Article (Validated) ---
-// Protected by 'validate(schemas.saveArticle, 'params')'
-router.post('/articles/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req, res) => {
+// --- 4. Save/Unsave Article ---
+router.post('/articles/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
     const { uid } = req.user;
 
@@ -200,11 +198,11 @@ router.post('/articles/:id/save', validate(schemas.saveArticle, 'params'), async
     } else {
         updatedProfile = await Profile.findOneAndUpdate({ userId: uid }, { $addToSet: { savedArticles: articleObjectId } }, { new: true }).lean();
     }
-    res.status(200).json({ message: isSaved ? 'Article unsaved' : 'Article saved', savedArticles: updatedProfile.savedArticles });
+    res.status(200).json({ message: isSaved ? 'Article unsaved' : 'Article saved', savedArticles: updatedProfile?.savedArticles });
 }));
 
 // --- 5. Get Saved Articles ---
-router.get('/articles/saved', asyncHandler(async (req, res) => {
+router.get('/articles/saved', asyncHandler(async (req: Request, res: Response) => {
     const { uid } = req.user;
     const profile = await Profile.findOne({ userId: uid })
       .select('savedArticles')
@@ -218,10 +216,9 @@ router.get('/articles/saved', asyncHandler(async (req, res) => {
     res.status(200).json({ articles: profile.savedArticles || [] });
 }));
 
-// --- 6. Cluster Fetch (Redis Cached & Validated) ---
-// Protected by 'validate(schemas.clusterView, 'params')'
-router.get('/cluster/:clusterId', validate(schemas.clusterView, 'params'), asyncHandler(async (req, res) => {
-    const { clusterId } = req.params; // Guaranteed number by Joi
+// --- 6. Cluster Fetch ---
+router.get('/cluster/:clusterId', validate(schemas.clusterView, 'params'), asyncHandler(async (req: Request, res: Response) => {
+    const { clusterId } = req.params; 
     const CACHE_KEY = `cluster_view_${clusterId}`;
 
     // A. Check Redis
@@ -232,9 +229,9 @@ router.get('/cluster/:clusterId', validate(schemas.clusterView, 'params'), async
     }
 
     // B. Query DB
-    const articles = await Article.find({ clusterId }).sort({ trustScore: -1, publishedAt: -1 }).lean();
+    const articles = await Article.find({ clusterId: Number(clusterId) }).sort({ trustScore: -1, publishedAt: -1 }).lean();
 
-    const grouped = articles.reduce((acc, article) => {
+    const grouped = articles.reduce((acc: any, article: any) => {
       const lean = article.politicalLean || 'Not Applicable';
       if (['Left', 'Left-Leaning'].includes(lean)) acc.left.push(article);
       else if (lean === 'Center') acc.center.push(article);
@@ -252,12 +249,11 @@ router.get('/cluster/:clusterId', validate(schemas.clusterView, 'params'), async
     res.status(200).json(responseData);
 }));
 
-// --- 7. Main Feed (Validated) ---
-// Protected by 'validate(schemas.feedFilters, 'query')'
-router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(async (req, res) => {
-    const filters = req.query; // Data is already cleaner/typed by Joi
+// --- 7. Main Feed ---
+router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(async (req: Request, res: Response) => {
+    const filters = req.query as any;
 
-    const matchStage = {};
+    const matchStage: any = {};
     if (filters.category && filters.category !== 'All Categories') matchStage.category = filters.category;
     if (filters.lean && filters.lean !== 'All Leans') matchStage.politicalLean = filters.lean;
     if (filters.region && filters.region !== 'All') matchStage.country = filters.region;
@@ -274,8 +270,8 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
         }
     }
 
-    let sortStage = { publishedAt: -1, createdAt: -1 };
-    let postGroupSortStage = { "latestArticle.publishedAt": -1 }; 
+    let sortStage: any = { publishedAt: -1, createdAt: -1 };
+    let postGroupSortStage: any = { "latestArticle.publishedAt": -1 }; 
     if (filters.sort === 'Highest Quality') { sortStage = { trustScore: -1 }; postGroupSortStage = { "latestArticle.trustScore": -1 }; }
     else if (filters.sort === 'Most Covered') { postGroupSortStage = { clusterCount: -1 }; }
     else if (filters.sort === 'Lowest Bias') { sortStage = { biasScore: 1 }; postGroupSortStage = { "latestArticle.biasScore": 1 }; }
@@ -287,7 +283,7 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
       { $addFields: { "latestArticle.clusterCount": "$clusterCount" } },
       { $replaceRoot: { newRoot: '$latestArticle' } },
       { $sort: postGroupSortStage },
-      { $facet: { articles: [{ $skip: filters.offset }, { $limit: filters.limit }], pagination: [{ $count: 'total' }] } }
+      { $facet: { articles: [{ $skip: Number(filters.offset) }, { $limit: Number(filters.limit) }], pagination: [{ $count: 'total' }] } }
     ];
 
     const results = await Article.aggregate(aggregation).allowDiskUse(true);
@@ -295,4 +291,4 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
     res.status(200).json({ articles: results[0]?.articles || [], pagination: { total: results[0]?.pagination[0]?.total || 0 } });
 }));
 
-module.exports = router;
+export default router;
