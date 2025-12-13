@@ -1,28 +1,30 @@
-// services/newsService.js (FINAL v3.2 - Centralized Key Manager)
-const axios = require('axios');
-const KeyManager = require('../utils/KeyManager'); // <--- NEW: Central Manager
+// services/newsService.ts
+import axios from 'axios';
+import KeyManager from '../utils/KeyManager';
 
-// --- Helper Functions ---
+interface IRawArticle {
+    source: { name: string };
+    title: string;
+    description: string;
+    content?: string;
+    url: string;
+    image?: string;
+    urlToImage?: string;
+    publishedAt: string;
+}
 
-// 1. Headline Formatter
-function formatHeadline(title) {
+function formatHeadline(title: string): string {
     if (!title) return "No Title";
     let clean = title.trim();
-    
-    // Rule A: Force Uppercase start
     clean = clean.charAt(0).toUpperCase() + clean.slice(1);
-    
-    // Rule B: Force Period at end (unless it ends in ? or !)
     if (!/[.!?]["']?$/.test(clean)) {
         clean += ".";
     }
-    
     return clean;
 }
 
-// 2. URL Normalizer
-function normalizeUrl(url) {
-    if (!url) return null;
+function normalizeUrl(url: string): string {
+    if (!url) return "";
     try {
         const urlObj = new URL(url);
         const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'ref', 'source', 'fbclid', 'gclid'];
@@ -33,8 +35,7 @@ function normalizeUrl(url) {
     }
 }
 
-// 3. Deduplication
-function removeDuplicatesAndClean(articles) {
+function removeDuplicatesAndClean(articles: any[]): any[] {
     if (!Array.isArray(articles)) return []; 
     const seenUrls = new Set();
     
@@ -48,28 +49,23 @@ function removeDuplicatesAndClean(articles) {
         
         seenUrls.add(cleanUrl);
         article.url = cleanUrl; 
-        
-        // APPLY FORMATTING HERE
         article.title = formatHeadline(article.title);
         
         return true;
     });
 }
 
-// --- NewsService Class ---
 class NewsService {
   constructor() {
-    // 1. Initialize Keys via Manager
     KeyManager.loadKeys('GNEWS', 'GNEWS');
     KeyManager.loadKeys('NEWS_API', 'NEWS_API');
     console.log(`堂 News Service Initialized`);
   }
 
-  // --- Main Fetch Logic ---
-  async fetchNews() {
-    let allArticles = [];
+  async fetchNews(): Promise<any[]> {
+    const allArticles: any[] = [];
     
-    // 1. GNews Fetch (Try block ensures flow continues if GNews fails)
+    // 1. GNews Fetch
     try {
         console.log('藤 Fetching from GNews...');
         const gnewsRequests = [
@@ -79,32 +75,29 @@ class NewsService {
         ];
 
         const gnewsResults = await Promise.allSettled(
-            gnewsRequests.map(req => this.fetchFromGNews(req.params, req.name))
+            gnewsRequests.map(req => this.fetchFromGNews(req.params))
         );
 
         gnewsResults.forEach((result) => {
             if (result.status === 'fulfilled' && result.value.length > 0) {
-            allArticles.push(...result.value);
+                allArticles.push(...result.value);
             }
         });
-    } catch (err) {
+    } catch (err: any) {
         console.warn("GNews fetch skipped/failed:", err.message);
     }
 
     // 2. NewsAPI Fallback
-    // Only fetch if GNews didn't return enough articles
-    const needsFallback = allArticles.length < 15;
-
-    if (needsFallback) {
+    if (allArticles.length < 15) {
       console.log('藤 Fetching fallback from NewsAPI...');
       const newsapiRequests = [
-         { params: { country: 'us', pageSize: 15 }, name: 'NewsAPI-US', endpoint: 'top-headlines' },
-         { params: { country: 'in', pageSize: 15 }, name: 'NewsAPI-IN', endpoint: 'top-headlines' },
-         { params: { q: 'politics', language: 'en', pageSize: 15, sortBy: 'publishedAt' }, name: 'NewsAPI-Politics', endpoint: 'everything' }
+         { params: { country: 'us', pageSize: 15 }, endpoint: 'top-headlines' },
+         { params: { country: 'in', pageSize: 15 }, endpoint: 'top-headlines' },
+         { params: { q: 'politics', language: 'en', pageSize: 15, sortBy: 'publishedAt' }, endpoint: 'everything' }
       ];
 
       const newsapiResults = await Promise.allSettled(
-        newsapiRequests.map(req => this.fetchFromNewsAPI(req.params, req.name, req.endpoint))
+        newsapiRequests.map(req => this.fetchFromNewsAPI(req.params, req.endpoint))
       );
 
       newsapiResults.forEach((result) => {
@@ -114,15 +107,13 @@ class NewsService {
       });
     }
 
-    // 3. Clean & Deduplicate
     const uniqueArticles = removeDuplicatesAndClean(allArticles);
-    uniqueArticles.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+    uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
 
     return uniqueArticles;
   }
 
-  // --- GNews Call ---
-  async fetchFromGNews(params, sourceName) {
+  async fetchFromGNews(params: any): Promise<any[]> {
     let apiKey = '';
     try {
         apiKey = KeyManager.getKey('GNEWS');
@@ -142,16 +133,14 @@ class NewsService {
       KeyManager.reportSuccess(apiKey);
       return this.transformGNewsArticles(response.data.articles);
 
-    } catch (error) {
-      // 429 = Too Many Requests, 403 = Forbidden (Quota or Invalid)
+    } catch (error: any) {
       const isRateLimit = error.response?.status === 429 || error.response?.status === 403;
       KeyManager.reportFailure(apiKey, isRateLimit);
       return Promise.reject(error);
     }
   }
 
-  // --- NewsAPI Call ---
-  async fetchFromNewsAPI(params, sourceName, endpointType) {
+  async fetchFromNewsAPI(params: any, endpointType: string): Promise<any[]> {
       let apiKey = '';
       try {
           apiKey = KeyManager.getKey('NEWS_API');
@@ -171,16 +160,14 @@ class NewsService {
          KeyManager.reportSuccess(apiKey);
          return this.transformNewsAPIArticles(response.data.articles);
 
-      } catch (error) {
-          // 429 = Too Many Requests
+      } catch (error: any) {
           const isRateLimit = error.response?.status === 429;
           KeyManager.reportFailure(apiKey, isRateLimit);
           return Promise.reject(error);
       }
   }
 
-  // --- Transformers (Unchanged) ---
-  transformGNewsArticles(articles) {
+  transformGNewsArticles(articles: IRawArticle[]) {
     if (!Array.isArray(articles)) return [];
     return articles.map(article => ({
         source: { name: article?.source?.name?.trim() || 'GNews Source' },
@@ -192,7 +179,7 @@ class NewsService {
     }));
   }
 
-  transformNewsAPIArticles(articles) {
+  transformNewsAPIArticles(articles: IRawArticle[]) {
      if (!Array.isArray(articles)) return [];
     return articles.map(article => ({
         source: { name: article?.source?.name?.trim() || 'NewsAPI Source' },
@@ -205,4 +192,4 @@ class NewsService {
   }
 }
 
-module.exports = new NewsService();
+export = new NewsService();
