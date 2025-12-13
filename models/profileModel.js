@@ -1,7 +1,16 @@
-// models/profileModel.js
-const mongoose = require('mongoose');
+// models/profileModel.ts
+import mongoose, { Schema, Document, Model } from 'mongoose';
+import { IUserProfile } from '../types';
 
-const profileSchema = new mongoose.Schema({
+// We explicitly tell TypeScript that 'savedArticles' are ObjectIds inside the database,
+// overriding the string[] definition from our generic interface.
+export interface ProfileDocument extends Omit<IUserProfile, 'savedArticles'>, Document {
+  savedArticles: mongoose.Types.ObjectId[];
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const profileSchema = new Schema<ProfileDocument>({
   // This links the profile to the Firebase Auth user
   userId: { 
     type: String, 
@@ -35,10 +44,10 @@ const profileSchema = new mongoose.Schema({
   },
   // Saved Articles Link
   savedArticles: [{
-    type: mongoose.Schema.Types.ObjectId,
+    type: Schema.Types.ObjectId,
     ref: 'Article' // Links to Article model
   }],
-  // --- NEW: Push Notification Token ---
+  // Push Notification Token
   fcmToken: {
     type: String,
     default: null
@@ -51,4 +60,6 @@ const profileSchema = new mongoose.Schema({
   timestamps: true
 });
 
-module.exports = mongoose.model('Profile', profileSchema);
+const Profile: Model<ProfileDocument> = mongoose.model<ProfileDocument>('Profile', profileSchema);
+
+export default Profile;
