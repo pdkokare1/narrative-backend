@@ -116,7 +116,8 @@ class NewsService {
   async fetchFromGNews(params: any): Promise<any[]> {
     let apiKey = '';
     try {
-        apiKey = KeyManager.getKey('GNEWS');
+        // Updated: await getKey
+        apiKey = await KeyManager.getKey('GNEWS');
     } catch (e) {
         return Promise.reject(new Error("No GNews Keys available"));
     }
@@ -135,7 +136,7 @@ class NewsService {
 
     } catch (error: any) {
       const isRateLimit = error.response?.status === 429 || error.response?.status === 403;
-      KeyManager.reportFailure(apiKey, isRateLimit);
+      await KeyManager.reportFailure(apiKey, isRateLimit);
       return Promise.reject(error);
     }
   }
@@ -143,7 +144,8 @@ class NewsService {
   async fetchFromNewsAPI(params: any, endpointType: string): Promise<any[]> {
       let apiKey = '';
       try {
-          apiKey = KeyManager.getKey('NEWS_API');
+          // Updated: await getKey
+          apiKey = await KeyManager.getKey('NEWS_API');
       } catch (e) {
           return Promise.reject(new Error("No NewsAPI Keys available"));
       }
@@ -162,7 +164,7 @@ class NewsService {
 
       } catch (error: any) {
           const isRateLimit = error.response?.status === 429;
-          KeyManager.reportFailure(apiKey, isRateLimit);
+          await KeyManager.reportFailure(apiKey, isRateLimit);
           return Promise.reject(error);
       }
   }
