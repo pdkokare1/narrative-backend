@@ -5,7 +5,6 @@ import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
 import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
-// @ts-ignore
 import gamificationService from '../services/gamificationService';
 
 const router = express.Router();
