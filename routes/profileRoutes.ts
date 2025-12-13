@@ -1,12 +1,12 @@
 // routes/profileRoutes.ts
 import express, { Request, Response } from 'express';
-import asyncHandler from '../utils/asyncHandler';
-import validate from '../middleware/validate';
-import schemas from '../utils/validationSchemas';
+import asyncHandler = require('../utils/asyncHandler');
+import validate = require('../middleware/validate');
+import schemas = require('../utils/validationSchemas');
 import Profile from '../models/profileModel';
 import ActivityLog from '../models/activityLogModel';
 import Article from '../models/articleModel';
-import redis from '../utils/redisClient';
+import redis = require('../utils/redisClient');
 
 const router = express.Router();
 
@@ -112,7 +112,7 @@ router.get('/weekly-digest', asyncHandler(async (req: Request, res: Response) =>
 
     const avgScore = score / recentLogs.length;
     let status = 'Balanced';
-    let bubbleType = null; 
+    let bubbleType: string | null = null; // <--- FIX: Explicit Type
     
     if (avgScore <= -0.8) { status = 'Left Bubble'; bubbleType = 'Left'; }
     else if (avgScore >= 0.8) { status = 'Right Bubble'; bubbleType = 'Right'; }
