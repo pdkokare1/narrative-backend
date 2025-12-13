@@ -1,10 +1,12 @@
-// services/ttsService.js
-const axios = require('axios');
-const cloudinary = require('cloudinary').v2;
+// services/ttsService.ts
+import axios from 'axios';
+import { v2 as cloudinary } from 'cloudinary';
 
 const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
+    private apiKey: string | undefined;
+
     constructor() {
         this.apiKey = process.env.ELEVENLABS_API_KEY;
         const keyStatus = this.apiKey ? `Present (${this.apiKey.slice(0,4)}...)` : 'MISSING';
@@ -17,7 +19,7 @@ class TTSService {
         });
     }
 
-    cleanTextForNews(text) {
+    cleanTextForNews(text: string): string {
         if (!text) return "";
         let clean = text;
 
@@ -43,16 +45,12 @@ class TTSService {
         return clean;
     }
 
-    async generateAndUpload(text, voiceId, articleId, customFilename = null) {
+    async generateAndUpload(text: string, voiceId: string, articleId: string | null, customFilename: string | null = null): Promise<string> {
         if (!this.apiKey) {
             throw new Error("ElevenLabs API Key is MISSING in Environment Variables.");
         }
 
         const safeText = this.cleanTextForNews(text);
-        
-        // --- REVERTED TO HIGH QUALITY ---
-        // Removed '?output_format=mp3_44100_64'. 
-        // We will now store the Master Quality file.
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
 
         console.log(`🎙️ Generating (High Quality): "${customFilename || articleId}"...`);
@@ -85,7 +83,7 @@ class TTSService {
                     {
                         folder: 'the-gamut-audio',
                         public_id: publicId,
-                        resource_type: 'video', 
+                        resource_type: 'video', // 'video' allows audio in Cloudinary
                         format: 'mp3',
                         overwrite: true
                     },
@@ -94,21 +92,25 @@ class TTSService {
                             console.error("❌ Cloudinary Upload Failed:", error.message);
                             reject(error);
                         } else {
-                            console.log(`✅ Upload Success: ${result.secure_url}`);
-                            resolve(result.secure_url);
+                            if (result && result.secure_url) {
+                                console.log(`✅ Upload Success: ${result.secure_url}`);
+                                resolve(result.secure_url);
+                            } else {
+                                reject(new Error("Cloudinary upload successful but no URL returned."));
+                            }
                         }
                     }
                 );
 
                 response.data.pipe(uploadStream);
                 
-                response.data.on('error', (err) => {
+                response.data.on('error', (err: any) => {
                     console.error("❌ Stream Error:", err.message);
                     reject(err);
                 });
             });
 
-        } catch (error) {
+        } catch (error: any) {
             if (error.response) {
                 console.error(`❌ ElevenLabs API Error: ${error.response.status}`);
                 throw new Error(`ElevenLabs API Error: ${error.response.status}`);
@@ -120,4 +122,4 @@ class TTSService {
     }
 }
 
-module.exports = new TTSService();
+export default new TTSService();
