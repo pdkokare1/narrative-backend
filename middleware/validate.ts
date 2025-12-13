@@ -1,7 +1,7 @@
 // middleware/validate.ts
 import { Request, Response, NextFunction } from 'express';
 import { Schema } from 'joi';
-import logger = require('../utils/logger');
+import logger from '../utils/logger';
 
 const validate = (schema: Schema, property: 'body' | 'query' | 'params' = 'body') => {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -21,4 +21,4 @@ const validate = (schema: Schema, property: 'body' | 'query' | 'params' = 'body'
   };
 };
 
-export = validate;
+export default validate;
