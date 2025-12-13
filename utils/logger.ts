@@ -1,7 +1,6 @@
-// utils/logger.js
-const winston = require('winston');
+// utils/logger.ts
+import winston from 'winston';
 
-// Define log levels
 const levels = {
   error: 0,
   warn: 1,
@@ -10,7 +9,6 @@ const levels = {
   debug: 4,
 };
 
-// Colors for development mode
 const colors = {
   error: 'red',
   warn: 'yellow',
@@ -23,12 +21,9 @@ winston.addColors(colors);
 
 const format = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
-  // If we are in production, force JSON format for better parsing in Railway logs
   process.env.NODE_ENV === 'production' 
     ? winston.format.json()
     : winston.format.colorize({ all: true }),
-  
-  // Define the output format
   winston.format.printf(
     (info) => `${info.timestamp} ${info.level}: ${info.message}`
   )
@@ -39,8 +34,8 @@ const logger = winston.createLogger({
   levels,
   format,
   transports: [
-    new winston.transports.Console(), // Log to console (Railway captures this standard output)
+    new winston.transports.Console(),
   ],
 });
 
-module.exports = logger;
+export = logger;
