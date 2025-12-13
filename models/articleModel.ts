@@ -63,7 +63,6 @@ const articleSchema = new Schema<ArticleDocument>({
 });
 
 // --- SMART SEARCH INDEX ---
-// Kept the text index only on fields people actually search
 articleSchema.index({ 
   headline: 'text', 
   summary: 'text', 
@@ -78,11 +77,14 @@ articleSchema.index({
 });
 
 // --- OPTIMIZED COMPOUND INDEXES ---
-// These specific combinations cover 90% of your app's queries
 articleSchema.index({ category: 1, publishedAt: -1 }); // Category feeds
 articleSchema.index({ politicalLean: 1, publishedAt: -1 }); // Lean feeds
 articleSchema.index({ clusterId: 1, publishedAt: -1 }); // Cluster timeline view
 articleSchema.index({ country: 1, publishedAt: -1 }); // Regional feeds
+
+// --- DATA RETENTION (TTL INDEX) ---
+// Automatically delete articles older than 90 days (7776000 seconds)
+articleSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
 
 const Article: Model<ArticleDocument> = mongoose.model<ArticleDocument>('Article', articleSchema);
 
