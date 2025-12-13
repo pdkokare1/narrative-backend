@@ -1,7 +1,6 @@
 // jobs/queueManager.ts
 import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
 import newsFetcher from './newsFetcher';
-// @ts-ignore
 import logger from '../utils/logger';
 
 // --- 1. Redis Connection Config ---
