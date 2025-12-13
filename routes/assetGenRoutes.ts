@@ -1,12 +1,12 @@
-// routes/assetGenRoutes.js
-const express = require('express');
-const router = express.Router();
-const ttsService = require('../services/ttsService');
+// routes/assetGenRoutes.ts
+import express, { Request, Response } from 'express';
+// @ts-ignore
+import ttsService from '../services/ttsService';
 
-// --- THE 30 SEGUE SCRIPTS (Updated for Intonation) ---
-// Note: We use commas (,) to force "Suspended Intonation"
+const router = express.Router();
+
 const SEGUES = [
-    // --- MIRA (Anchor) ---
+    // --- MIRA ---
     { id: "mira_segue_01", text: "In other developments,", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
     { id: "mira_segue_02", text: "Moving on,", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
     { id: "mira_segue_03", text: "Turning to other news,", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
@@ -18,7 +18,7 @@ const SEGUES = [
     { id: "mira_segue_09", text: "Here is another story we are tracking,", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
     { id: "mira_segue_10", text: "Continuing with our coverage,", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
 
-    // --- RAJAT (Analyst) - Voice: SZQ4R1VKS2t6wmBJpK5H ---
+    // --- RAJAT ---
     { id: "rajat_segue_01", text: "Also in the news,", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
     { id: "rajat_segue_02", text: "Looking at other indicators,", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
     { id: "rajat_segue_03", text: "In the technology and business sector,", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
@@ -30,7 +30,7 @@ const SEGUES = [
     { id: "rajat_segue_09", text: "Let’s look at another key factor,", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
     { id: "rajat_segue_10", text: "Expanding our view,", voiceId: "SZQ4R1VKS2t6wmBJpK5H" },
 
-    // --- SHUBHI (Curator) - Voice: 2n8AzqIsQUPMvb1OgO72 ---
+    // --- SHUBHI ---
     { id: "shubhi_segue_01", text: "And in the world of culture,", voiceId: "2n8AzqIsQUPMvb1OgO72" },
     { id: "shubhi_segue_02", text: "Also trending today,", voiceId: "2n8AzqIsQUPMvb1OgO72" },
     { id: "shubhi_segue_03", text: "On a different note,", voiceId: "2n8AzqIsQUPMvb1OgO72" },
@@ -43,19 +43,17 @@ const SEGUES = [
     { id: "shubhi_segue_10", text: "Also in the mix,", voiceId: "2n8AzqIsQUPMvb1OgO72" }
 ];
 
-const runGeneration = async (res) => {
+const runGeneration = async (res: Response) => {
     try {
         console.log(`🚀 STARTING SEGUE BATCH: ${SEGUES.length} items.`);
         const results = [];
         
         for (const item of SEGUES) {
             try {
-                // Force overwrite existing files with new intonation
                 const url = await ttsService.generateAndUpload(item.text, item.voiceId, null, item.id);
                 results.push({ id: item.id, url, status: 'success' });
-                // 1 second safety pause
                 await new Promise(r => setTimeout(r, 1000));
-            } catch (err) {
+            } catch (err: any) {
                 console.error(`❌ Failed ${item.id}:`, err.message);
                 results.push({ id: item.id, error: err.message, status: 'failed' });
             }
@@ -64,17 +62,17 @@ const runGeneration = async (res) => {
         console.log("✅ BATCH COMPLETE.");
         res.status(200).json({ message: "Batch complete", results });
 
-    } catch (error) {
+    } catch (error: any) {
         console.error("Batch Fatal Error:", error);
         if (!res.headersSent) res.status(500).json({ error: error.message });
     }
 };
 
 // --- ROUTES ---
-router.get('/generate-segues', (req, res) => runGeneration(res));
-router.post('/generate-segues', (req, res) => runGeneration(res));
+router.get('/generate-segues', (req: Request, res: Response) => runGeneration(res));
+router.post('/generate-segues', (req: Request, res: Response) => runGeneration(res));
 
-router.get('/test', async (req, res) => {
+router.get('/test', async (req: Request, res: Response) => {
     try {
         const vars = {
             elevenLabs: !!process.env.ELEVENLABS_API_KEY,
@@ -82,9 +80,9 @@ router.get('/test', async (req, res) => {
             cloudinaryKey: !!process.env.CLOUDINARY_API_KEY
         };
         res.json({ status: "Online", variables: vars });
-    } catch (e) {
+    } catch (e: any) {
         res.status(500).json({ error: e.message });
     }
 });
 
-module.exports = router;
+export default router;
