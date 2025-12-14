@@ -41,7 +41,8 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     // B. Calculate Logic (48h Window)
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     
-    const aggregation = [
+    // FIX: Explicitly type as any[] to prevent TS strict sorting errors
+    const aggregation: any[] = [
         { 
             $match: { 
                 publishedAt: { $gte: twoDaysAgo },
