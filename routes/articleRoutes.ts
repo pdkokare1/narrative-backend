@@ -41,8 +41,7 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     // B. Calculate Logic (48h Window)
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     
-    // FIX: Explicitly type as any[] to prevent TS strict sorting errors
-    const aggregation: any[] = [
+    const aggregation = [
         { 
             $match: { 
                 publishedAt: { $gte: twoDaysAgo },
@@ -61,7 +60,8 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
         { $limit: 10 }
     ];
 
-    const results = await Article.aggregate(aggregation);
+    // FORCE FIX: Cast to 'any' here to bypass Mongoose strict typing error
+    const results = await Article.aggregate(aggregation as any);
     
     const topics = results.map(r => ({
         topic: r._id,
