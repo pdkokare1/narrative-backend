@@ -4,6 +4,14 @@ import KeyManager from '../utils/KeyManager';
 
 const MODEL_NAME = "gemini-2.5-flash"; 
 
+// --- 1. BLACKLIST ---
+const BANNED_DOMAINS = [
+    'dailymail.co.uk', 'thesun.co.uk', 'nypost.com', 'breitbart.com', 
+    'infowars.com', 'sputniknews.com', 'rt.com', 'tmz.com', 
+    'perezhilton.com', 'gawker.com', 'buzzfeed.com', 'upworthy.com',
+    'viralnova.com', 'clickhole.com', 'theonion.com', 'babylonbee.com'
+];
+
 const JUNK_KEYWORDS = [
     // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
@@ -26,83 +34,45 @@ const JUNK_KEYWORDS = [
     'caught on cam', 'shocking video', 'net worth',
     
     // Tech Troubleshooting / Errors
-    '404', 'page not found', 'access denied', 'forbidden', 'login', 'server down',
-    'fix:', 'solved:', 'how to fix', 'error code', 'apk download',
-    
-    // Crypto/Financial Spam
-    'presale', 'airdrop', 'price prediction', 'meme coin', 'pepe', 'shiba', 'doge',
-    'crypto whale', 'x1000', 'bull run prediction',
-    
-    // Sports Specific (Scores/Schedules often lack narrative)
-    'live score', 'box score', 'starting lineup', 'injury report', 'match preview',
-    'vs.', 'highlights', 'full match'
+    '404', 'page not found', 'access denied', 'enable cookies'
 ];
-
-// URLs containing these segments are often just media players or galleries
-const JUNK_URL_SEGMENTS = [
-    '/video/', '/watch/', '/gallery/', '/photos/', '/slideshow/', '/live-updates/'
-];
-
-interface IGatekeeperResult {
-    category: string;
-    type: 'Hard News' | 'Soft News' | 'Junk';
-    isJunk: boolean;
-    recommendedModel: string;
-}
 
 class GatekeeperService {
-    constructor() {
-        KeyManager.loadKeys('GEMINI', 'GEMINI');
-    }
 
-    isObviousJunk(article: any): boolean {
-        const title = article.title || "";
-        const url = article.url || "";
-        
-        if (!title) return true;
-        if (title.length < 15) return true; // Too short to be a headline
-        
-        const lowerTitle = title.toLowerCase();
-        const lowerUrl = url.toLowerCase();
-
-        // 1. Check URL Structure
-        if (JUNK_URL_SEGMENTS.some(seg => lowerUrl.includes(seg))) {
-            return true;
-        }
-        
-        // 2. Check Keywords
-        const hasKeyword = JUNK_KEYWORDS.some(keyword => lowerTitle.includes(keyword));
-        if (hasKeyword) return true;
-
-        return false;
-    }
-
-    async evaluateArticle(article: any): Promise<IGatekeeperResult> {
-        // --- STEP 1: Fast Static Check (Free) ---
-        if (!article || !article.title) {
-            return { category: 'Other', type: 'Soft News', isJunk: true, recommendedModel: 'gemini-2.5-flash' };
+    async evaluateArticle(article: any): Promise<{ category: string, type: 'Hard News' | 'Soft News' | 'Junk', isJunk: boolean, recommendedModel: string }> {
+        // --- 1. Domain Check ---
+        if (article.url) {
+            const isBanned = BANNED_DOMAINS.some(domain => article.url.includes(domain));
+            if (isBanned) {
+                console.log(`🚫 Blocked by Blacklist: ${article.url}`);
+                return { category: 'Junk', type: 'Junk', isJunk: true, recommendedModel: 'none' };
+            }
         }
 
-        if (this.isObviousJunk(article)) {
-            console.log(`🗑️ Pre-Filtered Junk: "${article.title.substring(0, 40)}..."`);
-            return { category: 'Junk', type: 'Junk', isJunk: true, recommendedModel: 'gemini-2.5-flash' };
+        // --- 2. Keyword Check ---
+        const textToCheck = (article.title + " " + (article.description || "")).toLowerCase();
+        const hasJunkKeyword = JUNK_KEYWORDS.some(keyword => textToCheck.includes(keyword));
+
+        if (hasJunkKeyword) {
+            console.log(`🗑️ Blocked by Keyword: ${article.title}`);
+            return { category: 'Junk', type: 'Junk', isJunk: true, recommendedModel: 'none' };
         }
 
-        // --- STEP 2: AI Check (Cost) ---
-        let apiKey = '';
+        // --- 3. AI Check (Final Filter) ---
+        // Only use AI if it passes the cheap checks above
         try {
-            apiKey = await KeyManager.getKey('GEMINI');
-            
+            const apiKey = await KeyManager.getKey('GEMINI');
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
-
+            
             const prompt = `
-            Task: Classify this news article based on its headline and description.
+            Analyze this news article metadata.
             Headline: "${article.title}"
-            Description: "${article.description || ''}"
-            Definitions:
-            - [Hard News]: Politics, Global Conflict, Economy, Justice, Science, Tech, Health, Education, Environment.
-            - [Soft News]: Sports, Entertainment, Lifestyle, Business, Human Interest, Travel, Food.
-            - [Junk]: Shopping/Deals, Celebrity Gossip, Spam, 404/Error pages, Betting/Gambling, Stocks/Crypto Price Predictions, Sports Scores/Schedules.
+            Description: "${article.description}"
+            Source: "${article.source.name}"
+
+            Task: Categorize it and Determine if it is "Hard News" (Politics, Economy, Conflict, Science, Major Events), "Soft News" (Entertainment, Sports, Lifestyle), or "Junk" (Clickbait, Spam, Shopping, Puzzles).
+            
+            Junk Categories: Shopping/Deals, Wordle/Game Guides, Horoscopes, Lottery Results, Viral Videos, Editorials/Opinions masquerading as news, Celebrity Gossip, Spam, 404/Error pages, Betting/Gambling, Stocks/Crypto Price Predictions, Sports Scores/Schedules.
             Respond ONLY in JSON: { "category": "String", "type": "Hard News" | "Soft News" | "Junk", "isJunk": boolean }`;
 
             const response = await axios.post(url, {
@@ -122,17 +92,15 @@ class GatekeeperService {
 
         } catch (error: any) {
             const status = error.response?.status;
-            if (status === 429) {
-                await KeyManager.reportFailure(apiKey, true);
-            } else {
-                await KeyManager.reportFailure(apiKey, false);
-            }
+            const isRateLimit = status === 429;
+            await KeyManager.reportFailure(await KeyManager.getKey('GEMINI'), isRateLimit);
+            
             console.error(`Gatekeeper Error for "${article.title.substring(0, 20)}...":`, error.message);
             
             // Fallback: Assume Soft News if AI fails, don't discard blindly
-            return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: 'gemini-2.5-flash' }; 
+            return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: 'gemini-2.5-flash' };
         }
     }
 }
 
-export = new GatekeeperService();
+export default new GatekeeperService();
