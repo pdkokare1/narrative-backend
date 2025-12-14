@@ -22,13 +22,15 @@ const activityLogSchema = new Schema<ActivityLogDocument>({
     enum: ['view_analysis', 'view_comparison', 'share_article', 'read_external'],
     default: 'view_analysis'
   }
-}, {
-  timestamps: { createdAt: 'timestamp', updatedAt: false } 
-});
+}, {\n  timestamps: { createdAt: 'timestamp', updatedAt: false } \n});
 
 // Compound Indexes
 activityLogSchema.index({ userId: 1, timestamp: -1 });
 activityLogSchema.index({ userId: 1, action: 1, timestamp: -1 });
+
+// --- DATA RETENTION: 6 MONTHS ---
+// 15552000 seconds = ~180 days
+activityLogSchema.index({ timestamp: 1 }, { expireAfterSeconds: 15552000 });
 
 const ActivityLog: Model<ActivityLogDocument> = mongoose.model<ActivityLogDocument>('ActivityLog', activityLogSchema);
 
