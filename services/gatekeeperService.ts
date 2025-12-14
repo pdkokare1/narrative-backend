@@ -1,6 +1,7 @@
 // services/gatekeeperService.ts
 import axios from 'axios';
 import KeyManager from '../utils/KeyManager';
+import redis from '../utils/redisClient'; // Import Redis
 
 const MODEL_NAME = "gemini-2.5-flash"; 
 
@@ -25,57 +26,65 @@ const JUNK_KEYWORDS = [
     'gameplay', 'patch notes', 'twitch', 'discord',
     
     // Astrology & Luck
-    'horoscope', 'zodiac', 'tarot', 'astrology', 'retrograde', 'numerology',
-    'lottery', 'winning numbers', 'powerball', 'mega millions', 'jackpot',
+    'horoscope', 'zodiac', 'tarot', 'astrology', 'lucky number', 'lottery result', 'winning numbers',
     
-    // Spam / Clickbait / Adult
-    'giveaway', 'sweepstakes', 'contest', 'sex position', 'porn', 'xxx', 'onlyfans',
-    'watch live', 'live stream', 'how to watch', 'what time is', 'viral video',
-    'caught on cam', 'shocking video', 'net worth',
-    
-    // Tech Troubleshooting / Errors
-    '404', 'page not found', 'access denied', 'enable cookies'
+    // Clickbait / Gossip
+    'you won\'t believe', 'shocking', 'celeb', 'gossip', 'rumor', 'spotted', 'red carpet',
+    'viral video', 'watch:', 'must see', 'caught on camera', 'net worth'
 ];
 
 class GatekeeperService {
 
-    async evaluateArticle(article: any): Promise<{ category: string, type: 'Hard News' | 'Soft News' | 'Junk', isJunk: boolean, recommendedModel: string }> {
-        // --- 1. Domain Check ---
-        if (article.url) {
-            const isBanned = BANNED_DOMAINS.some(domain => article.url.includes(domain));
-            if (isBanned) {
-                console.log(`🚫 Blocked by Blacklist: ${article.url}`);
-                return { category: 'Junk', type: 'Junk', isJunk: true, recommendedModel: 'none' };
+    async evaluateArticle(article: any): Promise<{ type: string; isJunk: boolean; recommendedModel: string; category?: string }> {
+        const url = article.url || '';
+        const title = (article.title || '').toLowerCase();
+        
+        // --- STEP 1: CACHE CHECK (Cost Saver) ---
+        // If we processed this URL recently, return the cached verdict.
+        const CACHE_KEY = `gatekeeper:${Buffer.from(url).toString('base64')}`; // Safe key
+        try {
+            const cachedResult = await redis.get(CACHE_KEY);
+            if (cachedResult) {
+                // console.log(`🛡️ Gatekeeper Cache Hit: ${url.substring(0, 30)}...`);
+                return cachedResult; // Return the saved JSON object
             }
+        } catch (e) { /* Ignore Redis errors */ }
+
+        // --- STEP 2: STATIC CHECKS ---
+        // A. Domain Block
+        if (BANNED_DOMAINS.some(domain => url.includes(domain))) {
+            const result = { type: 'Junk', isJunk: true, recommendedModel: 'none' };
+            await this.cacheResult(CACHE_KEY, result);
+            return result;
         }
 
-        // --- 2. Keyword Check ---
-        const textToCheck = (article.title + " " + (article.description || "")).toLowerCase();
-        const hasJunkKeyword = JUNK_KEYWORDS.some(keyword => textToCheck.includes(keyword));
-
-        if (hasJunkKeyword) {
-            console.log(`🗑️ Blocked by Keyword: ${article.title}`);
-            return { category: 'Junk', type: 'Junk', isJunk: true, recommendedModel: 'none' };
+        // B. Keyword Block
+        if (JUNK_KEYWORDS.some(kw => title.includes(kw))) {
+            const result = { type: 'Junk', isJunk: true, recommendedModel: 'none' };
+            await this.cacheResult(CACHE_KEY, result);
+            return result;
         }
 
-        // --- 3. AI Check (Final Filter) ---
-        // Only use AI if it passes the cheap checks above
+        // --- STEP 3: AI EVALUATION ---
+        // Only ask AI if it passes the basic filters
         try {
             const apiKey = await KeyManager.getKey('GEMINI');
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
-            
-            const prompt = `
-            Analyze this news article metadata.
-            Headline: "${article.title}"
-            Description: "${article.description}"
-            Source: "${article.source.name}"
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
 
-            Task: Categorize it and Determine if it is "Hard News" (Politics, Economy, Conflict, Science, Major Events), "Soft News" (Entertainment, Sports, Lifestyle), or "Junk" (Clickbait, Spam, Shopping, Puzzles).
+            const prompt = `
+            Analyze this article for a serious news app.
             
-            Junk Categories: Shopping/Deals, Wordle/Game Guides, Horoscopes, Lottery Results, Viral Videos, Editorials/Opinions masquerading as news, Celebrity Gossip, Spam, 404/Error pages, Betting/Gambling, Stocks/Crypto Price Predictions, Sports Scores/Schedules.
+            Headline: "${article.title}"
+            Description: "${article.description || ''}"
+            Source: "${article.source?.name || ''}"
+            
+            Classify into:
+            1. "Hard News": Politics, Economy, Conflict, Science, Major Tech, Climate.
+            2. "Soft News": Entertainment, Sports, Lifestyle, Human Interest, Reviews.
+            3. "Junk": Clickbait, Editorials/Opinions masquerading as news, Celebrity Gossip, Spam, 404/Error pages, Betting/Gambling, Stocks/Crypto Price Predictions, Sports Scores/Schedules.
             Respond ONLY in JSON: { "category": "String", "type": "Hard News" | "Soft News" | "Junk", "isJunk": boolean }`;
 
-            const response = await axios.post(url, {
+            const response = await axios.post(apiUrl, {
                 contents: [{ parts: [{ text: prompt }] }],
                 generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
             }, { timeout: 10000 }); 
@@ -85,10 +94,15 @@ class GatekeeperService {
             const text = response.data.candidates[0].content.parts[0].text;
             const result = JSON.parse(text.replace(/```json|```/g, '').trim());
 
-            return {
+            const finalDecision = {
                 ...result,
                 recommendedModel: result.type === 'Hard News' ? 'gemini-2.5-pro' : 'gemini-2.5-flash'
             };
+
+            // Cache the AI's decision for 24 hours (86400 seconds)
+            await this.cacheResult(CACHE_KEY, finalDecision, 86400);
+
+            return finalDecision;
 
         } catch (error: any) {
             const status = error.response?.status;
@@ -99,6 +113,15 @@ class GatekeeperService {
             
             // Fallback: Assume Soft News if AI fails, don't discard blindly
             return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: 'gemini-2.5-flash' };
+        }
+    }
+
+    // Helper to save to Redis safely
+    private async cacheResult(key: string, data: any, ttl: number = 86400) {
+        try {
+            await redis.set(key, data, ttl);
+        } catch (e) {
+            console.warn("Gatekeeper Cache Write Failed");
         }
     }
 }
