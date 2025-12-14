@@ -19,11 +19,14 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
     // Update Stats
     await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { articlesViewedCount: 1 } });
     
-    // Trigger Gamification (Fire & Forget)
-    gamificationService.updateStreak(req.user.uid).catch((err: any) => console.error("Gamification Error:", err));
-    gamificationService.checkReadBadges(req.user.uid).catch((err: any) => console.error("Badge Error:", err));
+    // Check for Badges (Sequential to ensure correct order)
+    const streakBadge = await gamificationService.updateStreak(req.user.uid);
+    const readBadge = await gamificationService.checkReadBadges(req.user.uid);
     
-    res.status(200).json({ message: 'Logged view' });
+    // Prioritize showing the read badge if both happen at once, or streak if that's all we got
+    const newBadge = readBadge || streakBadge;
+
+    res.status(200).json({ message: 'Logged view', newBadge });
 }));
 
 // --- 2. Log Comparison ---
@@ -32,10 +35,9 @@ router.post('/log-compare', validate(schemas.logActivity), asyncHandler(async (r
     await ActivityLog.create({ userId: req.user.uid, articleId, action: 'view_comparison' });
     await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { comparisonsViewedCount: 1 } });
     
-    // Comparisons also count for streaks
-    gamificationService.updateStreak(req.user.uid);
+    const newBadge = await gamificationService.updateStreak(req.user.uid);
 
-    res.status(200).json({ message: 'Logged comparison' });
+    res.status(200).json({ message: 'Logged comparison', newBadge });
 }));
 
 // --- 3. Log Share ---
@@ -44,21 +46,19 @@ router.post('/log-share', validate(schemas.logActivity), asyncHandler(async (req
     await ActivityLog.create({ userId: req.user.uid, articleId, action: 'share_article' });
     await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { articlesSharedCount: 1 } });
     
-    // Sharing counts for streaks
-    gamificationService.updateStreak(req.user.uid);
+    const newBadge = await gamificationService.updateStreak(req.user.uid);
 
-    res.status(200).json({ message: 'Logged share' });
+    res.status(200).json({ message: 'Logged share', newBadge });
 }));
 
 // --- 4. Log Read (External Link) ---
 router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
     await ActivityLog.create({ userId: req.user.uid, articleId, action: 'read_external' });
-    // Note: We don't increment viewed count here to avoid double counting if they viewed analysis first
     
-    gamificationService.updateStreak(req.user.uid);
+    const newBadge = await gamificationService.updateStreak(req.user.uid);
 
-    res.status(200).json({ message: 'Logged read' });
+    res.status(200).json({ message: 'Logged read', newBadge });
 }));
 
 export default router;
