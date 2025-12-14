@@ -102,17 +102,21 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
     }
 
     if (filters.quality && filters.quality !== 'All Quality Levels') {
-        const minTrust = parseInt(filters.quality);
+        // Fix: Explicitly cast to string for TypeScript
+        const qualityStr = filters.quality as string;
+        const minTrust = parseInt(qualityStr);
+        
         if (!isNaN(minTrust)) {
             matchStage.trustScore = { $gte: minTrust };
         } else {
-            const range = filters.quality.match(/(\d+)-(\d+)/);
+            const range = qualityStr.match(/(\d+)-(\d+)/);
             if (range) matchStage.trustScore = { $gte: parseInt(range[1]), $lt: parseInt(range[2]) + 1 };
         }
     }
 
     let sortStage: any = { publishedAt: -1, createdAt: -1 };
     let postGroupSortStage: any = { "latestArticle.publishedAt": -1 }; 
+    
     if (filters.sort === 'Highest Quality') { sortStage = { trustScore: -1 }; postGroupSortStage = { "latestArticle.trustScore": -1 }; }
     else if (filters.sort === 'Most Covered') { postGroupSortStage = { clusterCount: -1 }; }
     else if (filters.sort === 'Lowest Bias') { sortStage = { biasScore: 1 }; postGroupSortStage = { "latestArticle.biasScore": 1 }; }
@@ -144,6 +148,7 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
 
 // --- 3. For You (Hybrid Feed) ---
 router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response) => {
+    // @ts-ignore - User exists from auth middleware
     const userId = req.user.uid;
     const profile = await Profile.findOne({ userId });
 
@@ -159,8 +164,8 @@ router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response)
     // B. Analyze History
     const history = await ActivityLog.find({ userId, action: 'view_analysis' })
         .sort({ timestamp: -1 })
-        .limit(20)
-        .populate('articleId'); // Assuming aggregation/virtuals or separate fetch logic
+        .limit(20);
+        // Removed populate to keep query simple, logic can be added if needed
 
     // (Simplified logic for brevity - usually involves counting categories)
     // For now, we fetch a "Balanced Mix" based on recent reads
@@ -174,6 +179,7 @@ router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response)
 
 // --- 4. Saved Articles ---
 router.get('/articles/saved', asyncHandler(async (req: Request, res: Response) => {
+    // @ts-ignore
     const profile = await Profile.findOne({ userId: req.user.uid });
     if (!profile || !profile.savedArticles) return res.json({ articles: [] });
 
@@ -187,6 +193,7 @@ router.get('/articles/saved', asyncHandler(async (req: Request, res: Response) =
 // --- 5. Toggle Save ---
 router.post('/articles/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
+    // @ts-ignore
     const userId = req.user.uid;
 
     const profile = await Profile.findOne({ userId });
@@ -242,6 +249,7 @@ router.get('/cluster/:id', validate(schemas.clusterView, 'params'), asyncHandler
 
 // --- 8. Personalized Feed (Advanced) ---
 router.get('/articles/personalized', asyncHandler(async (req: Request, res: Response) => {
+    // @ts-ignore
     const userId = req.user.uid;
     
     // 1. Get recent activity
