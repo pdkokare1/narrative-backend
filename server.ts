@@ -27,6 +27,7 @@ import ttsRoutes from './routes/ttsRoutes';
 import migrationRoutes from './routes/migrationRoutes';
 import assetGenRoutes from './routes/assetGenRoutes';
 import shareRoutes from './routes/shareRoutes';
+import clusterRoutes from './routes/clusterRoutes'; // <--- NEW IMPORT
 
 // Extend Express Request interface to include 'user'
 declare global {
@@ -131,6 +132,7 @@ app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => check
 app.use('/api/emergency-resources', emergencyRoutes);
 app.use('/api/tts', ttsRoutes); 
 app.use('/api/migration', migrationRoutes); 
+app.use('/api/cluster', clusterRoutes); // <--- NEW ROUTE
 app.use('/api', articleRoutes); 
 
 // --- Jobs Endpoint ---
