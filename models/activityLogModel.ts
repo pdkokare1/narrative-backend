@@ -22,7 +22,9 @@ const activityLogSchema = new Schema<ActivityLogDocument>({
     enum: ['view_analysis', 'view_comparison', 'share_article', 'read_external'],
     default: 'view_analysis'
   }
-}, {\n  timestamps: { createdAt: 'timestamp', updatedAt: false } \n});
+}, {
+  timestamps: { createdAt: 'timestamp', updatedAt: false }
+});
 
 // Compound Indexes
 activityLogSchema.index({ userId: 1, timestamp: -1 });
