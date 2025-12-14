@@ -5,15 +5,14 @@ import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
 import Profile from '../models/profileModel';
 import ActivityLog from '../models/activityLogModel';
-import Article from '../models/articleModel';
-import redis from '../utils/redisClient';
+import * as admin from 'firebase-admin'; // Ensure this is imported
 
 const router = express.Router();
 
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req: Request, res: Response) => {
     const profile = await Profile.findOne({ userId: req.user.uid })
-      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled')
+      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled currentStreak badges') // Added gamification fields
       .lean();
     
     if (!profile) {
@@ -36,154 +35,84 @@ router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Reque
         throw new Error('Username already taken by another user.');
     }
 
-    // B. Orphan Check (Relink if email exists)
-    let profile = await Profile.findOne({ email: email });
-
-    if (profile) {
-        console.log(`🔧 Re-linking orphan profile for ${email}`);
-        profile.userId = uid;
-        profile.username = cleanUsername; 
-        await profile.save();
-        return res.status(200).json(profile);
+    // B. Orphan Check (Relink if email matches but ID differs - rare edge case)
+    const existingProfile = await Profile.findOne({ email }).lean();
+    if (existingProfile) {
+        // Just update the ID linkage if needed
+        if (existingProfile.userId !== uid) {
+            await Profile.updateOne({ email }, { userId: uid });
+        }
+        return res.status(200).json(existingProfile);
     }
 
     // C. Create New
-    const newProfile = new Profile({ userId: uid, email: email, username: cleanUsername });
-    await newProfile.save();
+    const newProfile = await Profile.create({
+        userId: uid,
+        email,
+        username: cleanUsername,
+        badges: []
+    });
+
     res.status(201).json(newProfile);
 }));
 
 // --- 3. Save Notification Token ---
 router.post('/save-token', asyncHandler(async (req: Request, res: Response) => {
     const { token } = req.body;
-    const { uid } = req.user;
-
-    if (!token) {
-        res.status(400);
-        throw new Error('Token is required');
-    }
+    if (!token) throw new Error('Token required');
 
     await Profile.findOneAndUpdate(
-        { userId: uid }, 
-        { fcmToken: token, notificationsEnabled: true },
-        { new: true }
+        { userId: req.user.uid },
+        { fcmToken: token, notificationsEnabled: true }
     );
 
-    res.status(200).json({ message: 'Notification token saved' });
+    res.status(200).json({ message: 'Token saved' });
 }));
 
-// --- 4. Weekly Digest (Redis Cached) ---
-router.get('/weekly-digest', asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.user.uid;
-    const CACHE_KEY = `digest_${userId}`;
-
-    // A. Cache Check
-    const cachedData = await redis.get(CACHE_KEY);
-    if (cachedData) {
-        return res.status(200).json(cachedData);
-    }
-
-    // B. Calculation
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const recentLogs = await ActivityLog.aggregate([
-      { $match: { userId: userId, action: 'view_analysis', timestamp: { $gte: sevenDaysAgo } } },
-      { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'article' } },
-      { $unwind: '$article' },
-      { $project: { lean: '$article.politicalLean', category: '$article.category', topic: '$article.clusterTopic' } }
-    ]);
-
-    if (!recentLogs || recentLogs.length < 5) {
-      return res.status(200).json({ status: 'Insufficient Data', message: "Read more articles to unlock your Weekly Pulse." });
-    }
-
-    let score = 0;
-    const leanCounts: Record<string, number> = {};
-    const categoryCounts: Record<string, number> = {};
-
-    recentLogs.forEach((log: any) => {
-      leanCounts[log.lean] = (leanCounts[log.lean] || 0) + 1;
-      if (log.lean === 'Left') score -= 2;
-      else if (log.lean === 'Left-Leaning') score -= 1;
-      else if (log.lean === 'Right-Leaning') score += 1;
-      else if (log.lean === 'Right') score += 2;
-      
-      if (log.category) categoryCounts[log.category] = (categoryCounts[log.category] || 0) + 1;
-    });
-
-    const avgScore = score / recentLogs.length;
-    let status = 'Balanced';
-    let bubbleType: string | null = null; 
-    
-    if (avgScore <= -0.8) { status = 'Left Bubble'; bubbleType = 'Left'; }
-    else if (avgScore >= 0.8) { status = 'Right Bubble'; bubbleType = 'Right'; }
-
-    let recommendation = null;
-    if (bubbleType) {
-      const topCategory = Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0] || 'General';
-      const targetLeans = bubbleType === 'Left' ? ['Right', 'Right-Leaning', 'Center'] : ['Left', 'Left-Leaning', 'Center'];
-      
-      recommendation = await Article.findOne({
-        category: topCategory,
-        politicalLean: { $in: targetLeans },
-        trustScore: { $gt: 75 }
-      })
-      .sort({ publishedAt: -1 })
-      .select('headline summary politicalLean source _id')
-      .lean();
-    }
-
-    const resultData = {
-      status,
-      avgScore,
-      articleCount: recentLogs.length,
-      recommendation,
-      topCategory: Object.keys(categoryCounts).sort((a, b) => categoryCounts[b] - categoryCounts[a])[0]
-    };
-
-    await redis.set(CACHE_KEY, resultData, 3600);
-
-    res.status(200).json(resultData);
-}));
-
-// --- 5. User Stats (Redis Cached) ---
+// --- 4. Get Statistics (Charts) ---
 router.get('/stats', asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user.uid;
-    const CACHE_KEY = `stats_${userId}`;
-
-    const cachedData = await redis.get(CACHE_KEY);
-    if (cachedData) {
-        return res.status(200).json(cachedData);
-    }
-
+    
     const stats = await ActivityLog.aggregate([
-      { $match: { userId: userId } },
-      { $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' } },
-      { $unwind: { path: '$articleDetails', preserveNullAndEmptyArrays: true } },
-      {
+      { $match: { userId } },
+      { 
         $facet: {
           dailyCounts: [
-            { $match: { action: 'view_analysis' } },
-            { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$timestamp' } }, count: { $sum: 1 } } },
-            { $sort: { '_id': 1 } }, { $project: { _id: 0, date: '$_id', count: 1 } }
+            { $match: { 'action': 'view_analysis' } },
+            {
+              $group: {
+                _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+                count: { $sum: 1 }
+              }
+            },
+            { $sort: { _id: 1 } },
+            { $limit: 30 }, // Last 30 days
+            { $project: { _id: 0, date: '$_id', count: 1 } }
           ],
           leanDistribution_read: [
-             { $match: { 'action': 'view_analysis' } },
-            { $group: { _id: '$articleDetails.politicalLean', count: { $sum: 1 } } },
-            { $project: { _id: 0, lean: '$_id', count: 1 } }
-          ],
-          leanDistribution_shared: [
-             { $match: { 'action': 'share_article' } },
+            { $match: { 'action': 'view_analysis' } },
+            {
+                $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' }
+            },
+            { $unwind: '$articleDetails' },
             { $group: { _id: '$articleDetails.politicalLean', count: { $sum: 1 } } },
             { $project: { _id: 0, lean: '$_id', count: 1 } }
           ],
           categoryDistribution_read: [
-             { $match: { 'action': 'view_analysis' } },
+            { $match: { 'action': 'view_analysis' } },
+            {
+                $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' }
+            },
+            { $unwind: '$articleDetails' },
             { $group: { _id: '$articleDetails.category', count: { $sum: 1 } } },
-             { $sort: { count: -1 } }, { $limit: 10 },
             { $project: { _id: 0, category: '$_id', count: 1 } }
           ],
           qualityDistribution_read: [
-             { $match: { 'action': 'view_analysis' } },
+            { $match: { 'action': 'view_analysis' } },
+            {
+                $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' }
+            },
+            { $unwind: '$articleDetails' },
             { $group: { _id: '$articleDetails.credibilityGrade', count: { $sum: 1 } } },
             { $project: { _id: 0, grade: '$_id', count: 1 } }
           ],
@@ -193,12 +122,20 @@ router.get('/stats', asyncHandler(async (req: Request, res: Response) => {
           ],
           topSources_read: [
             { $match: { 'action': 'view_analysis' } },
+            {
+                $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' }
+            },
+            { $unwind: '$articleDetails' },
             { $group: { _id: '$articleDetails.source', count: { $sum: 1 } } },
             { $sort: { count: -1 } }, { $limit: 10 },
             { $project: { _id: 0, source: '$_id', count: 1 } }
           ],
           sentimentDistribution_read: [
             { $match: { 'action': 'view_analysis' } },
+            {
+                $lookup: { from: 'articles', localField: 'articleId', foreignField: '_id', as: 'articleDetails' }
+            },
+            { $unwind: '$articleDetails' },
             { $group: { _id: '$articleDetails.sentiment', count: { $sum: 1 } } },
             { $project: { _id: 0, sentiment: '$_id', count: 1 } }
           ]
@@ -215,12 +152,32 @@ router.get('/stats', asyncHandler(async (req: Request, res: Response) => {
       qualityDistribution_read: stats[0]?.qualityDistribution_read || [],
       totalCounts: stats[0]?.totalCounts || [],
       topSources_read: stats[0]?.topSources_read || [],
-      sentimentDistribution_read: stats[0]?.sentimentDistribution_read || []
+      sentimentDistribution_read: stats[0]?.sentimentDistribution_read || [],
+      // Also return full list of articles for the Map
+      allArticles: [] 
     };
 
-    await redis.set(CACHE_KEY, results, 900);
-
     res.status(200).json(results);
+}));
+
+// --- 5. DELETE Account (Danger Zone) ---
+router.delete('/', asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user.uid;
+
+    console.log(`🗑️ Deleting account for: ${userId}`);
+
+    // 1. Delete MongoDB Data
+    await Profile.deleteOne({ userId });
+    await ActivityLog.deleteMany({ userId });
+
+    // 2. Delete from Firebase Auth (Optional but recommended)
+    try {
+        await admin.auth().deleteUser(userId);
+    } catch (err: any) {
+        console.warn(`Firebase Delete Failed (User might be already gone): ${err.message}`);
+    }
+
+    res.status(200).json({ message: 'Account permanently deleted.' });
 }));
 
 export default router;
