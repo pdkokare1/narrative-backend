@@ -1,14 +1,13 @@
 // services/gamificationService.ts
 import Profile from '../models/profileModel';
-import Article from '../models/articleModel';
-import { IUserProfile, IBadge } from '../types';
+import { IBadge } from '../types';
 
 class GamificationService {
     
     // --- 1. Streak Logic ---
-    async updateStreak(userId: string): Promise<void> {
+    async updateStreak(userId: string): Promise<IBadge | null> {
         const profile = await Profile.findOne({ userId });
-        if (!profile) return;
+        if (!profile) return null;
 
         const now = new Date();
         const lastActive = profile.lastActiveDate ? new Date(profile.lastActiveDate) : new Date(0);
@@ -20,7 +19,7 @@ class GamificationService {
 
         // A. Same day activity? Do nothing.
         if (today === lastDate) {
-            return;
+            return null;
         }
 
         // B. Consecutive day? Increment.
@@ -43,45 +42,44 @@ class GamificationService {
         await profile.save();
         
         // Check for Streak Badges
-        await this.checkStreakBadges(profile);
+        return await this.checkStreakBadges(profile);
     }
 
     // --- 2. Badge Logic ---
-    async checkStreakBadges(profile: any) {
+    async checkStreakBadges(profile: any): Promise<IBadge | null> {
         const streakBadges = [
             { id: 'streak_3', label: '3 Day Streak', threshold: 3, icon: '🔥' },
             { id: 'streak_7', label: 'Week Warrior', threshold: 7, icon: '⚔️' },
             { id: 'streak_30', label: 'Monthly Master', threshold: 30, icon: '👑' }
         ];
 
-        let badgeAwarded = false;
+        let awardedBadge: IBadge | null = null;
+
         for (const badge of streakBadges) {
             if (profile.currentStreak >= badge.threshold) {
                 const hasBadge = profile.badges.some((b: IBadge) => b.id === badge.id);
                 if (!hasBadge) {
-                    profile.badges.push({
+                    awardedBadge = {
                         id: badge.id,
                         label: badge.label,
                         icon: badge.icon,
                         description: `Maintained a ${badge.threshold} day reading streak.`,
                         earnedAt: new Date()
-                    });
-                    badgeAwarded = true;
+                    };
+                    profile.badges.push(awardedBadge);
                     console.log(`🏆 Badge Awarded: ${badge.label}`);
                 }
             }
         }
-        if (badgeAwarded) await profile.save();
+        
+        if (awardedBadge) await profile.save();
+        return awardedBadge;
     }
 
-    async checkReadBadges(userId: string) {
+    async checkReadBadges(userId: string): Promise<IBadge | null> {
         const profile = await Profile.findOne({ userId });
-        if (!profile) return;
+        if (!profile) return null;
 
-        // Example: "The Centrist" (Read 5 Left and 5 Right articles)
-        // We would need to query the ActivityLog or keep counters. 
-        // For efficiency, we will use the existing counters on the profile.
-        
         const count = profile.articlesViewedCount;
         
         const viewBadges = [
@@ -90,22 +88,25 @@ class GamificationService {
             { id: 'reader_100', label: 'News Junkie', threshold: 100, icon: '🧠' }
         ];
 
-        let badgeAwarded = false;
+        let awardedBadge: IBadge | null = null;
+
         for (const badge of viewBadges) {
             if (count >= badge.threshold) {
                 if (!profile.badges.some((b: IBadge) => b.id === badge.id)) {
-                    profile.badges.push({
+                    awardedBadge = {
                         id: badge.id,
                         label: badge.label,
                         icon: badge.icon,
                         description: `Read ${badge.threshold} articles.`,
                         earnedAt: new Date()
-                    });
-                    badgeAwarded = true;
+                    };
+                    profile.badges.push(awardedBadge);
                 }
             }
         }
-        if (badgeAwarded) await profile.save();
+        
+        if (awardedBadge) await profile.save();
+        return awardedBadge;
     }
 }
 
