@@ -40,117 +40,94 @@ class KeyManager {
         if (defaultKey && !foundKeys.includes(defaultKey)) foundKeys.push(defaultKey);
 
         if (foundKeys.length === 0) {
-            console.warn(`⚠️ KeyManager: No keys found for ${providerName} (Prefix: ${envPrefix})`);
+            console.warn(`⚠️ No API Keys found for ${providerName} (Prefix: ${envPrefix})`);
             return;
         }
 
         foundKeys.forEach(k => {
             if (!this.keys.has(k)) {
-                this.keys.set(k, { 
-                    key: k, 
-                    provider: providerName, 
-                    status: 'active', 
-                    errorCount: 0, 
-                    lastUsed: 0, 
-                    lastFailed: 0 
+                this.keys.set(k, {
+                    key: k,
+                    provider: providerName,
+                    status: 'active',
+                    errorCount: 0,
+                    lastUsed: 0,
+                    lastFailed: 0
                 });
             }
         });
 
-        if (!this.providerIndices.has(providerName)) this.providerIndices.set(providerName, 0);
-        console.log(`🔐 KeyManager: Loaded ${foundKeys.length} keys for ${providerName}`);
+        console.log(`✅ Loaded ${foundKeys.length} keys for ${providerName}`);
     }
 
     /**
-     * SYNC STATE WITH REDIS
-     * Checks if Redis has "bad news" about this key (cooldowns from other instances).
+     * Gets the next available active key (Round Robin).
+     * Throws error if Circuit Breaker is active or no keys available.
      */
-    private async syncKeyStatus(keyObj: IKey): Promise<void> {
-        // @ts-ignore - Check if redis client is ready/connected
-        if (!redis.isReady && !redis.isOpen) return;
-
-        // Check if key is marked as failed/cooldown in Redis
-        const redisStatus = await redis.get(`key_status:${keyObj.key}`);
-        if (redisStatus) {
-            if (redisStatus === 'cooldown') {
-                keyObj.status = 'cooldown';
-                keyObj.lastFailed = Date.now(); // Refresh local timer
-            }
-        }
-    }
-
-    private checkCircuitBreaker() {
+    public async getKey(providerName: string): Promise<string> {
+        // 1. Check Circuit Breaker
         if (this.globalCircuitBreaker) {
             if (Date.now() > this.circuitBreakerResetTime) {
-                console.log("🟢 Global Circuit Breaker RESET. Resuming operations.");
+                console.log("🟢 Global Circuit Breaker Reset. Resuming AI operations.");
                 this.globalCircuitBreaker = false;
                 this.consecutiveGlobalErrors = 0;
             } else {
-                throw new Error("⛔ Global Circuit Breaker Active. API requests suspended.");
+                const waitTime = Math.ceil((this.circuitBreakerResetTime - Date.now()) / 1000);
+                throw new Error(`CIRCUIT_BREAKER_ACTIVE: System cooling down for ${waitTime}s.`);
             }
         }
+
+        // 2. Get Keys for Provider
+        const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
+        
+        // 3. Check for Cooldowns stored in Redis (Global Sync)
+        // @ts-ignore
+        if (redis.isReady || redis.isOpen) {
+            for (const k of allKeys) {
+                if (k.status === 'active') {
+                    const isCooling = await redis.get(`key_status:${k.key}`);
+                    if (isCooling) {
+                        k.status = 'cooldown';
+                        k.lastFailed = Date.now();
+                    }
+                }
+            }
+        }
+
+        // 4. Filter Active Keys
+        const activeKeys = allKeys.filter(k => {
+            if (k.status === 'active') return true;
+            if (k.status === 'cooldown' && (Date.now() - k.lastFailed > this.COOLDOWN_TIME)) {
+                k.status = 'active';
+                k.errorCount = 0;
+                return true;
+            }
+            return false;
+        });
+
+        if (activeKeys.length === 0) {
+            throw new Error(`NO_KEYS_AVAILABLE: All ${providerName} keys are exhausted or cooling down.`);
+        }
+
+        // 5. Round Robin Selection
+        let currentIndex = this.providerIndices.get(providerName) || 0;
+        const selectedKey = activeKeys[currentIndex % activeKeys.length];
+        
+        // Update index for next time
+        this.providerIndices.set(providerName, (currentIndex + 1) % activeKeys.length);
+        
+        selectedKey.lastUsed = Date.now();
+        return selectedKey.key;
     }
 
     /**
-     * Gets an available key. Now ASYNC to allow Redis checks.
+     * Reports a failure. If it's a Rate Limit (429), instant cooldown.
+     * If other error, increments counter.
      */
-    public async getKey(providerName: string): Promise<string> {
-        this.checkCircuitBreaker();
-
-        const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
-        if (allKeys.length === 0) throw new Error(`No keys configured for ${providerName}`);
-
-        let currentIndex = this.providerIndices.get(providerName) || 0;
-        let attempts = 0;
-
-        while (attempts < allKeys.length) {
-            const keyObj = allKeys[currentIndex];
-            
-            // 1. Sync with Redis (Persistence Check)
-            await this.syncKeyStatus(keyObj);
-
-            // 2. Check Cooldown
-            if (keyObj.status === 'cooldown') {
-                const timeInCooldown = Date.now() - keyObj.lastFailed;
-                if (timeInCooldown > this.COOLDOWN_TIME) {
-                    // Revive key
-                    keyObj.status = 'active';
-                    keyObj.errorCount = 0;
-                    // @ts-ignore
-                    if (redis.isReady || redis.isOpen) {
-                        await redis.set(`key_status:${keyObj.key}`, 'active', 1); // Clear redis flag
-                    }
-                    console.log(`✅ KeyManager: Key ...${keyObj.key.slice(-4)} revived for ${providerName}`);
-                }
-            }
-
-            // 3. Return if Active
-            if (keyObj.status === 'active') {
-                this.providerIndices.set(providerName, (currentIndex + 1) % allKeys.length);
-                keyObj.lastUsed = Date.now();
-                return keyObj.key;
-            }
-            
-            currentIndex = (currentIndex + 1) % allKeys.length;
-            attempts++;
-        }
-        throw new Error(`All keys for ${providerName} are exhausted or on cooldown.`);
-    }
-
-    public reportSuccess(key: string): void {
-        const keyObj = this.keys.get(key);
-        if (keyObj) {
-            keyObj.errorCount = 0;
-            if (keyObj.status !== 'active') keyObj.status = 'active';
-        }
-        // Reduce global error count on success
-        if (this.consecutiveGlobalErrors > 0) this.consecutiveGlobalErrors--;
-    }
-
     public async reportFailure(key: string, isRateLimit: boolean = false): Promise<void> {
         this.consecutiveGlobalErrors++;
         
-        // Trigger Circuit Breaker
+        // Trigger Circuit Breaker if system is failing globally
         if (this.consecutiveGlobalErrors >= this.GLOBAL_ERROR_THRESHOLD) {
             this.globalCircuitBreaker = true;
             this.circuitBreakerResetTime = Date.now() + (5 * 60 * 1000); // 5 minutes
@@ -165,7 +142,7 @@ class KeyManager {
         if (isRateLimit) {
             keyObj.status = 'cooldown';
             console.warn(`⏳ KeyManager: Rate Limit hit on ...${key.slice(-4)}. Cooling down.`);
-            // Persist Cooldown to Redis (TTL = Cooldown Time)
+            // Persist Cooldown to Redis
             // @ts-ignore
             if (redis.isReady || redis.isOpen) {
                 await redis.set(`key_status:${key}`, 'cooldown', this.COOLDOWN_TIME / 1000);
@@ -175,13 +152,18 @@ class KeyManager {
             if (keyObj.errorCount >= this.MAX_ERRORS_BEFORE_COOLDOWN) {
                 keyObj.status = 'cooldown';
                 console.warn(`⚠️ KeyManager: Key ...${key.slice(-4)} unstable. Cooling down.`);
-                // @ts-ignore
-                if (redis.isReady || redis.isOpen) {
-                    await redis.set(`key_status:${key}`, 'cooldown', this.COOLDOWN_TIME / 1000);
-                }
             }
+        }
+    }
+
+    public reportSuccess(key: string): void {
+        this.consecutiveGlobalErrors = 0; // Reset global error count on success
+        const keyObj = this.keys.get(key);
+        if (keyObj) {
+            keyObj.errorCount = 0;
+            if (keyObj.status !== 'active') keyObj.status = 'active';
         }
     }
 }
 
-export = new KeyManager();
+export default new KeyManager();
