@@ -19,12 +19,10 @@ class AIService {
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL): Promise<Partial<IArticle>> {
     const maxRetries = 2;
-    let lastError = null;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       let apiKey = '';
       try {
-        // Updated: await getKey
         apiKey = await KeyManager.getKey('GEMINI');
         
         const prompt = await promptManager.getAnalysisPrompt(article);
@@ -40,61 +38,59 @@ class AIService {
         }, { timeout: 60000 });
 
         KeyManager.reportSuccess(apiKey);
-        return this.parseResponse(response.data);
+        return this.parseGeminiResponse(response.data);
 
       } catch (error: any) {
-        lastError = error;
-        const status = error.response?.status;
-        
-        if (status === 429) {
-             await KeyManager.reportFailure(apiKey, true);
-             await sleep(500); 
-        } else if (status >= 500) {
-            console.warn(`⏳ AI Service (${targetModel}) 5xx Retry ${attempt}/${maxRetries}...`);
-            await KeyManager.reportFailure(apiKey, false);
-            await sleep(2000 * attempt); 
-        } else {
-            await KeyManager.reportFailure(apiKey, false); 
-            break; 
+        // --- NEW: Circuit Breaker Handling ---
+        if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
+            console.warn(`⚡ AI Skipped: ${error.message}`);
+            // Fallback to basic object to allow saving article without AI
+            return {
+                summary: article.description || "Analysis unavailable (System Busy)",
+                category: "Uncategorized",
+                politicalLean: "Not Applicable",
+                biasScore: 0,
+                trustScore: 0,
+                analysisType: 'SentimentOnly', // Mark as basic
+                sentiment: 'Neutral'
+            };
         }
+
+        const isRateLimit = error.response?.status === 429;
+        if (apiKey) await KeyManager.reportFailure(apiKey, isRateLimit);
+        
+        console.warn(`⚠️ AI Attempt ${attempt} failed: ${error.message}`);
+        
+        if (attempt === maxRetries) throw error;
+        await sleep(2000 * attempt);
       }
     }
-    throw lastError || new Error(`AI Analysis failed after ${maxRetries} attempts.`);
+    throw new Error("AI Analysis Failed after retries");
   }
 
+  // --- EMBEDDING (Vector) ---
   async createEmbedding(text: string): Promise<number[] | null> {
-      if (!text) return null;
-      let apiKey = '';
-      try {
-          // Updated: await getKey
-          apiKey = await KeyManager.getKey('GEMINI');
-          
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
-          const safeText = text.substring(0, 8000); 
+    try {
+        const apiKey = await KeyManager.getKey('GEMINI'); // Uses same pool
+        const cleanText = text.replace(/\n/g, " ").substring(0, 2000);
+        
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
+        const response = await axios.post(url, {
+            model: `models/${EMBEDDING_MODEL}`,
+            content: { parts: [{ text: cleanText }] }
+        });
 
-          const response = await axios.post(url, {
-              content: { parts: [{ text: safeText }] },
-              taskType: "CLUSTERING"
-          });
+        KeyManager.reportSuccess(apiKey);
+        return response.data.embedding.values;
 
-          if (response.data?.embedding?.values) {
-              KeyManager.reportSuccess(apiKey);
-              return response.data.embedding.values;
-          }
-          return null;
-      } catch (error: any) {
-          const status = error.response?.status;
-          if (status === 429) {
-              await KeyManager.reportFailure(apiKey, true);
-          } else {
-              await KeyManager.reportFailure(apiKey, false);
-          }
-          console.error(`❌ Embedding Failed: ${error.message}`);
-          throw new Error("Embedding service failure."); 
-      }
+    } catch (error: any) {
+        console.error("Embedding Error:", error.message);
+        return null; // Fail silently for embeddings, not critical
+    }
   }
 
-  private parseResponse(data: any): Partial<IArticle> {
+  // --- HELPER: Parser ---
+  private parseGeminiResponse(data: any): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates');
         
@@ -109,6 +105,7 @@ class AIService {
 
         let parsed = JSON.parse(text);
 
+        // Sanitize & Default
         parsed.summary = parsed.summary || 'Summary unavailable';
         parsed.analysisType = ['Full', 'SentimentOnly'].includes(parsed.analysisType) ? parsed.analysisType : 'Full';
         parsed.sentiment = parsed.sentiment || 'Neutral';
@@ -127,9 +124,9 @@ class AIService {
         return parsed;
 
     } catch (error: any) {
-        throw new Error(`Failed to parse AI JSON: ${error.message}`);
+        throw new Error(`Parsing failed: ${error.message}`);
     }
   }
 }
 
-export = new AIService();
+export default new AIService();
