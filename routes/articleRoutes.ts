@@ -40,216 +40,187 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
 
     // B. Calculate Logic (48h Window)
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
-    const trending = await Article.aggregate([
-        { $match: { publishedAt: { $gte: twoDaysAgo } } },
+    
+    const aggregation = [
+        { 
+            $match: { 
+                publishedAt: { $gte: twoDaysAgo },
+                clusterTopic: { $exists: true, $ne: null } 
+            } 
+        },
         { 
             $group: { 
                 _id: "$clusterTopic", 
                 count: { $sum: 1 },
-                avgTrust: { $avg: "$trustScore" },
-                latestDate: { $max: "$publishedAt" }
+                sampleScore: { $max: "$trustScore" } // Quality check
             } 
         },
-        { $match: { _id: { $ne: null }, count: { $gte: 2 } } }, 
-        { 
-            $project: {
-                topic: "$_id",
-                count: 1,
-                score: { 
-                    $add: [
-                        { $multiply: ["$count", 2] }, 
-                        { $cond: [{ $gte: ["$avgTrust", 70] }, 5, 0] } 
-                    ]
-                }
-            }
-        },
-        { $sort: { score: -1, latestDate: -1 } },
+        { $match: { count: { $gte: 3 } } }, // Must have at least 3 articles
+        { $sort: { count: -1 } },
         { $limit: 10 }
-    ]);
-
-    // C. Save to Redis (30 mins)
-    await redis.set(CACHE_KEY, trending, 1800);
-
-    res.status(200).json({ topics: trending });
-}));
-
-// --- 2. Main Feed (With Caching) ---
-router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(async (req: Request, res: Response) => {
-    const filters = req.query;
-    
-    // --- CACHE CHECK (Only for default Page 0) ---
-    const isDefaultFeed = filters.offset === '0' && 
-                          (!filters.category || filters.category === 'All Categories') && 
-                          (!filters.lean || filters.lean === 'All Leans');
-    
-    if (isDefaultFeed) {
-        const cachedFeed = await redis.get('latest_feed_page_0');
-        if (cachedFeed) {
-            return res.status(200).json(cachedFeed);
-        }
-    }
-
-    // --- DB QUERY ---
-    let matchStage: any = {};
-
-    if (filters.category && filters.category !== 'All Categories') matchStage.category = filters.category;
-    if (filters.lean && filters.lean !== 'All Leans') matchStage.politicalLean = filters.lean;
-    if (filters.region && filters.region !== 'All') matchStage.country = filters.region;
-    
-    if (filters.articleType) {
-        if (filters.articleType === 'Hard News') matchStage.analysisType = 'Full';
-        if (filters.articleType === 'Opinion & Reviews') matchStage.analysisType = 'SentimentOnly';
-    }
-
-    if (filters.quality && filters.quality !== 'All Quality Levels') {
-        // Fix: Explicitly cast to string for TypeScript
-        const qualityStr = filters.quality as string;
-        const minTrust = parseInt(qualityStr);
-        
-        if (!isNaN(minTrust)) {
-            matchStage.trustScore = { $gte: minTrust };
-        } else {
-            const range = qualityStr.match(/(\d+)-(\d+)/);
-            if (range) matchStage.trustScore = { $gte: parseInt(range[1]), $lt: parseInt(range[2]) + 1 };
-        }
-    }
-
-    let sortStage: any = { publishedAt: -1, createdAt: -1 };
-    let postGroupSortStage: any = { "latestArticle.publishedAt": -1 }; 
-    
-    if (filters.sort === 'Highest Quality') { sortStage = { trustScore: -1 }; postGroupSortStage = { "latestArticle.trustScore": -1 }; }
-    else if (filters.sort === 'Most Covered') { postGroupSortStage = { clusterCount: -1 }; }
-    else if (filters.sort === 'Lowest Bias') { sortStage = { biasScore: 1 }; postGroupSortStage = { "latestArticle.biasScore": 1 }; }
-
-    const aggregation = [
-      { $match: matchStage },
-      { $sort: sortStage },
-      { $group: { _id: { $ifNull: [ "$clusterId", "$_id" ] }, latestArticle: { $first: '$$ROOT' }, clusterCount: { $sum: 1 } } },
-      { $addFields: { "latestArticle.clusterCount": "$clusterCount" } },
-      { $replaceRoot: { newRoot: '$latestArticle' } },
-      { $sort: postGroupSortStage },
-      { $facet: { articles: [{ $skip: Number(filters.offset) }, { $limit: Number(filters.limit) }], pagination: [{ $count: 'total' }] } }
     ];
 
-    const result = await Article.aggregate(aggregation);
+    const results = await Article.aggregate(aggregation);
     
-    const responseData = {
-      articles: result[0].articles,
-      pagination: { total: result[0].pagination[0] ? result[0].pagination[0].total : 0 }
-    };
+    const topics = results.map(r => ({
+        topic: r._id,
+        count: r.count,
+        score: r.sampleScore
+    }));
 
-    // --- CACHE SAVE (Only for default Page 0) ---
-    if (isDefaultFeed && responseData.articles.length > 0) {
-        await redis.set('latest_feed_page_0', responseData, 60); // Cache for 60 seconds
-    }
+    // C. Save to Redis (30 mins)
+    await redis.set(CACHE_KEY, topics, 1800);
 
-    res.status(200).json(responseData);
+    res.status(200).json({ topics });
 }));
 
-// --- 3. For You (Hybrid Feed) ---
-router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response) => {
-    // @ts-ignore - User exists from auth middleware
-    const userId = req.user.uid;
-    const profile = await Profile.findOne({ userId });
+// --- 2. Intelligent Search (Fuzzy + Strict) ---
+router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req: Request, res: Response) => {
+    const query = (req.query.q as string).trim();
+    const limit = parseInt(req.query.limit as string) || 12;
+    
+    if (!query) return res.status(200).json({ articles: [], pagination: { total: 0 } });
 
-    // A. If new user, return high-quality diverse mix
-    if (!profile || profile.articlesViewedCount < 5) {
-        const mix = await Article.aggregate([
-            { $match: { trustScore: { $gt: 70 }, publishedAt: { $gte: new Date(Date.now() - 72 * 60 * 60 * 1000) } } },
-            { $sample: { size: 15 } }
-        ]);
-        return res.json({ articles: mix, meta: { type: 'General Top Picks' } });
+    // A. Strict Text Search (Fast & Ranked)
+    const strictResults = await Article.find(
+        { $text: { $search: query } },
+        { score: { $meta: "textScore" } }
+    )
+    .sort({ score: { $meta: "textScore" }, publishedAt: -1 }) // Relevance + Recency
+    .limit(limit)
+    .lean();
+
+    // B. Fallback: Regex Search (If strict results are low)
+    let finalResults = strictResults;
+    
+    if (strictResults.length < 5) {
+        // "Fuzzy" match on headline OR summary
+        // Escape regex special chars to prevent crashes
+        const safeQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(safeQuery, 'i');
+
+        const fuzzyResults = await Article.find({
+            $or: [
+                { headline: { $regex: regex } },
+                { clusterTopic: { $regex: regex } }
+            ],
+            // Exclude IDs we already found
+            _id: { $nin: strictResults.map(r => r._id) }
+        })
+        .sort({ publishedAt: -1 })
+        .limit(limit - strictResults.length)
+        .lean();
+
+        finalResults = [...strictResults, ...fuzzyResults];
     }
 
-    // B. Analyze History
+    res.status(200).json({ 
+        articles: finalResults,
+        pagination: { total: finalResults.length }
+    });
+}));
+
+// --- 3. Main Feed (Filtered & Paginated) ---
+router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(async (req: Request, res: Response) => {
+    const { category, lean, region, articleType, quality, sort, limit, offset } = req.query;
+    
+    const query: any = {};
+
+    // Filters
+    if (category && category !== 'All Categories') query.category = category;
+    if (lean && lean !== 'All Leans') query.politicalLean = lean;
+    
+    if (region === 'India') query.country = 'India';
+    else if (region === 'Global') query.country = { $ne: 'India' };
+
+    if (articleType === 'Hard News') query.analysisType = 'Full';
+    else if (articleType === 'Opinion & Reviews') query.analysisType = 'SentimentOnly';
+
+    if (quality && quality !== 'All Quality Levels') {
+        // Map UI labels to Grades
+        const gradeMap: Record<string, string[]> = {
+            'A+ Excellent (90-100)': ['A+'],
+            'A High (80-89)': ['A', 'A-'],
+            'B Professional (70-79)': ['B+', 'B', 'B-'],
+            'C Acceptable (60-69)': ['C+', 'C', 'C-'],
+            'D-F Poor (0-59)': ['D+', 'D', 'D-', 'F', 'D-F']
+        };
+        const grades = gradeMap[quality as string];
+        if (grades) query.credibilityGrade = { $in: grades };
+    }
+
+    // Sort Logic
+    let sortOptions: any = { publishedAt: -1 }; // Default: Latest
+    if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
+    else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 }; // Needs cluster aggregation to be accurate, but schema has placeholder
+    else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 }; // Ascending
+
+    // Execute
+    const articles = await Article.find(query)
+        .sort(sortOptions)
+        .skip(Number(offset))
+        .limit(Number(limit))
+        .lean();
+
+    const total = await Article.countDocuments(query);
+
+    res.status(200).json({ articles, pagination: { total } });
+}));
+
+// --- 4. "For You" Feed (The "Balanced" Algorithm) ---
+router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user.uid;
+    
+    // 1. Get User's Bias History
     const history = await ActivityLog.find({ userId, action: 'view_analysis' })
         .sort({ timestamp: -1 })
-        .limit(20);
-        // Removed populate to keep query simple, logic can be added if needed
-
-    // (Simplified logic for brevity - usually involves counting categories)
-    // For now, we fetch a "Balanced Mix" based on recent reads
-    const balancedMix = await Article.aggregate([
-        { $match: { publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } } },
-        { $sample: { size: 20 } }
-    ]);
-
-    res.json({ articles: balancedMix, meta: { type: 'Smart Mix' } });
-}));
-
-// --- 4. Saved Articles ---
-router.get('/articles/saved', asyncHandler(async (req: Request, res: Response) => {
-    // @ts-ignore
-    const profile = await Profile.findOne({ userId: req.user.uid });
-    if (!profile || !profile.savedArticles) return res.json({ articles: [] });
-
-    // Fetch articles where ID is in the saved list
-    const articles = await Article.find({ '_id': { $in: profile.savedArticles } })
-                                  .sort({ publishedAt: -1 });
+        .limit(20)
+        .lean();
     
-    res.status(200).json({ articles });
-}));
-
-// --- 5. Toggle Save ---
-router.post('/articles/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
-    const { id } = req.params;
-    // @ts-ignore
-    const userId = req.user.uid;
-
-    const profile = await Profile.findOne({ userId });
-    if (!profile) {
-        res.status(404);
-        throw new Error('Profile not found');
+    // If no history, return standard trending
+    if (history.length === 0) {
+        const standard = await Article.find({}).sort({ publishedAt: -1 }).limit(10).lean();
+        return res.status(200).json({ articles: standard, meta: { reason: "No history" } });
     }
 
-    // Convert string ID to ObjectId for comparison/storage if needed
-    const articleObjectId = new mongoose.Types.ObjectId(id);
+    // 2. Identify "Echo Chamber" risk
+    const articleIds = history.map(h => h.articleId);
+    const viewedDocs = await Article.find({ _id: { $in: articleIds } }).select('politicalLean category');
     
-    const isSaved = profile.savedArticles.some(a => a.toString() === id);
+    const leanCounts: Record<string, number> = {};
+    viewedDocs.forEach(d => { leanCounts[d.politicalLean] = (leanCounts[d.politicalLean] || 0) + 1; });
     
-    if (isSaved) {
-        profile.savedArticles = profile.savedArticles.filter(a => a.toString() !== id);
-        await profile.save();
-        res.status(200).json({ message: 'Article removed', savedArticles: profile.savedArticles });
-    } else {
-        profile.savedArticles.push(articleObjectId);
-        await profile.save();
-        res.status(200).json({ message: 'Article saved', savedArticles: profile.savedArticles });
-    }
+    // Find dominant lean
+    let dominantLean = 'Center';
+    let maxCount = 0;
+    Object.entries(leanCounts).forEach(([lean, count]) => {
+        if (count > maxCount) { maxCount = count; dominantLean = lean; }
+    });
+
+    // 3. Fetch "Challenger" Articles (Opposite views)
+    let targetLean = ['Center'];
+    if (dominantLean.includes('Left')) targetLean = ['Center', 'Right-Leaning', 'Right'];
+    else if (dominantLean.includes('Right')) targetLean = ['Center', 'Left-Leaning', 'Left'];
+
+    const challengerArticles = await Article.find({
+        politicalLean: { $in: targetLean },
+        publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
+    })
+    .sort({ trustScore: -1 }) // Best quality challengers
+    .limit(10)
+    .lean();
+
+    // 4. Mark them
+    const processed = challengerArticles.map(a => ({ ...a, suggestionType: 'Challenge' }));
+
+    res.status(200).json({ 
+        articles: processed, 
+        meta: { basedOnCategory: 'Your Reading History', usualLean: dominantLean } 
+    });
 }));
 
-// --- 6. Search ---
-router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req: Request, res: Response) => {
-    const { q, limit } = req.query;
-    const results = await Article.find(
-        { $text: { $search: q as string } },
-        { score: { $meta: 'textScore' } }
-    )
-    .sort({ score: { $meta: 'textScore' }, publishedAt: -1 })
-    .limit(Number(limit));
-
-    res.status(200).json({ articles: results, pagination: { total: results.length } });
-}));
-
-// --- 7. Cluster Detail ---
-router.get('/cluster/:id', validate(schemas.clusterView, 'params'), asyncHandler(async (req: Request, res: Response) => {
-    const clusterId = parseInt(req.params.id);
-    const articles = await Article.find({ clusterId }).sort({ biasScore: 1 }); // Sort by least biased first
-
-    const response = {
-        left: articles.filter(a => ['Left', 'Left-Leaning'].includes(a.politicalLean) && a.analysisType === 'Full'),
-        center: articles.filter(a => a.politicalLean === 'Center' && a.analysisType === 'Full'),
-        right: articles.filter(a => ['Right', 'Right-Leaning'].includes(a.politicalLean) && a.analysisType === 'Full'),
-        reviews: articles.filter(a => a.analysisType === 'SentimentOnly'),
-        stats: { total: articles.length }
-    };
-
-    res.status(200).json(response);
-}));
-
-// --- 8. Personalized Feed (Advanced) ---
+// --- 5. Personalized "My Mix" Feed ---
 router.get('/articles/personalized', asyncHandler(async (req: Request, res: Response) => {
-    // @ts-ignore
     const userId = req.user.uid;
     
     // 1. Get recent activity
@@ -285,17 +256,58 @@ router.get('/articles/personalized', asyncHandler(async (req: Request, res: Resp
                 publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } // Last 3 days
             } 
         },
-        { $sort: { trustScore: -1 } },
-        { $limit: 20 }
+        { $sample: { size: 15 } } // Randomize within preferences
     ]);
 
-    res.json({ 
-        articles: recommendations, 
-        meta: { 
-            topCategories,
-            debug: { categoryCounts }
-        } 
+    const finalFeed = recommendations.map(a => ({ ...a, suggestionType: 'Comfort' }));
+
+    res.status(200).json({ 
+        articles: finalFeed, 
+        meta: { topCategories } 
     });
+}));
+
+// --- 6. Saved Articles ---
+router.get('/saved', asyncHandler(async (req: Request, res: Response) => {
+    const profile = await Profile.findOne({ userId: req.user.uid }).select('savedArticles');
+    
+    if (!profile || !profile.savedArticles.length) {
+        return res.status(200).json({ articles: [] });
+    }
+
+    // Fetch full article objects
+    const articles = await Article.find({ _id: { $in: profile.savedArticles } })
+        .sort({ publishedAt: -1 })
+        .lean();
+
+    res.status(200).json({ articles });
+}));
+
+// --- 7. Toggle Save Article ---
+router.post('/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const userId = req.user.uid;
+
+    const profile = await Profile.findOne({ userId });
+    if (!profile) {
+        res.status(404);
+        throw new Error('Profile not found');
+    }
+
+    const articleId = new mongoose.Types.ObjectId(id);
+    const index = profile.savedArticles.indexOf(articleId);
+
+    let message = '';
+    if (index > -1) {
+        profile.savedArticles.splice(index, 1);
+        message = 'Article unsaved';
+    } else {
+        profile.savedArticles.push(articleId);
+        message = 'Article saved';
+    }
+
+    await profile.save();
+    res.status(200).json({ message, savedArticles: profile.savedArticles });
 }));
 
 export default router;
