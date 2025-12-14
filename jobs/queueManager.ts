@@ -6,6 +6,7 @@ import logger from '../utils/logger';
 // --- 1. Redis Connection Config ---
 const redisUrl = process.env.REDIS_URL;
 let connectionConfig: ConnectionOptions | undefined;
+let isRedisConfigured = false;
 
 if (redisUrl) {
     try {
@@ -17,77 +18,105 @@ if (redisUrl) {
             username: url.username,
             maxRetriesPerRequest: null 
         };
+        // Handle rediss:// protocol
         if (url.protocol === 'rediss:') {
             connectionConfig.tls = { rejectUnauthorized: false };
         }
+        isRedisConfigured = true;
     } catch (e: any) {
         logger.error(`❌ Invalid REDIS_URL: ${e.message}`);
     }
+} else {
+    logger.warn("⚠️ REDIS_URL not set. Background jobs will be disabled.");
 }
 
-// --- 2. Define the Queue ---
-const QUEUE_NAME = 'news-fetch-queue';
-const newsQueue = new Queue(QUEUE_NAME, { 
-    connection: connectionConfig,
-    defaultJobOptions: {
-        removeOnComplete: 100, 
-        removeOnFail: 500,     
-        attempts: 3,           
-        backoff: {
-            type: 'exponential',
-            delay: 5000        
-        }
-    }
-});
+// --- 2. Initialize Queue & Worker Safely ---
+let newsQueue: Queue | null = null;
+let newsWorker: Worker | null = null;
 
-// --- 3. Define the Worker ---
-const newsWorker = new Worker(QUEUE_NAME, async (job: Job) => {
-    logger.info(`👷 Worker started job: ${job.name} (ID: ${job.id})`);
-    
+if (isRedisConfigured && connectionConfig) {
     try {
-        // Run the actual heavy lifting
-        const result = await newsFetcher.run();
-        
-        if (!result) {
-            return { status: 'skipped', reason: 'concurrent_execution' };
-        }
-        return { status: 'completed' };
+        newsQueue = new Queue('news-fetch-queue', { 
+            connection: connectionConfig,
+            defaultJobOptions: {
+                removeOnComplete: 100, 
+                removeOnFail: 500,     
+                attempts: 3,           
+                backoff: {
+                    type: 'exponential',
+                    delay: 5000        
+                }
+            }
+        });
+
+        newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
+            logger.info(`👷 Worker started job: ${job.name} (ID: ${job.id})`);
+            
+            try {
+                // Run the actual heavy lifting
+                const result = await newsFetcher.run();
+                
+                if (!result) {
+                    return { status: 'skipped', reason: 'concurrent_execution' };
+                }
+                return { status: 'completed' };
+            } catch (err: any) {
+                logger.error(`❌ Worker Job Failed: ${err.message}`);
+                throw err; 
+            }
+        }, { 
+            connection: connectionConfig,
+            concurrency: 1 
+        });
+
+        // Event Listeners
+        newsWorker.on('completed', (job: Job) => {
+            logger.info(`✅ Job ${job.id} completed successfully.`);
+        });
+
+        newsWorker.on('failed', (job: Job | undefined, err: Error) => {
+            logger.error(`🔥 Job ${job?.id || 'unknown'} failed: ${err.message}`);
+        });
+
+        logger.info("✅ Job Queue Initialized");
+
     } catch (err: any) {
-        logger.error(`❌ Worker Job Failed: ${err.message}`);
-        throw err; 
+        logger.error(`❌ Failed to initialize Queue: ${err.message}`);
+        newsQueue = null;
+        newsWorker = null;
     }
-}, { 
-    connection: connectionConfig,
-    concurrency: 1 
-});
+}
 
-// --- 4. Event Listeners ---
-newsWorker.on('completed', (job: Job) => {
-    logger.info(`✅ Job ${job.id} completed successfully.`);
-});
-
-newsWorker.on('failed', (job: Job | undefined, err: Error) => {
-    if (job) {
-        logger.error(`🔥 Job ${job.id} failed: ${err.message}`);
-    } else {
-        logger.error(`🔥 Job failed (no ID): ${err.message}`);
-    }
-});
-
-// --- 5. Export ---
+// --- 3. Safe Export ---
 const queueManager = {
     addFetchJob: async (name: string = 'scheduled-fetch', data: any = {}) => {
-        return await newsQueue.add(name, data);
+        if (!newsQueue) {
+            logger.warn("⚠️ Cannot add job: Redis unavailable.");
+            return null;
+        }
+        try {
+            return await newsQueue.add(name, data);
+        } catch (err: any) {
+            logger.error(`❌ Failed to add job: ${err.message}`);
+            return null;
+        }
     },
     
     getStats: async () => {
-        const [waiting, active, completed, failed] = await Promise.all([
-            newsQueue.getWaitingCount(),
-            newsQueue.getActiveCount(),
-            newsQueue.getCompletedCount(),
-            newsQueue.getFailedCount()
-        ]);
-        return { waiting, active, completed, failed };
+        if (!newsQueue) {
+            return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'disabled' };
+        }
+        try {
+            const [waiting, active, completed, failed] = await Promise.all([
+                newsQueue.getWaitingCount(),
+                newsQueue.getActiveCount(),
+                newsQueue.getCompletedCount(),
+                newsQueue.getFailedCount()
+            ]);
+            return { waiting, active, completed, failed, status: 'active' };
+        } catch (err) {
+            return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'error' };
+        }
     }
 };
 
