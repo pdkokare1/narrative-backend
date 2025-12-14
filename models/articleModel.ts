@@ -12,15 +12,15 @@ const articleSchema = new Schema<ArticleDocument>({
   headline: { type: String, required: true, trim: true },
   summary: { type: String, required: true, trim: true },
   source: { type: String, required: true, trim: true },
-  category: { type: String, required: true, trim: true, index: true }, // Simple index is faster for filters
+  category: { type: String, required: true, trim: true, index: true }, 
   politicalLean: { type: String, required: true, trim: true, index: true },
-  url: { type: String, required: true, unique: true, trim: true }, // Unique index covers lookup
+  url: { type: String, required: true, unique: true, trim: true }, 
   imageUrl: { type: String, trim: true },
   
   // Audio Caching Field
   audioUrl: { type: String, default: null }, 
   
-  publishedAt: { type: Date, default: Date.now, index: true }, // Critical for sorting
+  publishedAt: { type: Date, default: Date.now, index: true }, 
   
   // Analysis Data
   analysisType: { type: String, default: 'Full', enum: ['Full', 'SentimentOnly'] },
@@ -36,7 +36,7 @@ const articleSchema = new Schema<ArticleDocument>({
   reliabilityScore: { type: Number, default: 0, min: 0, max: 100 },
   reliabilityGrade: String,
   reliabilityComponents: Schema.Types.Mixed,
-  trustScore: { type: Number, default: 0, min: 0, max: 100, index: true }, // Indexed for quality sorting
+  trustScore: { type: Number, default: 0, min: 0, max: 100, index: true }, 
   trustLevel: String,
   
   // Coverage Stats
@@ -52,7 +52,7 @@ const articleSchema = new Schema<ArticleDocument>({
   secondaryNoun: { type: String, trim: true, default: null },
   
   // Vector Embedding
-  embedding: { type: [Number], select: false }, // Exclude from default queries to save bandwidth
+  embedding: { type: [Number], select: false }, 
   
   keyFindings: [String],
   recommendations: [String],
@@ -77,10 +77,14 @@ articleSchema.index({
 });
 
 // --- OPTIMIZED COMPOUND INDEXES ---
-articleSchema.index({ category: 1, publishedAt: -1 }); // Category feeds
-articleSchema.index({ politicalLean: 1, publishedAt: -1 }); // Lean feeds
-articleSchema.index({ clusterId: 1, publishedAt: -1 }); // Cluster timeline view
-articleSchema.index({ country: 1, publishedAt: -1 }); // Regional feeds
+articleSchema.index({ category: 1, publishedAt: -1 }); 
+articleSchema.index({ politicalLean: 1, publishedAt: -1 }); 
+articleSchema.index({ clusterId: 1, publishedAt: -1 }); 
+articleSchema.index({ country: 1, publishedAt: -1 }); 
+
+// ** NEW: For You Feed Optimization **
+// Allows fast filtering by category AND lean simultaneously
+articleSchema.index({ category: 1, politicalLean: 1, publishedAt: -1 });
 
 // --- DATA RETENTION (TTL INDEX) ---
 // Automatically delete articles older than 90 days (7776000 seconds)
