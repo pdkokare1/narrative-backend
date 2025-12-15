@@ -284,7 +284,7 @@ router.get('/saved', asyncHandler(async (req: Request, res: Response) => {
     res.status(200).json({ articles });
 }));
 
-// --- 7. Toggle Save Article ---
+// --- 7. Toggle Save Article (FIXED) ---
 router.post('/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
     const userId = req.user.uid;
@@ -296,13 +296,19 @@ router.post('/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(a
     }
 
     const articleId = new mongoose.Types.ObjectId(id);
-    const index = profile.savedArticles.indexOf(articleId);
-
+    
+    // FIX: Use String comparison for reliable check
+    const strId = id.toString();
+    const currentSaved = profile.savedArticles.map(s => s.toString());
+    
     let message = '';
-    if (index > -1) {
-        profile.savedArticles.splice(index, 1);
+    
+    if (currentSaved.includes(strId)) {
+        // Remove
+        profile.savedArticles = profile.savedArticles.filter(s => s.toString() !== strId) as any;
         message = 'Article unsaved';
     } else {
+        // Add
         profile.savedArticles.push(articleId);
         message = 'Article saved';
     }
