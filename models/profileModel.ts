@@ -42,7 +42,7 @@ const profileSchema = new Schema<ProfileDocument>({
   comparisonsViewedCount: { type: Number, default: 0 },
   articlesSharedCount: { type: Number, default: 0 },
   
-  // Gamification (NEW)
+  // Gamification
   currentStreak: { type: Number, default: 0 },
   lastActiveDate: { type: Date, default: Date.now },
   badges: [badgeSchema],
@@ -52,6 +52,13 @@ const profileSchema = new Schema<ProfileDocument>({
     type: Schema.Types.ObjectId,
     ref: 'Article' 
   }],
+  
+  // AI Personalization Vector (New)
+  userEmbedding: { 
+    type: [Number], 
+    default: [],
+    select: false // Don't return this huge array in standard API calls
+  },
   
   // Push Notification Token
   fcmToken: { type: String, default: null },
