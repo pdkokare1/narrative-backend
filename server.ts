@@ -6,6 +6,8 @@ import cron from 'node-cron';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import mongoSanitize from 'express-mongo-sanitize';
+import hpp from 'hpp';
 import * as admin from 'firebase-admin';
 
 // --- 1. Load & Validate Config FIRST ---
@@ -51,11 +53,19 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 app.set('trust proxy', 1);
+
+// --- 3. SECURITY MIDDLEWARE STACK ---
 app.use(helmet({ 
   contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" } 
 }));
 app.use(compression());
+
+// Prevent NoSQL Injection
+app.use(mongoSanitize());
+
+// Prevent HTTP Parameter Pollution
+app.use(hpp());
 
 app.use(cors({
   origin: [
@@ -199,8 +209,23 @@ app.use(errorHandler);
 const PORT = config.port || 3001;
 const HOST = '0.0.0.0'; 
 
-app.listen(Number(PORT), HOST, () => {
+const server = app.listen(Number(PORT), HOST, () => {
     logger.info(`Server running on http://${HOST}:${PORT}`);
 });
+
+// --- GRACEFUL SHUTDOWN ---
+const gracefulShutdown = () => {
+    logger.info('🛑 Received Kill Signal, shutting down gracefully...');
+    server.close(() => {
+        logger.info('Http server closed.');
+        mongoose.connection.close(false).then(() => {
+            logger.info('MongoDB connection closed.');
+            process.exit(0);
+        });
+    });
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 export default app;
