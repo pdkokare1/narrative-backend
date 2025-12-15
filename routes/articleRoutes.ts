@@ -1,4 +1,4 @@
-// routes/articleRoutes.ts
+// src/routes/articleRoutes.ts
 import express, { Request, Response } from 'express';
 import mongoose from 'mongoose';
 import asyncHandler from '../utils/asyncHandler';
