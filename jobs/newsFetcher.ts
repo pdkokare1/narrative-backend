@@ -13,7 +13,9 @@ function sleep(ms: number) {
 
 // --- PIPELINE STEPS ---
 
-// Step 1: Filter Duplicates (URL Check)
+// Step 1: Filter Duplicates (URL Check Only)
+// We purposely DO NOT check title similarity here to allow "Compare Coverage" 
+// (multiple sources covering the same event).
 async function isDuplicate(url: string): Promise<boolean> {
     if (!url) return true;
     return await Article.exists({ url }) !== null;
@@ -36,10 +38,10 @@ async function processSingleArticle(article: any): Promise<string> {
     try {
         if (!article?.url || !article?.title) return 'ERROR_INVALID';
         
-        // 1. Quick Dedupe
+        // 1. Quick Dedupe (Exact URL match only)
         if (await isDuplicate(article.url)) return 'DUPLICATE_URL';
 
-        // 2. Gatekeeper (Junk Filter)
+        // 2. Gatekeeper (Junk Filter - now with Keywords)
         const gatekeeperResult = await gatekeeper.evaluateArticle(article);
         if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
@@ -114,7 +116,6 @@ async function processSingleArticle(article: any): Promise<string> {
         return isSemanticSkip ? 'SAVED_SEMANTIC' : 'SAVED_FRESH';
 
     } catch (error: any) {
-        // Reduced log noise for common errors
         logger.error(`❌ Article Pipeline Error: ${error.message}`);
         return 'ERROR_PIPELINE';
     }
@@ -140,7 +141,7 @@ async function fetchAndAnalyzeNews() {
     logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline...`);
 
     // B. Process in Batches
-    const BATCH_SIZE = 5; // Increased from 3 to 5 for efficiency
+    const BATCH_SIZE = 5; 
     for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
         const batch = rawArticles.slice(i, i + BATCH_SIZE);
         
