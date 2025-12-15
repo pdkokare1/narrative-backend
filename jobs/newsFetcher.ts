@@ -14,8 +14,6 @@ function sleep(ms: number) {
 // --- PIPELINE STEPS ---
 
 // Step 1: Filter Duplicates (URL Check Only)
-// We purposely DO NOT check title similarity here to allow "Compare Coverage" 
-// (multiple sources covering the same event).
 async function isDuplicate(url: string): Promise<boolean> {
     if (!url) return true;
     return await Article.exists({ url }) !== null;
@@ -41,7 +39,7 @@ async function processSingleArticle(article: any): Promise<string> {
         // 1. Quick Dedupe (Exact URL match only)
         if (await isDuplicate(article.url)) return 'DUPLICATE_URL';
 
-        // 2. Gatekeeper (Junk Filter - now with Keywords)
+        // 2. Gatekeeper (Junk Filter - now with Keywords from DB)
         const gatekeeperResult = await gatekeeper.evaluateArticle(article);
         if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
@@ -141,6 +139,7 @@ async function fetchAndAnalyzeNews() {
     logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline...`);
 
     // B. Process in Batches
+    // Reduced batch size slightly to balance AI load, but removed long sleep
     const BATCH_SIZE = 5; 
     for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
         const batch = rawArticles.slice(i, i + BATCH_SIZE);
@@ -155,8 +154,8 @@ async function fetchAndAnalyzeNews() {
             else stats.errors++;
         });
         
-        // Slight pause to be nice to external APIs
-        if (i + BATCH_SIZE < rawArticles.length) await sleep(1000); 
+        // Minimal pause to prevent overwhelming the event loop or database connection pool
+        if (i + BATCH_SIZE < rawArticles.length) await sleep(250); 
     }
 
     logger.info('Job Complete: Summary', { stats });
