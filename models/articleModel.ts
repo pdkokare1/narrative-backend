@@ -86,6 +86,10 @@ articleSchema.index({ country: 1, publishedAt: -1 });
 // Allows fast filtering by category AND lean simultaneously
 articleSchema.index({ category: 1, politicalLean: 1, publishedAt: -1 });
 
+// ** NEW: Personalized Feed Super-Index (Lean + Trust + Date) **
+// This makes the "My Mix" query incredibly fast
+articleSchema.index({ politicalLean: 1, trustScore: -1, publishedAt: -1 });
+
 // --- DATA RETENTION (TTL INDEX) ---
 // Automatically delete articles older than 90 days (7776000 seconds)
 articleSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
