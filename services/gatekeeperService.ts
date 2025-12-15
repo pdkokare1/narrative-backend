@@ -15,69 +15,54 @@ const DEFAULT_BANNED = [
 ];
 
 const DEFAULT_KEYWORDS = [
-    // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
     'shopping', 'gift guide', 'best buy', 'amazon prime', 'black friday', 
     'cyber monday', 'sale', '% off', 'hands-on:', 'where to buy', 'restock',
     'review:', 'deal:', 'bargain', 'clearance',
-    
-    // Games & Puzzles
     'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
     'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\'s answer', 'quordle',
     'gameplay', 'patch notes', 'twitch', 'discord',
-    
-    // Astrology & Fluff
     'horoscope', 'zodiac', 'astrology', 'tarot', 'psychic', 'manifesting',
     'celeb look', 'red carpet', 'outfit', 'dress', 'fashion', 'makeup',
-    
-    // Clickbait Specifics
     'watch:', 'video:', 'photos:', 'gallery:', 'live:', 'live updates', 
     'you need to know', 'here\'s why', 'what we know', 'everything we know'
 ];
 
 class GatekeeperService {
-    private localCache: { banned: string[]; keywords: string[] } = { banned: [], keywords: [] };
-    private lastFetch: number = 0;
-    private readonly REFRESH_INTERVAL = 10 * 60 * 1000; // 10 minutes
+    private localKeywords: string[] = []; // Keep keywords local for speed (regex is fast)
+    private readonly REDIS_BANNED_KEY = 'GATEKEEPER:BANNED_DOMAINS';
 
     /**
-     * Initializes the DB with default values if missing.
+     * Initializes the DB with default values if missing AND syncs to Redis.
      */
     async initialize() {
         try {
-            const bannedDoc = await SystemConfig.findOne({ key: 'BANNED_DOMAINS' });
+            // 1. Sync Banned Domains (Mongo -> Redis)
+            let bannedDoc = await SystemConfig.findOne({ key: 'BANNED_DOMAINS' });
             if (!bannedDoc) {
                 console.log('🛡️ Seeding Banned Domains...');
-                await SystemConfig.create({ key: 'BANNED_DOMAINS', value: DEFAULT_BANNED });
-            }
-
-            const keywordsDoc = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
-            if (!keywordsDoc) {
-                console.log('🛡️ Seeding Junk Keywords...');
-                await SystemConfig.create({ key: 'JUNK_KEYWORDS', value: DEFAULT_KEYWORDS });
+                bannedDoc = await SystemConfig.create({ key: 'BANNED_DOMAINS', value: DEFAULT_BANNED });
             }
             
-            // Initial load
-            await this.refreshConfig();
-            console.log('✅ Gatekeeper Config Loaded');
+            // Push to Redis for global access
+            if (redis.isReady() && bannedDoc.value.length > 0) {
+                for (const domain of bannedDoc.value) {
+                    await redis.sAdd(this.REDIS_BANNED_KEY, domain);
+                }
+            }
+
+            // 2. Sync Keywords (Mongo -> Local Memory)
+            let keywordsDoc = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
+            if (!keywordsDoc) {
+                console.log('🛡️ Seeding Junk Keywords...');
+                keywordsDoc = await SystemConfig.create({ key: 'JUNK_KEYWORDS', value: DEFAULT_KEYWORDS });
+            }
+            this.localKeywords = keywordsDoc ? keywordsDoc.value : DEFAULT_KEYWORDS;
+            
+            console.log('✅ Gatekeeper Config Loaded & Synced');
         } catch (error) {
             console.error('❌ Gatekeeper Init Failed:', error);
         }
-    }
-
-    /**
-     * Refreshes the local cache from the Database
-     */
-    private async refreshConfig() {
-        try {
-            const banned = await SystemConfig.findOne({ key: 'BANNED_DOMAINS' });
-            const keywords = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
-            
-            if (banned) this.localCache.banned = banned.value;
-            if (keywords) this.localCache.keywords = keywords.value;
-            
-            this.lastFetch = Date.now();
-        } catch (e) { /* silent fail, use old cache */ }
     }
 
     /**
@@ -92,30 +77,28 @@ class GatekeeperService {
 
     /**
      * LOCAL CHECK: Free and Fast.
-     * Uses DB-backed configuration.
+     * Uses Redis for domains and Local Memory for keywords.
      */
     private async quickLocalCheck(article: any): Promise<{ isJunk: boolean; reason?: string }> {
-        // Refresh cache if stale
-        if (Date.now() - this.lastFetch > this.REFRESH_INTERVAL) {
-            await this.refreshConfig();
-        }
-
         const title = (article.title || "").toLowerCase();
         const desc = (article.description || "").toLowerCase();
         const url = (article.url || "").toLowerCase();
+        const domain = this.getDomain(url);
 
-        // 1. Domain Check
-        if (this.localCache.banned.some(domain => url.includes(domain))) {
-            return { isJunk: true, reason: 'Banned Domain' };
-        }
+        // 1. Distributed Domain Check (Redis)
+        if (domain && redis.isReady()) {
+            const isBanned = await redis.sIsMember(this.REDIS_BANNED_KEY, domain);
+            if (isBanned) return { isJunk: true, reason: 'Banned Domain (Redis)' };
+        } 
+        // Fallback to local default if Redis down (optional, keeping it simple here)
 
-        // 2. Keyword Check
-        const foundKeyword = this.localCache.keywords.find(word => title.includes(word));
+        // 2. Keyword Check (Memory)
+        const foundKeyword = this.localKeywords.find(word => title.includes(word));
         if (foundKeyword) {
             return { isJunk: true, reason: `Keyword Match: ${foundKeyword}` };
         }
 
-        // 3. Length Check (Too short usually means bad metadata)
+        // 3. Length Check
         if ((title.length + desc.length) < 80) {
             return { isJunk: true, reason: 'Too Short' };
         }
@@ -125,38 +108,34 @@ class GatekeeperService {
 
     /**
      * AUTO BAN LOGIC:
-     * If AI marks as junk, increment strike counter.
-     * If strikes > 5, ban the domain permanently.
+     * If AI marks as junk, increment strike counter in Redis.
+     * If strikes > 5, ban the domain GLOBALLY.
      */
     private async handleJunkDetection(url: string) {
         const domain = this.getDomain(url);
-        if (!domain) return;
+        if (!domain || !redis.isReady()) return;
 
         try {
-            // @ts-ignore
-            if (redis.isReady && redis.isReady()) {
-                const key = `strikes:${domain}`;
-                const strikes = await redis.incr(key);
-                
-                // Set expiry so "good" sites don't get banned for occasional flukes over years
-                if (strikes === 1) await redis.expire(key, 86400 * 3); // 3 Days to get 5 strikes
+            const key = `strikes:${domain}`;
+            const strikes = await redis.incr(key);
+            
+            if (strikes === 1) await redis.expire(key, 86400 * 3); // 3 Days to get 5 strikes
 
-                if (strikes >= 5) {
-                    console.warn(`🚫 AUTO-BANNING DOMAIN: ${domain} (5 Junk Strikes)`);
-                    
-                    // Add to DB
-                    await SystemConfig.findOneAndUpdate(
-                        { key: 'BANNED_DOMAINS' },
-                        { $addToSet: { value: domain } },
-                        { upsert: true }
-                    );
-                    
-                    // Add to local cache immediately
-                    this.localCache.banned.push(domain);
-                    
-                    // Clear Redis counter
-                    await redis.del(key);
-                }
+            if (strikes >= 5) {
+                console.warn(`🚫 AUTO-BANNING DOMAIN: ${domain} (5 Junk Strikes)`);
+                
+                // 1. Add to Redis (Instant block for all servers)
+                await redis.sAdd(this.REDIS_BANNED_KEY, domain);
+                
+                // 2. Persist to MongoDB (Long term storage)
+                await SystemConfig.findOneAndUpdate(
+                    { key: 'BANNED_DOMAINS' },
+                    { $addToSet: { value: domain } },
+                    { upsert: true }
+                );
+                
+                // 3. Clear Redis counter
+                await redis.del(key);
             }
         } catch (e) { /* Ignore stats errors */ }
     }
@@ -174,9 +153,9 @@ class GatekeeperService {
         // 2. Run Local "Zero-Cost" Check
         const localCheck = await this.quickLocalCheck(article);
         if (localCheck.isJunk) {
-            console.log(`🚫 Gatekeeper Blocked (Local): ${article.title.substring(0, 30)}... [${localCheck.reason}]`);
+            console.log(`🚫 Gatekeeper Blocked: ${article.title.substring(0, 30)}... [${localCheck.reason}]`);
             const result = { type: 'Junk', isJunk: true, recommendedModel: 'none' };
-            await this.cacheResult(CACHE_KEY, result, 86400); // Cache rejection for 24h
+            await redis.set(CACHE_KEY, result, 86400); // Cache rejection
             return result;
         }
 
@@ -212,7 +191,6 @@ class GatekeeperService {
             const isJunk = result.type === 'Junk';
 
             if (isJunk) {
-                // Trigger Auto-Ban Logic
                 this.handleJunkDetection(article.url);
             }
 
@@ -222,32 +200,23 @@ class GatekeeperService {
                 recommendedModel: result.type === 'Hard News' ? 'gemini-2.5-pro' : 'gemini-2.5-flash'
             };
 
-            // Cache the AI's decision
-            await this.cacheResult(CACHE_KEY, finalDecision, 86400);
+            await redis.set(CACHE_KEY, finalDecision, 86400);
 
             return finalDecision;
 
         } catch (error: any) {
             const status = error.response?.status;
             const isRateLimit = status === 429;
-            // Handle key failure carefully
             try {
                 const currentKey = await KeyManager.getKey('GEMINI'); 
                 await KeyManager.reportFailure(currentKey, isRateLimit);
-            } catch (e) { /* ignore if we can't report */ }
+            } catch (e) { /* ignore */ }
             
             console.error(`Gatekeeper Error for "${article.title.substring(0, 20)}...":`, error.message);
             
-            // Fallback: Assume Soft News if AI fails (don't discard potential news)
+            // Fallback: Assume Soft News (safe default)
             return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: 'gemini-2.5-flash' };
         }
-    }
-
-    // Helper to save to Redis safely
-    private async cacheResult(key: string, data: any, ttl: number = 86400) {
-        try {
-            await redis.set(key, data, ttl);
-        } catch (e) { /* Ignore cache errors */ }
     }
 }
 
