@@ -66,7 +66,13 @@ if (isRedisConfigured && connectionConfig) {
             }
         }, { 
             connection: connectionConfig,
-            concurrency: 1 
+            concurrency: 1,
+            // --- RATE LIMITING ---
+            // Max 1 job every 1500ms to allow AI and APIs to breathe
+            limiter: {
+                max: 1,
+                duration: 1500
+            }
         });
 
         // Event Listeners
@@ -78,7 +84,7 @@ if (isRedisConfigured && connectionConfig) {
             logger.error(`🔥 Job ${job?.id || 'unknown'} failed: ${err.message}`);
         });
 
-        logger.info("✅ Job Queue Initialized");
+        logger.info("✅ Job Queue Initialized with Rate Limiting");
 
     } catch (err: any) {
         logger.error(`❌ Failed to initialize Queue: ${err.message}`);
