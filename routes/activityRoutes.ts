@@ -4,12 +4,60 @@ import asyncHandler from '../utils/asyncHandler';
 import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
 import ActivityLog from '../models/activityLogModel';
-import Article from '../models/articleModel'; // Added Article Model
+import Article from '../models/articleModel'; 
 import Profile from '../models/profileModel';
 import gamificationService from '../services/gamificationService';
-import ttsService from '../services/ttsService'; // Added TTS Service
+import ttsService from '../services/ttsService'; 
 
 const router = express.Router();
+
+// --- HELPER: Update User Personalization Vector ---
+// Calculates the "Average Taste" based on last 50 reads
+async function updateUserVector(userId: string) {
+    try {
+        // 1. Get last 50 viewed article IDs
+        const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
+            .sort({ timestamp: -1 })
+            .limit(50) // Increased to 50 for better accuracy
+            .select('articleId');
+
+        if (recentLogs.length === 0) return;
+
+        const articleIds = recentLogs.map(log => log.articleId);
+
+        // 2. Fetch embeddings for these articles
+        // We only want articles that actually have an embedding
+        const articles = await Article.find({ 
+            _id: { $in: articleIds },
+            embedding: { $exists: true, $not: { $size: 0 } }
+        }).select('embedding');
+
+        if (articles.length === 0) return;
+
+        // 3. Calculate Average Vector (Centroid)
+        const vectorLength = articles[0].embedding!.length;
+        const avgVector = new Array(vectorLength).fill(0);
+
+        articles.forEach(article => {
+            const vec = article.embedding!;
+            for (let i = 0; i < vectorLength; i++) {
+                avgVector[i] += vec[i];
+            }
+        });
+
+        // Divide by count to get average
+        for (let i = 0; i < vectorLength; i++) {
+            avgVector[i] = avgVector[i] / articles.length;
+        }
+
+        // 4. Update Profile
+        await Profile.updateOne({ userId }, { userEmbedding: avgVector });
+        // console.log(`🧠 Updated Interest Vector for ${userId} (based on ${articles.length} articles)`);
+
+    } catch (error) {
+        console.error("❌ Vector Update Failed:", error);
+    }
+}
 
 // --- 1. Log View (Analysis) ---
 router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
@@ -23,21 +71,14 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
     await Profile.findOneAndUpdate({ userId }, { $inc: { articlesViewedCount: 1 } });
     
     // --- SMART AUDIO PRE-FETCH ---
-    // Fire and forget logic to check if this article is becoming popular
     (async () => {
         try {
-            // Check view count
             const viewCount = await ActivityLog.countDocuments({ articleId, action: 'view_analysis' });
-            
-            // If popular (>= 5 views) and NO audio yet, generate it now.
             if (viewCount >= 5) {
                 const article = await Article.findById(articleId).select('headline summary audioUrl');
                 if (article && !article.audioUrl) {
-                    console.log(`🔥 Article ${articleId} is trending (${viewCount} views). Auto-generating Audio...`);
                     const text = `${article.headline}. ${article.summary}`;
-                    // Use 'Mira' (Anchor) voice by default
                     const url = await ttsService.generateAndUpload(text, 'SmLgXu8CcwHJvjiqq2rw', articleId);
-                    
                     article.audioUrl = url;
                     await article.save();
                 }
@@ -47,10 +88,13 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
         }
     })();
 
-    // Check for Badges (Sequential to ensure correct order)
+    // --- UPDATE PERSONALIZATION VECTOR ---
+    // Fire and forget (don't block response)
+    updateUserVector(userId).catch(err => console.error(err));
+
+    // Check for Badges
     const streakBadge = await gamificationService.updateStreak(userId);
     const readBadge = await gamificationService.checkReadBadges(userId);
-    
     const newBadge = readBadge || streakBadge;
 
     res.status(200).json({ message: 'Logged view', newBadge });
@@ -81,9 +125,14 @@ router.post('/log-share', validate(schemas.logActivity), asyncHandler(async (req
 // --- 4. Log Read (External Link) ---
 router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
-    await ActivityLog.create({ userId: req.user.uid, articleId, action: 'read_external' });
+    const userId = req.user.uid;
+
+    await ActivityLog.create({ userId, articleId, action: 'read_external' });
     
-    const newBadge = await gamificationService.updateStreak(req.user.uid);
+    // Also update vector on external read
+    updateUserVector(userId).catch(err => console.error(err));
+
+    const newBadge = await gamificationService.updateStreak(userId);
 
     res.status(200).json({ message: 'Logged read', newBadge });
 }));
