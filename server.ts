@@ -145,7 +145,7 @@ app.post('/api/fetch-news', async (req: Request, res: Response) => {
 // --- SAFE SCHEDULING ---
 
 // 1. Daytime Schedule (5 AM to 10:30 PM): Every 30 mins
-// Syntax: */30 5-22 * * * cron.schedule('*/30 5-22 * * *', async () => { 
+cron.schedule('*/30 5-22 * * *', async () => { 
     logger.info('☀️ Daytime Fetch (30m interval)...');
     await queueManager.addFetchJob('cron-day', { source: 'cron-day' });
 });
