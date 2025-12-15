@@ -178,9 +178,12 @@ router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response)
         .limit(20)
         .lean();
     
-    // If no history, return standard trending
+    // Fallback: If no history, return standard high-quality trending
     if (history.length === 0) {
-        const standard = await Article.find({}).sort({ publishedAt: -1 }).limit(10).lean();
+        const standard = await Article.find({})
+            .sort({ trustScore: -1, publishedAt: -1 }) // High trust + latest
+            .limit(10)
+            .lean();
         return res.status(200).json({ articles: standard, meta: { reason: "No history" } });
     }
 
@@ -203,13 +206,20 @@ router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response)
     if (dominantLean.includes('Left')) targetLean = ['Center', 'Right-Leaning', 'Right'];
     else if (dominantLean.includes('Right')) targetLean = ['Center', 'Left-Leaning', 'Left'];
 
-    const challengerArticles = await Article.find({
+    let challengerArticles = await Article.find({
         politicalLean: { $in: targetLean },
         publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
     })
     .sort({ trustScore: -1 }) // Best quality challengers
     .limit(10)
     .lean();
+
+    // Fallback: If no challengers found, return general Center news
+    if (challengerArticles.length === 0) {
+        challengerArticles = await Article.find({
+            politicalLean: 'Center'
+        }).sort({ publishedAt: -1 }).limit(10).lean();
+    }
 
     // 4. Mark them
     const processed = challengerArticles.map(a => ({ ...a, suggestionType: 'Challenge' }));
@@ -228,6 +238,12 @@ router.get('/articles/personalized', asyncHandler(async (req: Request, res: Resp
     const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
         .sort({ timestamp: -1 })
         .limit(50);
+    
+    // Fallback if no logs
+    if (recentLogs.length === 0) {
+        const trending = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
+        return res.status(200).json({ articles: trending, meta: { topCategories: ['Trending'] } });
+    }
         
     const articleIds = recentLogs.map(l => l.articleId);
     
@@ -236,11 +252,8 @@ router.get('/articles/personalized', asyncHandler(async (req: Request, res: Resp
     
     // 3. Calculate preferences
     const categoryCounts: Record<string, number> = {};
-    const leanCounts: Record<string, number> = {};
-    
     viewedArticles.forEach(a => {
         categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1;
-        leanCounts[a.politicalLean] = (leanCounts[a.politicalLean] || 0) + 1;
     });
     
     const topCategories = Object.entries(categoryCounts)
@@ -249,16 +262,27 @@ router.get('/articles/personalized', asyncHandler(async (req: Request, res: Resp
         .map(x => x[0]);
 
     // 4. Fetch recommendations
-    // Logic: 50% Top Categories + 30% Diverse Leans + 20% Trending
-    const recommendations = await Article.aggregate([
-        { 
-            $match: { 
-                category: { $in: topCategories },
-                publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } // Last 3 days
-            } 
-        },
-        { $sample: { size: 15 } } // Randomize within preferences
-    ]);
+    let recommendations: any[] = [];
+    
+    if (topCategories.length > 0) {
+        recommendations = await Article.aggregate([
+            { 
+                $match: { 
+                    category: { $in: topCategories },
+                    publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } // Last 3 days
+                } 
+            },
+            { $sample: { size: 15 } }
+        ]);
+    }
+
+    // Fallback if preferences didn't yield results
+    if (recommendations.length === 0) {
+        recommendations = await Article.find({})
+            .sort({ publishedAt: -1 })
+            .limit(15)
+            .lean();
+    }
 
     const finalFeed = recommendations.map(a => ({ ...a, suggestionType: 'Comfort' }));
 
