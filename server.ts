@@ -81,10 +81,10 @@ try {
   logger.error(`Firebase Admin Init Error: ${error.message}`);
 }
 
-// Rate Limiter (RELAXED)
+// Rate Limiter
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Increased from 300 to 1000 to prevent 429s during dev
+  max: 1000, 
   standardHeaders: true, 
   legacyHeaders: false, 
   message: { error: 'Too many requests, please try again later.' }
@@ -95,9 +95,6 @@ app.use('/api/', apiLimiter);
 const checkAppCheck = async (req: Request, res: Response, next: NextFunction) => {
   const appCheckToken = req.header('X-Firebase-AppCheck');
   if (!appCheckToken) {
-      // In development/postman, we might skip this if needed, 
-      // but strictly it should be required.
-      // For now, allow bypass if strictly needed or return 401
       res.status(401);
       throw new Error('Unauthorized: No App Check token.');
   }
@@ -145,10 +142,19 @@ app.post('/api/fetch-news', async (req: Request, res: Response) => {
   res.status(202).json({ message: 'News fetch job added to queue.' });
 });
 
-// --- Cron Schedule ---
-cron.schedule('*/30 * * * *', async () => { 
-    logger.info('⏰ Cron Triggered: Scheduling News Fetch...');
-    await queueManager.addFetchJob('cron-schedule', { source: 'cron' });
+// --- SAFE SCHEDULING ---
+
+// 1. Daytime Schedule (5 AM to 10:30 PM): Every 30 mins
+// Syntax: */30 5-22 * * * cron.schedule('*/30 5-22 * * *', async () => { 
+    logger.info('☀️ Daytime Fetch (30m interval)...');
+    await queueManager.addFetchJob('cron-day', { source: 'cron-day' });
+});
+
+// 2. Night Mode (11 PM to 5 AM): Every 2 Hours
+// Runs at 23:00 (11PM), 01:00, 03:00
+cron.schedule('0 23,1,3 * * *', async () => {
+    logger.info('🌙 Night Mode Fetch (2h interval)...');
+    await queueManager.addFetchJob('cron-night', { source: 'cron-night' });
 });
 
 // Database Connection
