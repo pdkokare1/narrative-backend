@@ -61,7 +61,7 @@ class KeyManager {
     }
 
     /**
-     * Gets the next available active key (Round Robin).
+     * Gets the next available active key (Round Robin with Redis Check).
      * Throws error if Circuit Breaker is active or no keys available.
      */
     public async getKey(providerName: string): Promise<string> {
@@ -79,45 +79,50 @@ class KeyManager {
 
         // 2. Get Keys for Provider
         const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
-        
-        // 3. Check for Cooldowns stored in Redis (Global Sync)
-        // @ts-ignore
-        if (redis.isReady || redis.isOpen) {
-            for (const k of allKeys) {
-                if (k.status === 'active') {
-                    const isCooling = await redis.get(`key_status:${k.key}`);
-                    if (isCooling) {
-                        k.status = 'cooldown';
-                        k.lastFailed = Date.now();
-                    }
+        if (allKeys.length === 0) throw new Error(`NO_KEYS_CONFIGURED: No keys for ${providerName}`);
+
+        // 3. Round Robin Search
+        let currentIndex = this.providerIndices.get(providerName) || 0;
+        let attempts = 0;
+
+        // Try every key in the list once
+        while (attempts < allKeys.length) {
+            const candidate = allKeys[currentIndex % allKeys.length];
+            currentIndex++; 
+            attempts++;
+
+            // Update index for next caller immediately
+            this.providerIndices.set(providerName, currentIndex % allKeys.length);
+
+            // A. Check Local Status
+            if (candidate.status === 'cooldown') {
+                if (Date.now() - candidate.lastFailed > this.COOLDOWN_TIME) {
+                    // Local Cooldown expired, check Redis to be sure
+                } else {
+                    continue; // Still cooling locally
                 }
             }
-        }
 
-        // 4. Filter Active Keys
-        const activeKeys = allKeys.filter(k => {
-            if (k.status === 'active') return true;
-            if (k.status === 'cooldown' && (Date.now() - k.lastFailed > this.COOLDOWN_TIME)) {
-                k.status = 'active';
-                k.errorCount = 0;
-                return true;
+            // B. Check Redis Status (Persistence)
+            // @ts-ignore
+            if (redis.isReady && redis.isReady()) {
+                const redisStatus = await redis.get(`key_status:${candidate.key}`);
+                if (redisStatus === 'cooldown') {
+                    // Update local state to match Redis
+                    candidate.status = 'cooldown';
+                    candidate.lastFailed = Date.now(); // Reset local timer
+                    continue; // Skip this key
+                }
             }
-            return false;
-        });
 
-        if (activeKeys.length === 0) {
-            throw new Error(`NO_KEYS_AVAILABLE: All ${providerName} keys are exhausted or cooling down.`);
+            // If we got here, the key is good
+            candidate.status = 'active';
+            candidate.errorCount = 0;
+            candidate.lastUsed = Date.now();
+            return candidate.key;
         }
 
-        // 5. Round Robin Selection
-        let currentIndex = this.providerIndices.get(providerName) || 0;
-        const selectedKey = activeKeys[currentIndex % activeKeys.length];
-        
-        // Update index for next time
-        this.providerIndices.set(providerName, (currentIndex + 1) % activeKeys.length);
-        
-        selectedKey.lastUsed = Date.now();
-        return selectedKey.key;
+        throw new Error(`NO_KEYS_AVAILABLE: All ${providerName} keys are exhausted or cooling down.`);
     }
 
     /**
@@ -142,9 +147,9 @@ class KeyManager {
         if (isRateLimit) {
             keyObj.status = 'cooldown';
             console.warn(`⏳ KeyManager: Rate Limit hit on ...${key.slice(-4)}. Cooling down.`);
-            // Persist Cooldown to Redis
+            // Persist Cooldown to Redis (TTL = Cooldown Time)
             // @ts-ignore
-            if (redis.isReady || redis.isOpen) {
+            if (redis.isReady && redis.isReady()) {
                 await redis.set(`key_status:${key}`, 'cooldown', this.COOLDOWN_TIME / 1000);
             }
         } else {
