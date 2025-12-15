@@ -2,18 +2,19 @@
 import axios from 'axios';
 import KeyManager from '../utils/KeyManager';
 import redis from '../utils/redisClient'; 
+import SystemConfig from '../models/systemConfigModel';
 
 const MODEL_NAME = "gemini-2.5-flash"; 
 
-// --- 1. BLACKLIST ---
-const BANNED_DOMAINS = [
+// --- INITIAL SEEDS (Used only if DB is empty) ---
+const DEFAULT_BANNED = [
     'dailymail.co.uk', 'thesun.co.uk', 'nypost.com', 'breitbart.com', 
     'infowars.com', 'sputniknews.com', 'rt.com', 'tmz.com', 
     'perezhilton.com', 'gawker.com', 'buzzfeed.com', 'upworthy.com',
     'viralnova.com', 'clickhole.com', 'theonion.com', 'babylonbee.com'
 ];
 
-const JUNK_KEYWORDS = [
+const DEFAULT_KEYWORDS = [
     // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
     'shopping', 'gift guide', 'best buy', 'amazon prime', 'black friday', 
@@ -35,23 +36,71 @@ const JUNK_KEYWORDS = [
 ];
 
 class GatekeeperService {
+    private localCache: { banned: string[]; keywords: string[] } = { banned: [], keywords: [] };
+    private lastFetch: number = 0;
+    private readonly REFRESH_INTERVAL = 10 * 60 * 1000; // 10 minutes
+
+    /**
+     * Initializes the DB with default values if missing.
+     */
+    async initialize() {
+        try {
+            const bannedDoc = await SystemConfig.findOne({ key: 'BANNED_DOMAINS' });
+            if (!bannedDoc) {
+                console.log('🛡️ Seeding Banned Domains...');
+                await SystemConfig.create({ key: 'BANNED_DOMAINS', value: DEFAULT_BANNED });
+            }
+
+            const keywordsDoc = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
+            if (!keywordsDoc) {
+                console.log('🛡️ Seeding Junk Keywords...');
+                await SystemConfig.create({ key: 'JUNK_KEYWORDS', value: DEFAULT_KEYWORDS });
+            }
+            
+            // Initial load
+            await this.refreshConfig();
+            console.log('✅ Gatekeeper Config Loaded');
+        } catch (error) {
+            console.error('❌ Gatekeeper Init Failed:', error);
+        }
+    }
+
+    /**
+     * Refreshes the local cache from the Database
+     */
+    private async refreshConfig() {
+        try {
+            const banned = await SystemConfig.findOne({ key: 'BANNED_DOMAINS' });
+            const keywords = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
+            
+            if (banned) this.localCache.banned = banned.value;
+            if (keywords) this.localCache.keywords = keywords.value;
+            
+            this.lastFetch = Date.now();
+        } catch (e) { /* silent fail, use old cache */ }
+    }
 
     /**
      * LOCAL CHECK: Free and Fast.
-     * Returns true if the article is obviously junk based on keywords/domains.
+     * Uses DB-backed configuration.
      */
-    private quickLocalCheck(article: any): { isJunk: boolean; reason?: string } {
+    private async quickLocalCheck(article: any): Promise<{ isJunk: boolean; reason?: string }> {
+        // Refresh cache if stale
+        if (Date.now() - this.lastFetch > this.REFRESH_INTERVAL) {
+            await this.refreshConfig();
+        }
+
         const title = (article.title || "").toLowerCase();
         const desc = (article.description || "").toLowerCase();
         const url = (article.url || "").toLowerCase();
 
         // 1. Domain Check
-        if (BANNED_DOMAINS.some(domain => url.includes(domain))) {
+        if (this.localCache.banned.some(domain => url.includes(domain))) {
             return { isJunk: true, reason: 'Banned Domain' };
         }
 
         // 2. Keyword Check
-        const foundKeyword = JUNK_KEYWORDS.find(word => title.includes(word));
+        const foundKeyword = this.localCache.keywords.find(word => title.includes(word));
         if (foundKeyword) {
             return { isJunk: true, reason: `Keyword Match: ${foundKeyword}` };
         }
@@ -75,7 +124,7 @@ class GatekeeperService {
         if (cached) return cached;
 
         // 2. Run Local "Zero-Cost" Check
-        const localCheck = this.quickLocalCheck(article);
+        const localCheck = await this.quickLocalCheck(article);
         if (localCheck.isJunk) {
             console.log(`🚫 Gatekeeper Blocked (Local): ${article.title.substring(0, 30)}... [${localCheck.reason}]`);
             const result = { type: 'Junk', isJunk: true, recommendedModel: 'none' };
