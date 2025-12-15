@@ -79,7 +79,7 @@ const redisClient = {
         }
     },
 
-    // --- NEW METHODS FOR GATEKEEPER ---
+    // --- COUNTERS ---
     incr: async (key: string): Promise<number> => {
         if (!client || !isConnected) return 0;
         try {
@@ -100,7 +100,23 @@ const redisClient = {
         }
     },
 
-    isReady: () => isConnected
+    // --- SETS (For Gatekeeper & Tags) ---
+    sAdd: async (key: string, value: string): Promise<number> => {
+        if (!client || !isConnected) return 0;
+        try {
+            return await client.sAdd(key, value);
+        } catch (e) { return 0; }
+    },
+
+    sIsMember: async (key: string, value: string): Promise<boolean> => {
+        if (!client || !isConnected) return false;
+        try {
+            return await client.sIsMember(key, value);
+        } catch (e) { return false; }
+    },
+
+    isReady: () => isConnected,
+    getClient: () => client // Direct access if needed
 };
 
 export default redisClient;
