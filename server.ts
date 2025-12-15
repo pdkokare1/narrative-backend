@@ -6,21 +6,20 @@ import cron from 'node-cron';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import dotenv from 'dotenv';
 import * as admin from 'firebase-admin';
 
-// Load environment variables
-dotenv.config();
+// --- 1. Load & Validate Config FIRST ---
+import config from './utils/config';
+import logger from './utils/logger';
 
 // Import local modules
 import queueManager from './jobs/queueManager';
 import { errorHandler } from './middleware/errorMiddleware';
-import logger from './utils/logger';
 import emergencyService from './services/emergencyService';
-import gatekeeperService from './services/gatekeeperService'; // Import Gatekeeper
+import gatekeeperService from './services/gatekeeperService'; 
 import redis from './utils/redisClient'; 
 
-// Import Models (Needed for Cron Logic)
+// Import Models
 import Article from './models/articleModel';
 
 // Import Routes
@@ -45,7 +44,7 @@ declare global {
 
 const app = express();
 
-// --- 1. Structured Request Logging ---
+// --- 2. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
     logger.http(`${req.method} ${req.url}`);
     next();
@@ -75,8 +74,8 @@ app.get('/', (req: Request, res: Response) => { res.status(200).send('OK'); });
 
 // Firebase Init
 try {
-  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT as string);
+  if (config.firebase.serviceAccount) {
+    const serviceAccount = JSON.parse(config.firebase.serviceAccount);
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
@@ -88,7 +87,7 @@ try {
 
 // Rate Limiter
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000, 
   max: 1000, 
   standardHeaders: true, 
   legacyHeaders: false, 
@@ -148,25 +147,20 @@ app.post('/api/fetch-news', async (req: Request, res: Response) => {
 });
 
 // --- SAFE SCHEDULING ---
-
-// 1. Daytime Schedule (5 AM to 10:30 PM): Every 30 mins
 cron.schedule('*/30 5-22 * * *', async () => { 
     logger.info('☀️ Daytime Fetch (30m interval)...');
     await queueManager.addFetchJob('cron-day', { source: 'cron-day' });
 });
 
-// 2. Night Mode (11 PM to 5 AM): Every 2 Hours
 cron.schedule('0 23,1,3 * * *', async () => {
     logger.info('🌙 Night Mode Fetch (2h interval)...');
     await queueManager.addFetchJob('cron-night', { source: 'cron-night' });
 });
 
-// 3. Trending Topics Calculation (Background Optimization) - Runs every 30 mins
 cron.schedule('*/30 * * * *', async () => {
     logger.info('📈 Updating Trending Topics Cache...');
     try {
         const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
-        // Heavy Aggregation
         const results = await Article.aggregate([
             { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
             { $group: { _id: "$clusterTopic", count: { $sum: 1 }, sampleScore: { $max: "$trustScore" } } },
@@ -177,10 +171,9 @@ cron.schedule('*/30 * * * *', async () => {
         
         const topics = results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
         
-        // Save to Redis
         // @ts-ignore
         if (redis.isReady()) {
-            await redis.set('trending_topics_smart', topics, 3600); // 1 hour TTL
+            await redis.set('trending_topics_smart', topics, 3600); 
             logger.info(`✅ Trending Topics Updated (${topics.length} topics)`);
         }
     } catch (err: any) {
@@ -189,14 +182,13 @@ cron.schedule('*/30 * * * *', async () => {
 });
 
 // Database Connection
-if (process.env.MONGODB_URI) {
-    mongoose.connect(process.env.MONGODB_URI)
+if (config.mongoUri) {
+    mongoose.connect(config.mongoUri)
         .then(async () => {
             logger.info('MongoDB Connected');
-            // Seed Initial Data
             await Promise.all([
                 emergencyService.initializeEmergencyContacts(),
-                gatekeeperService.initialize() // Initialize Gatekeeper Config
+                gatekeeperService.initialize()
             ]);
         })
         .catch((err: any) => logger.error(`MongoDB Connection Failed: ${err.message}`));
@@ -204,7 +196,7 @@ if (process.env.MONGODB_URI) {
 
 app.use(errorHandler);
 
-const PORT = process.env.PORT || 3001;
+const PORT = config.port || 3001;
 const HOST = '0.0.0.0'; 
 
 app.listen(Number(PORT), HOST, () => {
