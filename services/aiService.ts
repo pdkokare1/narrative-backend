@@ -1,4 +1,4 @@
-// services/aiService.ts
+// src/services/aiService.ts
 import axios from 'axios';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
@@ -17,7 +17,7 @@ class AIService {
     console.log(`🤖 AI Service Initialized`);
   }
 
-  async analyzeArticle(article: any, targetModel: string = PRO_MODEL): Promise<Partial<IArticle>> {
+  async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     const maxRetries = 2;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -25,33 +25,32 @@ class AIService {
       try {
         apiKey = await KeyManager.getKey('GEMINI');
         
-        const prompt = await promptManager.getAnalysisPrompt(article);
+        // Pass mode to prompt manager
+        const prompt = await promptManager.getAnalysisPrompt(article, mode);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
         const response = await axios.post(url, {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: "application/json",
-            temperature: 0.3,
+            temperature: mode === 'Basic' ? 0.2 : 0.3, // Lower temp for basic summary
             maxOutputTokens: 8192 
           }
         }, { timeout: 60000 });
 
         KeyManager.reportSuccess(apiKey);
-        return this.parseGeminiResponse(response.data);
+        return this.parseGeminiResponse(response.data, mode);
 
       } catch (error: any) {
-        // --- NEW: Circuit Breaker Handling ---
         if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
             console.warn(`⚡ AI Skipped: ${error.message}`);
-            // Fallback to basic object to allow saving article without AI
             return {
                 summary: article.description || "Analysis unavailable (System Busy)",
                 category: "Uncategorized",
                 politicalLean: "Not Applicable",
                 biasScore: 0,
                 trustScore: 0,
-                analysisType: 'SentimentOnly', // Mark as basic
+                analysisType: 'SentimentOnly',
                 sentiment: 'Neutral'
             };
         }
@@ -71,7 +70,7 @@ class AIService {
   // --- EMBEDDING (Vector) ---
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
-        const apiKey = await KeyManager.getKey('GEMINI'); // Uses same pool
+        const apiKey = await KeyManager.getKey('GEMINI'); 
         const cleanText = text.replace(/\n/g, " ").substring(0, 2000);
         
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
@@ -85,12 +84,12 @@ class AIService {
 
     } catch (error: any) {
         console.error("Embedding Error:", error.message);
-        return null; // Fail silently for embeddings, not critical
+        return null; 
     }
   }
 
   // --- HELPER: Parser ---
-  private parseGeminiResponse(data: any): Partial<IArticle> {
+  private parseGeminiResponse(data: any, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates');
         
@@ -105,9 +104,24 @@ class AIService {
 
         let parsed = JSON.parse(text);
 
-        // Sanitize & Default
+        // If Basic mode, ensure defaults are set for missing expensive fields
+        if (mode === 'Basic') {
+            return {
+                summary: parsed.summary || 'Summary unavailable',
+                category: parsed.category || 'General',
+                sentiment: parsed.sentiment || 'Neutral',
+                politicalLean: 'Not Applicable',
+                analysisType: 'SentimentOnly',
+                biasScore: 0,
+                credibilityScore: 0,
+                reliabilityScore: 0,
+                trustScore: 0
+            };
+        }
+
+        // Full Mode Parsing
         parsed.summary = parsed.summary || 'Summary unavailable';
-        parsed.analysisType = ['Full', 'SentimentOnly'].includes(parsed.analysisType) ? parsed.analysisType : 'Full';
+        parsed.analysisType = 'Full';
         parsed.sentiment = parsed.sentiment || 'Neutral';
         parsed.politicalLean = parsed.politicalLean || 'Not Applicable';
         
@@ -117,7 +131,7 @@ class AIService {
         parsed.reliabilityScore = toNum(parsed.reliabilityScore);
         
         parsed.trustScore = 0;
-        if (parsed.analysisType === 'Full' && parsed.credibilityScore > 0) {
+        if (parsed.credibilityScore > 0) {
             parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
         }
 
