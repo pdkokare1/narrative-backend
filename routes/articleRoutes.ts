@@ -30,15 +30,19 @@ const authenticate = async (req: Request, res: Response, next: NextFunction) => 
     next();
 };
 
-// --- 1. Smart Trending Topics ---
+// --- 1. Smart Trending Topics (Optimized) ---
 router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     const CACHE_KEY = 'trending_topics_smart';
+    
+    // 1. Try Cache (Fast Path)
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
         res.set('Cache-Control', 'public, max-age=1800'); 
         return res.status(200).json({ topics: cachedData });
     }
 
+    // 2. Fallback: Calculate on demand (Slow Path) if cache is empty
+    // This ensures data is always available even if the cron hasn't run yet.
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const results = await Article.aggregate([
         { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
@@ -49,7 +53,10 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     ]);
     
     const topics = results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
+    
+    // Save to Redis so next request is fast
     await redis.set(CACHE_KEY, topics, 1800);
+    
     res.status(200).json({ topics });
 }));
 
@@ -157,6 +164,7 @@ router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, 
     }
 
     const userId = req.user.uid;
+    // Get recent history
     const history = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(20).lean();
     
     if (history.length === 0) {
@@ -177,10 +185,11 @@ router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, 
     if (dominantLean.includes('Left')) targetLean = ['Center', 'Right-Leaning', 'Right'];
     else if (dominantLean.includes('Right')) targetLean = ['Center', 'Left-Leaning', 'Left'];
 
+    // Updated Query to use new Indexes
     let challengerArticles = await Article.find({
         politicalLean: { $in: targetLean },
         publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
-    }).sort({ trustScore: -1 }).limit(10).lean();
+    }).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
 
     if (challengerArticles.length === 0) {
         challengerArticles = await Article.find({ politicalLean: 'Center' }).sort({ publishedAt: -1 }).limit(10).lean();
@@ -216,6 +225,7 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
 
     let recommendations: any[] = [];
     if (topCategories.length > 0) {
+        // Optimized: Now uses the new Compound Index (Category + PublishedAt) implicitly
         recommendations = await Article.aggregate([
             { $match: { category: { $in: topCategories }, publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } } },
             { $sample: { size: 15 } } 
