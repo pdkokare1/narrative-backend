@@ -44,15 +44,7 @@ class AIService {
       } catch (error: any) {
         if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
             console.warn(`⚡ AI Skipped: ${error.message}`);
-            return {
-                summary: article.description || "Analysis unavailable (System Busy)",
-                category: "Uncategorized",
-                politicalLean: "Not Applicable",
-                biasScore: 0,
-                trustScore: 0,
-                analysisType: 'SentimentOnly',
-                sentiment: 'Neutral'
-            };
+            return this.getFallbackAnalysis(article);
         }
 
         const isRateLimit = error.response?.status === 429;
@@ -93,16 +85,31 @@ class AIService {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates');
         
-        let text = data.candidates[0].content.parts[0].text;
-        text = text.replace(/```json/g, '').replace(/```/g, '').trim();
+        let text = data.candidates[0].content.parts[0].text || "";
         
+        // 1. Aggressive Clean
+        text = text.trim();
+        // Remove markdown fencing
+        text = text.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+        
+        // 2. Locate JSON bounds
         const jsonStart = text.indexOf('{');
         const jsonEnd = text.lastIndexOf('}');
+        
         if (jsonStart !== -1 && jsonEnd !== -1) {
             text = text.substring(jsonStart, jsonEnd + 1);
+        } else {
+            throw new Error("Invalid JSON structure found");
         }
 
-        let parsed = JSON.parse(text);
+        let parsed: any;
+        try {
+            parsed = JSON.parse(text);
+        } catch (e) {
+            // Last ditch effort: Try to fix trailing commas
+            const fixedText = text.replace(/,(\s*[}\]])/g, '$1');
+            parsed = JSON.parse(fixedText);
+        }
 
         // If Basic mode, ensure defaults are set for missing expensive fields
         if (mode === 'Basic') {
@@ -140,6 +147,18 @@ class AIService {
     } catch (error: any) {
         throw new Error(`Parsing failed: ${error.message}`);
     }
+  }
+
+  private getFallbackAnalysis(article: any): Partial<IArticle> {
+      return {
+          summary: article.description || "Analysis unavailable (System Busy)",
+          category: "Uncategorized",
+          politicalLean: "Not Applicable",
+          biasScore: 0,
+          trustScore: 0,
+          analysisType: 'SentimentOnly',
+          sentiment: 'Neutral'
+      };
   }
 }
 
