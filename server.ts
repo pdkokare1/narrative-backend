@@ -27,7 +27,7 @@ import ttsRoutes from './routes/ttsRoutes';
 import migrationRoutes from './routes/migrationRoutes';
 import assetGenRoutes from './routes/assetGenRoutes';
 import shareRoutes from './routes/shareRoutes';
-import clusterRoutes from './routes/clusterRoutes'; // <--- NEW IMPORT
+import clusterRoutes from './routes/clusterRoutes'; 
 
 // Extend Express Request interface to include 'user'
 declare global {
@@ -81,12 +81,13 @@ try {
   logger.error(`Firebase Admin Init Error: ${error.message}`);
 }
 
-// Rate Limiter
+// Rate Limiter (RELAXED)
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 300, 
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // Increased from 300 to 1000 to prevent 429s during dev
   standardHeaders: true, 
   legacyHeaders: false, 
+  message: { error: 'Too many requests, please try again later.' }
 });
 app.use('/api/', apiLimiter); 
 
@@ -94,6 +95,9 @@ app.use('/api/', apiLimiter);
 const checkAppCheck = async (req: Request, res: Response, next: NextFunction) => {
   const appCheckToken = req.header('X-Firebase-AppCheck');
   if (!appCheckToken) {
+      // In development/postman, we might skip this if needed, 
+      // but strictly it should be required.
+      // For now, allow bypass if strictly needed or return 401
       res.status(401);
       throw new Error('Unauthorized: No App Check token.');
   }
@@ -132,7 +136,7 @@ app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => check
 app.use('/api/emergency-resources', emergencyRoutes);
 app.use('/api/tts', ttsRoutes); 
 app.use('/api/migration', migrationRoutes); 
-app.use('/api/cluster', clusterRoutes); // <--- NEW ROUTE
+app.use('/api/cluster', clusterRoutes);
 app.use('/api', articleRoutes); 
 
 // --- Jobs Endpoint ---
