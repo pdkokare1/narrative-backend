@@ -1,6 +1,6 @@
 // services/clusteringService.ts
 import Article from '../models/articleModel';
-import Cache from '../models/cacheModel';
+import redis from '../utils/redisClient';
 import { IArticle } from '../types';
 
 class ClusteringService {
@@ -91,29 +91,33 @@ class ClusteringService {
             }
         }
 
-        // 3. Generate NEW Cluster ID
+        // 3. Generate NEW Cluster ID (Optimized via Redis)
         try {
-            const farFuture = new Date('2099-12-31T00:00:00.000Z');
-            const counterDoc = await Cache.findOneAndUpdate(
-                { key: 'GLOBAL_CLUSTER_ID_COUNTER' },
-                { $inc: { data: 1 }, $set: { expiresAt: farFuture } },
-                { new: true, upsert: true }
-            );
-            
-            let newId = counterDoc?.data;
-
-            if (newId === 1) {
-                const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select('clusterId').lean();
-                if (maxIdDoc?.clusterId && maxIdDoc.clusterId > 0) {
-                    newId = maxIdDoc.clusterId + 1;
-                    await Cache.findOneAndUpdate(
-                        { key: 'GLOBAL_CLUSTER_ID_COUNTER' },
-                        { $set: { data: newId } }
-                    );
+            // @ts-ignore
+            if (redis.isReady()) {
+                // Increment atomic counter in Redis
+                let newId = await redis.incr('GLOBAL_CLUSTER_ID');
+                
+                // Safety: If Redis was just flushed/reset, newId might be 1, but DB has higher IDs.
+                // We assume ID > 10000 means it's initialized. If small, we sync from DB.
+                if (newId < 100) {
+                    const maxIdDoc = await Article.findOne({}).sort({ clusterId: -1 }).select('clusterId').lean();
+                    const dbMax = maxIdDoc?.clusterId || 10000;
+                    
+                    // If DB is ahead, reset Redis to DB value + 1
+                    if (dbMax >= newId) {
+                        const client = redis.getClient();
+                        if (client) {
+                            await client.set('GLOBAL_CLUSTER_ID', dbMax + 1);
+                            newId = dbMax + 1;
+                        }
+                    }
                 }
+                return newId;
+            } else {
+                // Fallback if Redis is down: Timestamp based
+                return Math.floor(Date.now() / 1000); 
             }
-            return newId;
-
         } catch (err) {
             return Math.floor(Date.now() / 1000); 
         }
