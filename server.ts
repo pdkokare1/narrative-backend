@@ -17,7 +17,8 @@ import queueManager from './jobs/queueManager';
 import { errorHandler } from './middleware/errorMiddleware';
 import logger from './utils/logger';
 import emergencyService from './services/emergencyService';
-import redis from './utils/redisClient'; // Imported for Cron Job
+import gatekeeperService from './services/gatekeeperService'; // Import Gatekeeper
+import redis from './utils/redisClient'; 
 
 // Import Models (Needed for Cron Logic)
 import Article from './models/articleModel';
@@ -155,7 +156,6 @@ cron.schedule('*/30 5-22 * * *', async () => {
 });
 
 // 2. Night Mode (11 PM to 5 AM): Every 2 Hours
-// Runs at 23:00 (11PM), 01:00, 03:00
 cron.schedule('0 23,1,3 * * *', async () => {
     logger.info('🌙 Night Mode Fetch (2h interval)...');
     await queueManager.addFetchJob('cron-night', { source: 'cron-night' });
@@ -177,7 +177,7 @@ cron.schedule('*/30 * * * *', async () => {
         
         const topics = results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
         
-        // Save to Redis (Long TTL because we update it periodically)
+        // Save to Redis
         // @ts-ignore
         if (redis.isReady()) {
             await redis.set('trending_topics_smart', topics, 3600); // 1 hour TTL
@@ -193,7 +193,11 @@ if (process.env.MONGODB_URI) {
     mongoose.connect(process.env.MONGODB_URI)
         .then(async () => {
             logger.info('MongoDB Connected');
-            await emergencyService.initializeEmergencyContacts();
+            // Seed Initial Data
+            await Promise.all([
+                emergencyService.initializeEmergencyContacts(),
+                gatekeeperService.initialize() // Initialize Gatekeeper Config
+            ]);
         })
         .catch((err: any) => logger.error(`MongoDB Connection Failed: ${err.message}`));
 }
