@@ -79,6 +79,27 @@ const redisClient = {
         }
     },
 
+    // --- NEW METHODS FOR GATEKEEPER ---
+    incr: async (key: string): Promise<number> => {
+        if (!client || !isConnected) return 0;
+        try {
+            return await client.incr(key);
+        } catch (e: any) {
+            logger.warn(`Redis Incr Error: ${e.message}`);
+            return 0;
+        }
+    },
+
+    expire: async (key: string, seconds: number): Promise<boolean> => {
+        if (!client || !isConnected) return false;
+        try {
+            return await client.expire(key, seconds);
+        } catch (e: any) {
+            logger.warn(`Redis Expire Error: ${e.message}`);
+            return false;
+        }
+    },
+
     isReady: () => isConnected
 };
 
