@@ -81,6 +81,16 @@ class GatekeeperService {
     }
 
     /**
+     * Helper to extract domain from URL
+     */
+    private getDomain(url: string): string | null {
+        try {
+            const hostname = new URL(url).hostname;
+            return hostname.replace(/^www\./, '');
+        } catch (e) { return null; }
+    }
+
+    /**
      * LOCAL CHECK: Free and Fast.
      * Uses DB-backed configuration.
      */
@@ -111,6 +121,44 @@ class GatekeeperService {
         }
 
         return { isJunk: false };
+    }
+
+    /**
+     * AUTO BAN LOGIC:
+     * If AI marks as junk, increment strike counter.
+     * If strikes > 5, ban the domain permanently.
+     */
+    private async handleJunkDetection(url: string) {
+        const domain = this.getDomain(url);
+        if (!domain) return;
+
+        try {
+            // @ts-ignore
+            if (redis.isReady && redis.isReady()) {
+                const key = `strikes:${domain}`;
+                const strikes = await redis.incr(key);
+                
+                // Set expiry so "good" sites don't get banned for occasional flukes over years
+                if (strikes === 1) await redis.expire(key, 86400 * 3); // 3 Days to get 5 strikes
+
+                if (strikes >= 5) {
+                    console.warn(`🚫 AUTO-BANNING DOMAIN: ${domain} (5 Junk Strikes)`);
+                    
+                    // Add to DB
+                    await SystemConfig.findOneAndUpdate(
+                        { key: 'BANNED_DOMAINS' },
+                        { $addToSet: { value: domain } },
+                        { upsert: true }
+                    );
+                    
+                    // Add to local cache immediately
+                    this.localCache.banned.push(domain);
+                    
+                    // Clear Redis counter
+                    await redis.del(key);
+                }
+            }
+        } catch (e) { /* Ignore stats errors */ }
     }
 
     /**
@@ -161,9 +209,16 @@ class GatekeeperService {
             const text = response.data.candidates[0].content.parts[0].text;
             const result = JSON.parse(text.replace(/```json|```/g, '').trim());
 
+            const isJunk = result.type === 'Junk';
+
+            if (isJunk) {
+                // Trigger Auto-Ban Logic
+                this.handleJunkDetection(article.url);
+            }
+
             const finalDecision = {
                 ...result,
-                isJunk: result.type === 'Junk',
+                isJunk: isJunk,
                 recommendedModel: result.type === 'Hard News' ? 'gemini-2.5-pro' : 'gemini-2.5-flash'
             };
 
@@ -175,7 +230,11 @@ class GatekeeperService {
         } catch (error: any) {
             const status = error.response?.status;
             const isRateLimit = status === 429;
-            await KeyManager.reportFailure(await KeyManager.getKey('GEMINI'), isRateLimit);
+            // Handle key failure carefully
+            try {
+                const currentKey = await KeyManager.getKey('GEMINI'); 
+                await KeyManager.reportFailure(currentKey, isRateLimit);
+            } catch (e) { /* ignore if we can't report */ }
             
             console.error(`Gatekeeper Error for "${article.title.substring(0, 20)}...":`, error.message);
             
