@@ -41,8 +41,7 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
         return res.status(200).json({ topics: cachedData });
     }
 
-    // 2. Fallback: Calculate on demand (Slow Path) if cache is empty
-    // This ensures data is always available even if the cron hasn't run yet.
+    // 2. Fallback: Calculate on demand (Slow Path)
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const results = await Article.aggregate([
         { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
@@ -54,7 +53,6 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     
     const topics = results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
     
-    // Save to Redis so next request is fast
     await redis.set(CACHE_KEY, topics, 1800);
     
     res.status(200).json({ topics });
@@ -67,18 +65,17 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
     
     if (!query) return res.status(200).json({ articles: [], pagination: { total: 0 } });
 
-    // ATLAS SEARCH PIPELINE
     const pipeline = [
         {
             $search: {
-                index: 'default', // Requires 'default' index in Atlas
+                index: 'default',
                 compound: {
                     should: [
                         {
                             text: {
                                 query: query,
                                 path: 'headline',
-                                fuzzy: { maxEdits: 2 }, // Typo tolerance
+                                fuzzy: { maxEdits: 2 },
                                 score: { boost: { value: 3 } }
                             }
                         },
@@ -108,7 +105,6 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
         const results = await Article.aggregate(pipeline);
         res.status(200).json({ articles: results, pagination: { total: results.length } });
     } catch (error) {
-        // Fallback to basic Regex if Atlas Search fails (e.g. index not built yet)
         console.warn("Atlas Search failed, falling back to Regex:", error);
         const regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
         const fallback = await Article.find({ headline: { $regex: regex } }).limit(limit).lean();
@@ -164,7 +160,6 @@ router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, 
     }
 
     const userId = req.user.uid;
-    // Get recent history
     const history = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(20).lean();
     
     if (history.length === 0) {
@@ -185,7 +180,6 @@ router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, 
     if (dominantLean.includes('Left')) targetLean = ['Center', 'Right-Leaning', 'Right'];
     else if (dominantLean.includes('Right')) targetLean = ['Center', 'Left-Leaning', 'Left'];
 
-    // Updated Query to use new Indexes
     let challengerArticles = await Article.find({
         politicalLean: { $in: targetLean },
         publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
@@ -201,44 +195,94 @@ router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, 
     });
 }));
 
-// --- 5. Personalized "My Mix" Feed ---
+// --- 5. Personalized "My Mix" Feed (VECTOR ENHANCED) ---
 router.get('/articles/personalized', authenticate, asyncHandler(async (req: Request, res: Response) => {
+    // A. Guest Fallback
     if (!req.user || !req.user.uid) {
         const trending = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
         return res.status(200).json({ articles: trending, meta: { topCategories: ['Trending'] } });
     }
 
     const userId = req.user.uid;
-    const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50);
-        
-    if (recentLogs.length === 0) {
-        const trending = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
-        return res.status(200).json({ articles: trending, meta: { topCategories: ['Trending'] } });
-    }
-        
-    const articleIds = recentLogs.map(l => l.articleId);
-    const viewedArticles = await Article.find({ _id: { $in: articleIds } }).select('category');
-    const categoryCounts: Record<string, number> = {};
-    viewedArticles.forEach(a => categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1);
     
-    const topCategories = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]);
+    // B. Fetch Profile for Vector
+    const profile = await Profile.findOne({ userId }).select('userEmbedding');
+    const hasVector = profile && profile.userEmbedding && profile.userEmbedding.length > 0;
 
     let recommendations: any[] = [];
-    if (topCategories.length > 0) {
-        // Optimized: Now uses the new Compound Index (Category + PublishedAt) implicitly
-        recommendations = await Article.aggregate([
-            { $match: { category: { $in: topCategories }, publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } } },
-            { $sample: { size: 15 } } 
-        ]);
+    let metaReason = "Trending";
+
+    // --- STRATEGY 1: VECTOR SEARCH (AI Powered) ---
+    if (hasVector) {
+        try {
+            // FIX: Explicitly cast pipeline to 'any' for $vectorSearch support in TS
+            const pipeline: any = [
+                {
+                    "$vectorSearch": {
+                        "index": "vector_index", // Ensure this index exists in Atlas!
+                        "path": "embedding",
+                        "queryVector": profile.userEmbedding,
+                        "numCandidates": 150, // Scan 150 nearest
+                        "limit": 20           // Return top 20
+                    }
+                },
+                {
+                    "$project": {
+                        "headline": 1, "summary": 1, "source": 1, "category": 1,
+                        "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1,
+                        "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1,
+                        "clusterTopic": 1, "audioUrl": 1,
+                        "score": { "$meta": "vectorSearchScore" } 
+                    }
+                }
+            ];
+
+            const candidates = await Article.aggregate(pipeline);
+            
+            // Filter: Don't show old news even if it matches vector perfectly
+            // (Vector search doesn't filter by date efficiently inside the search stage on all tiers)
+            const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+            recommendations = candidates.filter((a: any) => new Date(a.publishedAt) > threeDaysAgo);
+            
+            metaReason = "AI Curated (Interest Match)";
+            // console.log(`🤖 Serving ${recommendations.length} vector recs for ${userId}`);
+
+        } catch (error) {
+            console.error("Vector Search Failed (Falling back to legacy):", error);
+        }
     }
 
+    // --- STRATEGY 2: LEGACY CATEGORY MATCH (Fallback) ---
+    if (recommendations.length === 0) {
+        const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50);
+        
+        if (recentLogs.length > 0) {
+            const articleIds = recentLogs.map(l => l.articleId);
+            const viewedArticles = await Article.find({ _id: { $in: articleIds } }).select('category');
+            const categoryCounts: Record<string, number> = {};
+            viewedArticles.forEach(a => categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1);
+            
+            const topCategories = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]);
+            metaReason = `Based on ${topCategories.join(', ')}`;
+
+            if (topCategories.length > 0) {
+                recommendations = await Article.aggregate([
+                    { $match: { category: { $in: topCategories }, publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } } },
+                    { $sample: { size: 15 } } 
+                ]);
+            }
+        }
+    }
+
+    // --- STRATEGY 3: GENERIC TRENDING (Final Fallback) ---
     if (recommendations.length === 0) {
         recommendations = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
+        metaReason = "Trending (No Data)";
     }
 
     res.status(200).json({ 
         articles: recommendations.map(a => ({ ...a, suggestionType: 'Comfort' })), 
-        meta: { topCategories } 
+        meta: { topCategories: [metaReason] } 
     });
 }));
 
