@@ -1,9 +1,10 @@
 // src/routes/articleRoutes.ts
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import asyncHandler from '../utils/asyncHandler';
 import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
+import * as admin from 'firebase-admin';
 
 // Models
 import Article from '../models/articleModel';
@@ -14,6 +15,21 @@ import ActivityLog from '../models/activityLogModel';
 import redis from '../utils/redisClient';
 
 const router = express.Router();
+
+// --- AUTH MIDDLEWARE (Internal) ---
+// We define this here to ensure it applies to the specific routes that need it
+const authenticate = async (req: Request, res: Response, next: NextFunction) => {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (token) {
+        try {
+            const decoded = await admin.auth().verifyIdToken(token);
+            req.user = decoded;
+        } catch (e) {
+            console.warn("Auth check failed in articleRoutes", e);
+        }
+    }
+    next();
+};
 
 // --- Helper: Merge & Deduplicate Arrays ---
 const mergeResults = (arr1: any[], arr2: any[]): any[] => {
@@ -52,15 +68,14 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
             $group: { 
                 _id: "$clusterTopic", 
                 count: { $sum: 1 },
-                sampleScore: { $max: "$trustScore" } // Quality check
+                sampleScore: { $max: "$trustScore" } 
             } 
         },
-        { $match: { count: { $gte: 3 } } }, // Must have at least 3 articles
+        { $match: { count: { $gte: 3 } } }, 
         { $sort: { count: -1 } },
         { $limit: 10 }
     ];
 
-    // FORCE FIX: Cast to 'any' here to bypass Mongoose strict typing error
     const results = await Article.aggregate(aggregation as any);
     
     const topics = results.map(r => ({
@@ -82,21 +97,17 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
     
     if (!query) return res.status(200).json({ articles: [], pagination: { total: 0 } });
 
-    // A. Strict Text Search (Fast & Ranked)
     const strictResults = await Article.find(
         { $text: { $search: query } },
         { score: { $meta: "textScore" } }
     )
-    .sort({ score: { $meta: "textScore" }, publishedAt: -1 }) // Relevance + Recency
+    .sort({ score: { $meta: "textScore" }, publishedAt: -1 })
     .limit(limit)
     .lean();
 
-    // B. Fallback: Regex Search (If strict results are low)
     let finalResults = strictResults;
     
     if (strictResults.length < 5) {
-        // "Fuzzy" match on headline OR summary
-        // Escape regex special chars to prevent crashes
         const safeQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp(safeQuery, 'i');
 
@@ -105,7 +116,6 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
                 { headline: { $regex: regex } },
                 { clusterTopic: { $regex: regex } }
             ],
-            // Exclude IDs we already found
             _id: { $nin: strictResults.map(r => r._id) }
         })
         .sort({ publishedAt: -1 })
@@ -127,7 +137,6 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
     
     const query: any = {};
 
-    // Filters
     if (category && category !== 'All Categories') query.category = category;
     if (lean && lean !== 'All Leans') query.politicalLean = lean;
     
@@ -138,7 +147,6 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
     else if (articleType === 'Opinion & Reviews') query.analysisType = 'SentimentOnly';
 
     if (quality && quality !== 'All Quality Levels') {
-        // Map UI labels to Grades
         const gradeMap: Record<string, string[]> = {
             'A+ Excellent (90-100)': ['A+'],
             'A High (80-89)': ['A', 'A-'],
@@ -150,13 +158,11 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
         if (grades) query.credibilityGrade = { $in: grades };
     }
 
-    // Sort Logic
-    let sortOptions: any = { publishedAt: -1 }; // Default: Latest
+    let sortOptions: any = { publishedAt: -1 }; 
     if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
-    else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 }; // Needs cluster aggregation to be accurate, but schema has placeholder
-    else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 }; // Ascending
+    else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 }; 
+    else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 }; 
 
-    // Execute
     const articles = await Article.find(query)
         .sort(sortOptions)
         .skip(Number(offset))
@@ -169,7 +175,15 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
 }));
 
 // --- 4. "For You" Feed (The "Balanced" Algorithm) ---
-router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response) => {
+router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, res: Response) => {
+    // FALLBACK 1: If no user logged in
+    if (!req.user || !req.user.uid) {
+        const standard = await Article.find({})
+            .sort({ trustScore: -1, publishedAt: -1 })
+            .limit(10).lean();
+        return res.status(200).json({ articles: standard, meta: { reason: "Guest User" } });
+    }
+
     const userId = req.user.uid;
     
     // 1. Get User's Bias History
@@ -178,12 +192,11 @@ router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response)
         .limit(20)
         .lean();
     
-    // Fallback: If no history, return standard high-quality trending
+    // FALLBACK 2: No History
     if (history.length === 0) {
         const standard = await Article.find({})
-            .sort({ trustScore: -1, publishedAt: -1 }) // High trust + latest
-            .limit(10)
-            .lean();
+            .sort({ trustScore: -1, publishedAt: -1 })
+            .limit(10).lean();
         return res.status(200).json({ articles: standard, meta: { reason: "No history" } });
     }
 
@@ -194,31 +207,29 @@ router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response)
     const leanCounts: Record<string, number> = {};
     viewedDocs.forEach(d => { leanCounts[d.politicalLean] = (leanCounts[d.politicalLean] || 0) + 1; });
     
-    // Find dominant lean
     let dominantLean = 'Center';
     let maxCount = 0;
     Object.entries(leanCounts).forEach(([lean, count]) => {
         if (count > maxCount) { maxCount = count; dominantLean = lean; }
     });
 
-    // 3. Fetch "Challenger" Articles (Opposite views)
+    // 3. Fetch "Challenger" Articles
     let targetLean = ['Center'];
     if (dominantLean.includes('Left')) targetLean = ['Center', 'Right-Leaning', 'Right'];
     else if (dominantLean.includes('Right')) targetLean = ['Center', 'Left-Leaning', 'Left'];
 
     let challengerArticles = await Article.find({
         politicalLean: { $in: targetLean },
-        publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Last 7 days
+        publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
     })
-    .sort({ trustScore: -1 }) // Best quality challengers
+    .sort({ trustScore: -1 }) 
     .limit(10)
     .lean();
 
-    // Fallback: If no challengers found, return general Center news
+    // FALLBACK 3: No Challengers found
     if (challengerArticles.length === 0) {
-        challengerArticles = await Article.find({
-            politicalLean: 'Center'
-        }).sort({ publishedAt: -1 }).limit(10).lean();
+        challengerArticles = await Article.find({ politicalLean: 'Center' })
+            .sort({ publishedAt: -1 }).limit(10).lean();
     }
 
     // 4. Mark them
@@ -231,26 +242,29 @@ router.get('/articles/for-you', asyncHandler(async (req: Request, res: Response)
 }));
 
 // --- 5. Personalized "My Mix" Feed ---
-router.get('/articles/personalized', asyncHandler(async (req: Request, res: Response) => {
+router.get('/articles/personalized', authenticate, asyncHandler(async (req: Request, res: Response) => {
+    // FALLBACK 1: Guest
+    if (!req.user || !req.user.uid) {
+        const trending = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
+        return res.status(200).json({ articles: trending, meta: { topCategories: ['Trending'] } });
+    }
+
     const userId = req.user.uid;
     
     // 1. Get recent activity
     const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
         .sort({ timestamp: -1 })
         .limit(50);
-    
-    // Fallback if no logs
+        
+    // FALLBACK 2: No Activity
     if (recentLogs.length === 0) {
         const trending = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
         return res.status(200).json({ articles: trending, meta: { topCategories: ['Trending'] } });
     }
         
     const articleIds = recentLogs.map(l => l.articleId);
-    
-    // 2. Get details of viewed articles
     const viewedArticles = await Article.find({ _id: { $in: articleIds } }).select('category politicalLean');
     
-    // 3. Calculate preferences
     const categoryCounts: Record<string, number> = {};
     viewedArticles.forEach(a => {
         categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1;
@@ -261,7 +275,6 @@ router.get('/articles/personalized', asyncHandler(async (req: Request, res: Resp
         .slice(0, 3)
         .map(x => x[0]);
 
-    // 4. Fetch recommendations
     let recommendations: any[] = [];
     
     if (topCategories.length > 0) {
@@ -269,19 +282,17 @@ router.get('/articles/personalized', asyncHandler(async (req: Request, res: Resp
             { 
                 $match: { 
                     category: { $in: topCategories },
-                    publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } // Last 3 days
+                    publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } 
                 } 
             },
-            { $sample: { size: 15 } }
+            { $sample: { size: 15 } } 
         ]);
     }
 
-    // Fallback if preferences didn't yield results
+    // FALLBACK 3: No matches
     if (recommendations.length === 0) {
         recommendations = await Article.find({})
-            .sort({ publishedAt: -1 })
-            .limit(15)
-            .lean();
+            .sort({ publishedAt: -1 }).limit(15).lean();
     }
 
     const finalFeed = recommendations.map(a => ({ ...a, suggestionType: 'Comfort' }));
@@ -293,14 +304,15 @@ router.get('/articles/personalized', asyncHandler(async (req: Request, res: Resp
 }));
 
 // --- 6. Saved Articles ---
-router.get('/saved', asyncHandler(async (req: Request, res: Response) => {
+router.get('/saved', authenticate, asyncHandler(async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
     const profile = await Profile.findOne({ userId: req.user.uid }).select('savedArticles');
     
     if (!profile || !profile.savedArticles.length) {
         return res.status(200).json({ articles: [] });
     }
 
-    // Fetch full article objects
     const articles = await Article.find({ _id: { $in: profile.savedArticles } })
         .sort({ publishedAt: -1 })
         .lean();
@@ -308,8 +320,10 @@ router.get('/saved', asyncHandler(async (req: Request, res: Response) => {
     res.status(200).json({ articles });
 }));
 
-// --- 7. Toggle Save Article (FIXED) ---
-router.post('/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
+// --- 7. Toggle Save Article ---
+router.post('/:id/save', authenticate, validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
+    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
     const { id } = req.params;
     const userId = req.user.uid;
 
@@ -320,19 +334,15 @@ router.post('/:id/save', validate(schemas.saveArticle, 'params'), asyncHandler(a
     }
 
     const articleId = new mongoose.Types.ObjectId(id);
-    
-    // FIX: Use String comparison for reliable check
     const strId = id.toString();
     const currentSaved = profile.savedArticles.map(s => s.toString());
     
     let message = '';
     
     if (currentSaved.includes(strId)) {
-        // Remove
         profile.savedArticles = profile.savedArticles.filter(s => s.toString() !== strId) as any;
         message = 'Article unsaved';
     } else {
-        // Add
         profile.savedArticles.push(articleId);
         message = 'Article saved';
     }
