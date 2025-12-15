@@ -89,6 +89,9 @@ export interface IUserProfile {
   // Relationships
   savedArticles: string[]; // Array of Article IDs
   
+  // Personalization Vector (NEW)
+  userEmbedding?: number[];
+
   // Notifications
   fcmToken?: string | null;
   notificationsEnabled: boolean;
