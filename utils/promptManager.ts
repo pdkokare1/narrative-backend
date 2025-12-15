@@ -1,4 +1,4 @@
-// utils/promptManager.ts
+// src/utils/promptManager.ts
 import Prompt from '../models/aiPrompts';
 import redis from './redisClient';
 import logger from './logger';
@@ -23,9 +23,34 @@ Date: {{date}}
 Respond ONLY in valid JSON.
 `;
 
+const SUMMARY_ONLY_PROMPT = `
+Role: You are a News Curator.
+Task: Summarize this story concisely.
+
+Input Article:
+Headline: "{{headline}}"
+Description: "{{description}}"
+Snippet: "{{content}}"
+
+--- INSTRUCTIONS ---
+1. Summarize: Provide a 2-3 sentence factual summary.
+2. Categorize: Choose the most relevant category (e.g., Entertainment, Sports, Lifestyle).
+3. Sentiment: Determine if the story is Positive, Negative, or Neutral.
+
+--- OUTPUT FORMAT ---
+Respond ONLY in valid JSON:
+{
+  "summary": "String",
+  "category": "String",
+  "sentiment": "String",
+  "politicalLean": "Not Applicable",
+  "analysisType": "SentimentOnly"
+}
+`;
+
 class PromptManager {
     
-    async getTemplate(type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION' = 'ANALYSIS'): Promise<string> {
+    async getTemplate(type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION' | 'SUMMARY_ONLY' = 'ANALYSIS'): Promise<string> {
         const CACHE_KEY = `PROMPT_${type}`;
 
         try {
@@ -33,7 +58,11 @@ class PromptManager {
             if (cached) return cached;
         } catch (e) { /* Ignore Redis error */ }
 
+        // Fallback templates if DB is empty or fails
+        if (type === 'SUMMARY_ONLY') return SUMMARY_ONLY_PROMPT;
+
         try {
+            // @ts-ignore - DB model might not have SUMMARY_ONLY in enum yet, safe to cast or ignore
             const doc = await Prompt.findOne({ type, active: true }).sort({ version: -1 }).lean();
             if (doc && doc.text) {
                 await redis.set(CACHE_KEY, doc.text, 600); 
@@ -52,8 +81,10 @@ class PromptManager {
         });
     }
 
-    public async getAnalysisPrompt(article: any): Promise<string> {
-        const template = await this.getTemplate('ANALYSIS');
+    public async getAnalysisPrompt(article: any, mode: 'Full' | 'Basic' = 'Full'): Promise<string> {
+        // Choose template based on mode
+        const templateType = mode === 'Basic' ? 'SUMMARY_ONLY' : 'ANALYSIS';
+        const template = await this.getTemplate(templateType);
         
         const data = {
             headline: article.title || "No Title",
