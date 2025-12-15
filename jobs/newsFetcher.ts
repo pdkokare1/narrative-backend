@@ -7,10 +7,6 @@ import Article from '../models/articleModel';
 import logger from '../utils/logger'; 
 import { IArticle } from '../types';
 
-function sleep(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 // --- PIPELINE STEPS ---
 
 // Step 1: Filter Duplicates (URL Check Only)
@@ -138,25 +134,17 @@ async function fetchAndAnalyzeNews() {
     stats.totalFetched = rawArticles.length;
     logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline...`);
 
-    // B. Process in Batches
-    // Reduced batch size slightly to balance AI load, but removed long sleep
-    const BATCH_SIZE = 5; 
-    for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
-        const batch = rawArticles.slice(i, i + BATCH_SIZE);
+    // B. Process ALL items
+    // Queue Rate Limiter will handle the speed, so we can just loop
+    const results = await Promise.all(rawArticles.map(article => processSingleArticle(article)));
         
-        const results = await Promise.all(batch.map(article => processSingleArticle(article)));
-        
-        results.forEach(res => {
-            if (res === 'SAVED_FRESH') stats.savedFresh++;
-            else if (res === 'SAVED_SEMANTIC') stats.savedSemantic++;
-            else if (res === 'DUPLICATE_URL') stats.duplicates++;
-            else if (res === 'JUNK_CONTENT') stats.junk++;
-            else stats.errors++;
-        });
-        
-        // Minimal pause to prevent overwhelming the event loop or database connection pool
-        if (i + BATCH_SIZE < rawArticles.length) await sleep(250); 
-    }
+    results.forEach(res => {
+        if (res === 'SAVED_FRESH') stats.savedFresh++;
+        else if (res === 'SAVED_SEMANTIC') stats.savedSemantic++;
+        else if (res === 'DUPLICATE_URL') stats.duplicates++;
+        else if (res === 'JUNK_CONTENT') stats.junk++;
+        else stats.errors++;
+    });
 
     logger.info('Job Complete: Summary', { stats });
     return stats;
