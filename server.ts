@@ -17,6 +17,10 @@ import queueManager from './jobs/queueManager';
 import { errorHandler } from './middleware/errorMiddleware';
 import logger from './utils/logger';
 import emergencyService from './services/emergencyService';
+import redis from './utils/redisClient'; // Imported for Cron Job
+
+// Import Models (Needed for Cron Logic)
+import Article from './models/articleModel';
 
 // Import Routes
 import profileRoutes from './routes/profileRoutes';
@@ -155,6 +159,33 @@ cron.schedule('*/30 5-22 * * *', async () => {
 cron.schedule('0 23,1,3 * * *', async () => {
     logger.info('🌙 Night Mode Fetch (2h interval)...');
     await queueManager.addFetchJob('cron-night', { source: 'cron-night' });
+});
+
+// 3. Trending Topics Calculation (Background Optimization) - Runs every 30 mins
+cron.schedule('*/30 * * * *', async () => {
+    logger.info('📈 Updating Trending Topics Cache...');
+    try {
+        const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+        // Heavy Aggregation
+        const results = await Article.aggregate([
+            { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
+            { $group: { _id: "$clusterTopic", count: { $sum: 1 }, sampleScore: { $max: "$trustScore" } } },
+            { $match: { count: { $gte: 3 } } }, 
+            { $sort: { count: -1 } },
+            { $limit: 10 }
+        ]);
+        
+        const topics = results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
+        
+        // Save to Redis (Long TTL because we update it periodically)
+        // @ts-ignore
+        if (redis.isReady()) {
+            await redis.set('trending_topics_smart', topics, 3600); // 1 hour TTL
+            logger.info(`✅ Trending Topics Updated (${topics.length} topics)`);
+        }
+    } catch (err: any) {
+        logger.error(`❌ Trending Calc Failed: ${err.message}`);
+    }
 });
 
 // Database Connection
