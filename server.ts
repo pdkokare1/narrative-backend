@@ -95,7 +95,9 @@ try {
   logger.error(`Firebase Admin Init Error: ${error.message}`);
 }
 
-// Rate Limiter
+// --- RATE LIMITERS ---
+
+// 1. General API Limiter (Standard)
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 1000, 
@@ -103,6 +105,17 @@ const apiLimiter = rateLimit({
   legacyHeaders: false, 
   message: { error: 'Too many requests, please try again later.' }
 });
+
+// 2. TTS Cost-Protection Limiter (Strict)
+// Limits audio generation to 10 requests per 15 mins per IP
+const ttsLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10, 
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Audio generation limit reached. Please wait a while.' }
+});
+
 app.use('/api/', apiLimiter); 
 
 // Security Middleware
@@ -145,7 +158,10 @@ app.use('/api/assets', assetGenRoutes);
 app.use('/api/profile', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), profileRoutes);
 app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), activityRoutes);
 app.use('/api/emergency-resources', emergencyRoutes);
-app.use('/api/tts', ttsRoutes); 
+
+// Apply strict limiter to TTS
+app.use('/api/tts', ttsLimiter, ttsRoutes); 
+
 app.use('/api/migration', migrationRoutes); 
 app.use('/api/cluster', clusterRoutes);
 app.use('/api', articleRoutes); 
