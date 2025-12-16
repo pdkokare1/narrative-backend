@@ -1,10 +1,12 @@
 // services/newsService.ts
+import crypto from 'crypto';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
+import redisClient from '../utils/redisClient';
 import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle, INewsAPIResponse } from '../types';
-import Article from '../models/articleModel'; // Imported to check for duplicates
+import Article from '../models/articleModel';
 
 // Rotation cycles to save API quota
 const FETCH_CYCLES = [
@@ -56,15 +58,62 @@ class NewsService {
 
     // 3. Clean and Deduplicate (In-Memory)
     const cleaned = this.removeDuplicatesAndClean(allArticles);
+
+    // 4. Redis "Bouncer" Check (Fast Filter)
+    const redisFiltered = await this.filterSeenInRedis(cleaned);
     
-    // 4. Database Deduplication (Check against history)
-    const finalUnique = await this.filterExistingInDB(cleaned);
+    // 5. Database Deduplication (Deep Check)
+    const finalUnique = await this.filterExistingInDB(redisFiltered);
+
+    // 6. Mark accepted articles as "Seen" in Redis for next time
+    await this.markAsSeenInRedis(finalUnique);
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
     return finalUnique;
   }
 
-  // NEW: Check Database for existing URLs to prevent duplicates
+  // --- REDIS HELPERS (The Bouncer) ---
+
+  private getRedisKey(url: string): string {
+    // We create a short "fingerprint" (MD5 hash) of the URL to save memory
+    const hash = crypto.createHash('md5').update(url).digest('hex');
+    return `news:seen:${hash}`;
+  }
+
+  private async filterSeenInRedis(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
+    if (articles.length === 0) return [];
+    
+    const unseen: INewsSourceArticle[] = [];
+    let skippedCount = 0;
+
+    for (const article of articles) {
+        const key = this.getRedisKey(article.url);
+        const isSeen = await redisClient.get(key);
+        
+        if (isSeen) {
+            skippedCount++;
+        } else {
+            unseen.push(article);
+        }
+    }
+
+    if (skippedCount > 0) {
+        logger.info(`🚫 Redis blocked ${skippedCount} duplicate articles.`);
+    }
+    
+    return unseen;
+  }
+
+  private async markAsSeenInRedis(articles: INewsSourceArticle[]) {
+      for (const article of articles) {
+          const key = this.getRedisKey(article.url);
+          // Set key with '1' and expire in 48 hours (172800 seconds)
+          await redisClient.set(key, '1', 172800);
+      }
+  }
+
+  // --- EXISTING DB HELPERS ---
+
   private async filterExistingInDB(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
       if (articles.length === 0) return [];
       
@@ -72,7 +121,7 @@ class NewsService {
       
       // Find which of these URLs already exist in Mongo
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
-      const existingUrls = new Set(existingDocs.map(d => d.url));
+      const existingUrls = new Set(existingDocs.map((d: any) => d.url));
       
       // Only keep the ones NOT in the set
       return articles.filter(a => !existingUrls.has(a.url));
