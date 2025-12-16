@@ -1,12 +1,14 @@
 {
   "name": "narrative-backend",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Narrative News Backend API (TypeScript Migration)",
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
+    "start:worker": "node dist/workerEntry.js",
     "dev": "ts-node-dev --respawn --transpile-only server.ts",
+    "dev:worker": "ts-node-dev --respawn --transpile-only workerEntry.ts",
     "lint": "eslint ."
   },
   "keywords": [
