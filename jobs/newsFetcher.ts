@@ -9,7 +9,7 @@ import redisClient from '../utils/redisClient';
 import { IArticle } from '../types';
 
 // --- PIPELINE CONSTANTS ---
-const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24; // If match is older than this, re-analyze
+const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24; 
 const BATCH_SIZE = 5;
 
 // --- HELPERS ---
@@ -21,7 +21,7 @@ async function isDuplicate(url: string): Promise<boolean> {
     if (await redisClient.sIsMember('processed_urls', url)) return true;
     // 2. DB Check (Reliable)
     if (await Article.exists({ url })) {
-        await redisClient.sAdd('processed_urls', url); // Sync back to cache
+        await redisClient.sAdd('processed_urls', url); 
         return true;
     }
     return false;
@@ -33,26 +33,43 @@ async function processSingleArticle(article: any): Promise<string> {
     try {
         if (!article?.url || !article?.title) return 'ERROR_INVALID';
         
-        // 1. Exact Duplicate Check
+        // 1. Exact Duplicate Check (URL)
         if (await isDuplicate(article.url)) return 'DUPLICATE_URL';
 
         // 2. Gatekeeper (Junk Filter)
         const gatekeeperResult = await gatekeeper.evaluateArticle(article);
         if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
-        // 3. Create Embedding
-        const textToEmbed = `${article.title}. ${article.description}`;
-        const embedding = await aiService.createEmbedding(textToEmbed);
+        // --- PHASE 2 OPTIMIZATION: Fuzzy Match (Text-Only) ---
+        // Try to find a match using math (Levenshtein) BEFORE calling expensive AI
+        let existingMatch = await clusteringService.findSimilarHeadline(article.title);
+        let usedFuzzyMatch = false;
 
-        // 4. Semantic Search (The "Cost Saver")
-        // We look for a similar article in the DB to potentially reuse its analysis
-        const existingMatch = await clusteringService.findSemanticDuplicate(embedding || undefined, 'Global');
+        if (existingMatch) {
+            logger.info(`✨ Fuzzy Match found: "${article.title}" ~= "${existingMatch.headline}"`);
+            usedFuzzyMatch = true;
+        }
+
+        let embedding: number[] | null = null;
+
+        // 3. Create Embedding (ONLY if no fuzzy match found)
+        if (!existingMatch) {
+            const textToEmbed = `${article.title}. ${article.description}`;
+            embedding = await aiService.createEmbedding(textToEmbed);
+
+            // 4. Semantic Search (The "Deep Check")
+            // Only run if we have an embedding and didn't find a fuzzy match
+            if (embedding) {
+                existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
+            }
+        }
+
+        // --- Analysis Logic ---
         
         let analysis: Partial<IArticle>;
         let isSemanticSkip = false;
 
-        // --- NEW LOGIC: Freshness Check ---
-        // Only inherit if the match is recent. If it's old news, we re-analyze.
+        // Check Freshness of the match (if any)
         let isMatchFresh = false;
         if (existingMatch) {
             const hoursDiff = (new Date().getTime() - new Date(existingMatch.createdAt!).getTime()) / (1000 * 60 * 60);
@@ -60,7 +77,8 @@ async function processSingleArticle(article: any): Promise<string> {
         }
 
         if (existingMatch && isMatchFresh) {
-            logger.info(`💰 Cost Saver! Inheriting analysis from recent match: "${existingMatch.headline.substring(0,20)}..."`);
+            const matchType = usedFuzzyMatch ? "Fuzzy" : "Semantic";
+            logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match.`);
             isSemanticSkip = true;
             
             analysis = {
@@ -77,9 +95,9 @@ async function processSingleArticle(article: any): Promise<string> {
             };
         } else {
             if (existingMatch && !isMatchFresh) {
-                logger.info(`🔄 Semantic match found but too old (>24h). Re-analyzing as fresh story.`);
+                logger.info(`🔄 Match found but too old (>24h). Re-analyzing as fresh story.`);
             }
-            // Generate Fresh Analysis
+            // Generate Fresh Analysis via AI
             analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
         }
 
@@ -91,7 +109,7 @@ async function processSingleArticle(article: any): Promise<string> {
             category: analysis.category || "General", 
             politicalLean: analysis.politicalLean || "Not Applicable",
             url: article.url,
-            imageUrl: article.image, // Note: Normalized in newsService
+            imageUrl: article.image, 
             publishedAt: new Date(article.publishedAt),
             analysisType: analysis.analysisType || 'Full',
             sentiment: analysis.sentiment || 'Neutral',
@@ -108,7 +126,8 @@ async function processSingleArticle(article: any): Promise<string> {
             clusterId: analysis.clusterId, 
             
             analysisVersion: isSemanticSkip ? '3.5-Inherited' : '3.5-Full',
-            embedding: embedding || []
+            // Only save embedding if we generated one
+            embedding: embedding || [] 
         };
         
         if (!newArticleData.clusterId) {
@@ -118,7 +137,7 @@ async function processSingleArticle(article: any): Promise<string> {
         await Article.create(newArticleData);
         await redisClient.sAdd('processed_urls', article.url);
 
-        return isSemanticSkip ? 'SAVED_SEMANTIC' : 'SAVED_FRESH';
+        return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
     } catch (error: any) {
         logger.error(`❌ Article Pipeline Error: ${error.message}`);
@@ -130,12 +149,12 @@ async function fetchAndAnalyzeNews() {
   logger.info('🔄 Job Started: Fetching news...');
   
   const stats = {
-      totalFetched: 0, savedFresh: 0, savedSemantic: 0,
+      totalFetched: 0, savedFresh: 0, savedInherited: 0,
       duplicates: 0, junk: 0, errors: 0
   };
 
   try {
-    // A. Fetch (Now Uses Rotation internally)
+    // A. Fetch 
     const rawArticles = await newsService.fetchNews(); 
     if (!rawArticles || rawArticles.length === 0) {
         logger.warn('Job: No new articles found.');
@@ -153,7 +172,7 @@ async function fetchAndAnalyzeNews() {
         // Accumulate Stats
         batchResults.forEach(res => {
             if (res === 'SAVED_FRESH') stats.savedFresh++;
-            else if (res === 'SAVED_SEMANTIC') stats.savedSemantic++;
+            else if (res === 'SAVED_INHERITED') stats.savedInherited++;
             else if (res === 'DUPLICATE_URL') stats.duplicates++;
             else if (res === 'JUNK_CONTENT') stats.junk++;
             else stats.errors++;
