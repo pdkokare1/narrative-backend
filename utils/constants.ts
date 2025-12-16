@@ -27,7 +27,7 @@ export const CONSTANTS = {
   
   // Timeouts (Standardized)
   TIMEOUTS: {
-    EXTERNAL_API: 15000, // 15 seconds (Increased for stability)
+    EXTERNAL_API: 15000, // 15 seconds
   },
 
   // AI Configuration
@@ -42,12 +42,19 @@ export const CONSTANTS = {
     BANNED_DOMAINS: 'GATEKEEPER:BANNED_DOMAINS',
     GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_',
     TRENDING: 'trending_topics_smart',
+    NEWS_CYCLE: 'news:fetch_cycle',
   }
 };
 
-// --- GLOBAL BLOCKLISTS ---
-// Moved here to keep service logic clean.
+// --- NEWS FETCH CYCLES ---
+// Controls which regions/topics we rotate through to keep content diverse
+export const FETCH_CYCLES = [
+    { name: 'US-Focus', gnews: { country: 'us' }, newsapi: { country: 'us' } },
+    { name: 'IN-Focus', gnews: { country: 'in' }, newsapi: { country: 'in' } },
+    { name: 'World-Focus', gnews: { topic: 'world' }, newsapi: { q: 'international', language: 'en' } }
+];
 
+// --- GLOBAL BLOCKLISTS ---
 export const DEFAULT_BANNED_DOMAINS = [
     // Tabloids & Gossip
     'dailymail.co.uk', 'thesun.co.uk', 'nypost.com', 'tmz.com', 'perezhilton.com', 
@@ -57,7 +64,7 @@ export const DEFAULT_BANNED_DOMAINS = [
     'buzzfeed.com', 'upworthy.com', 'viralnova.com', 'clickhole.com', 
     'ladbible.com', 'unilad.com', 'boredpanda.com',
     
-    // Satire (AI gets confused by these)
+    // Satire
     'theonion.com', 'babylonbee.com', 'duffelblog.com', 'newyorker.com/humor',
     
     // Propaganda / Extreme Bias
@@ -74,7 +81,7 @@ export const JUNK_KEYWORDS = [
     'cyber monday', 'sale', '% off', 'where to buy', 'restock', 'clearance',
     'bargain', 'doorbuster', 'cheapest',
     
-    // Gaming Guides (Keep "Gaming News", block "Guides")
+    // Gaming Guides
     'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
     'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\'s answer', 'quordle',
     'patch notes', 'loadout', 'tier list', 'how to get', 'where to find', 
