@@ -13,8 +13,7 @@ import config from './utils/config';
 import logger from './utils/logger';
 import redisClient, { initRedis } from './utils/redisClient';
 
-// Services & Jobs
-import scheduler from './jobs/scheduler';
+// Services
 import queueManager from './jobs/queueManager'; 
 import { errorHandler } from './middleware/errorMiddleware';
 import emergencyService from './services/emergencyService';
@@ -56,7 +55,6 @@ app.use(mongoSanitize());
 app.use(hpp());
 
 // --- CORS Configuration ---
-// Allows defining origins in ENV or defaults to known domains
 const defaultOrigins = [
     'https://thegamut.in', 
     'https://www.thegamut.in', 
@@ -69,7 +67,6 @@ const allowedOrigins = [...defaultOrigins, ...envOrigins];
 
 app.use(cors({
   origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
       
       if (allowedOrigins.indexOf(origin) !== -1) {
@@ -84,7 +81,8 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json({ limit: '1mb' }));
+// SECURITY: Reduced limit from 1mb to 200kb (since we use Cloudinary for media)
+app.use(express.json({ limit: '200kb' }));
 
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
@@ -144,7 +142,8 @@ const startServer = async () => {
             gatekeeperService.initialize()
         ]);
         
-        scheduler.init();
+        // NOTE: Scheduler is no longer initialized here. 
+        // It should be run via the separate Worker process.
 
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
@@ -157,21 +156,12 @@ const startServer = async () => {
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
             
-            // 1. Close HTTP Server (Stop accepting new requests)
             server.close(async () => {
                 logger.info('Http server closed.');
-                
                 try {
-                    // 2. Stop Background Jobs (Wait for current job to finish)
-                    await queueManager.shutdown();
-
-                    // 3. Close Redis
+                    await queueManager.shutdown(); // Closes the connection to the queue
                     await redisClient.quit();
-
-                    // 4. Close Mongo
                     await mongoose.connection.close(false);
-                    logger.info('MongoDB connection closed.');
-                    
                     process.exit(0);
                 } catch (err: any) {
                     logger.error(`⚠️ Error during shutdown: ${err.message}`);
