@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 import asyncHandler from '../utils/asyncHandler';
 import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
-import logger from '../utils/logger'; // Use centralized logger
+import logger from '../utils/logger';
 
 // Middleware
 import { checkAuth, optionalAuth } from '../middleware/authMiddleware';
@@ -23,14 +23,14 @@ const router = express.Router();
 router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     const CACHE_KEY = 'trending_topics_smart';
     
-    // 1. Try Cache (Fast Path)
+    // 1. Try Cache
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
         res.set('Cache-Control', 'public, max-age=1800'); 
         return res.status(200).json({ topics: cachedData });
     }
 
-    // 2. Fallback: Calculate on demand (Slow Path)
+    // 2. Fallback: Calculate
     const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
     const results = await Article.aggregate([
         { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
@@ -47,37 +47,23 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     res.status(200).json({ topics });
 }));
 
-// --- 2. Intelligent Search (MongoDB Atlas Search) ---
+// --- 2. Intelligent Search ---
 router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req: Request, res: Response) => {
     const query = (req.query.q as string).trim();
     const limit = parseInt(req.query.limit as string) || 12;
     
     if (!query) return res.status(200).json({ articles: [], pagination: { total: 0 } });
 
-    // Sanitize input slightly to prevent injection or errors
     const safeQuery = query.replace(/[^\w\s\-\.\?]/gi, ''); 
 
-    const pipeline = [
+    const pipeline: any[] = [
         {
             $search: {
                 index: 'default',
                 compound: {
                     should: [
-                        {
-                            text: {
-                                query: safeQuery,
-                                path: 'headline',
-                                fuzzy: { maxEdits: 2 },
-                                score: { boost: { value: 3 } }
-                            }
-                        },
-                        {
-                            text: {
-                                query: safeQuery,
-                                path: ['summary', 'clusterTopic'],
-                                fuzzy: { maxEdits: 1 }
-                            }
-                        }
+                        { text: { query: safeQuery, path: 'headline', fuzzy: { maxEdits: 2 }, score: { boost: { value: 3 } } } },
+                        { text: { query: safeQuery, path: ['summary', 'clusterTopic'], fuzzy: { maxEdits: 1 } } }
                     ]
                 }
             }
@@ -98,7 +84,6 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
         res.status(200).json({ articles: results, pagination: { total: results.length } });
     } catch (error) {
         logger.warn("Atlas Search failed, falling back to Regex:", error);
-        // Fallback: Simple Regex search
         const regex = new RegExp(safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
         const fallback = await Article.find({ headline: { $regex: regex } }).limit(limit).lean();
         res.status(200).json({ articles: fallback, pagination: { total: fallback.length } });
@@ -142,21 +127,17 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
         .lean();
 
     const total = await Article.countDocuments(query);
-    
     res.set('Cache-Control', 'public, max-age=300');
-    
     res.status(200).json({ articles, pagination: { total } });
 }));
 
-// --- 4. "For You" Feed (Uses Optional Auth) ---
+// --- 4. "For You" Feed ---
 router.get('/articles/for-you', optionalAuth, asyncHandler(async (req: Request, res: Response) => {
-    // If Guest
     if (!req.user || !req.user.uid) {
         const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
         return res.status(200).json({ articles: standard, meta: { reason: "Guest User" } });
     }
 
-    // If User
     const userId = req.user.uid;
     const history = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(20).lean();
     
@@ -193,22 +174,28 @@ router.get('/articles/for-you', optionalAuth, asyncHandler(async (req: Request, 
     });
 }));
 
-// --- 5. Personalized "My Mix" Feed ---
+// --- 5. Personalized "My Mix" Feed (Cached) ---
 router.get('/articles/personalized', checkAuth, asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.user!.uid; // checkAuth guarantees req.user
+    const userId = req.user!.uid; 
     
-    // Fetch Profile for Vector
+    // NEW: Check Cache first (Valid for 15 minutes)
+    const CACHE_KEY = `my_mix_${userId}`;
+    const cachedMix = await redis.get(CACHE_KEY);
+    
+    if (cachedMix) {
+        return res.status(200).json(cachedMix);
+    }
+
+    // -- Start expensive calculation --
     const profile = await Profile.findOne({ userId }).select('userEmbedding');
     const hasVector = profile && profile.userEmbedding && profile.userEmbedding.length > 0;
 
     let recommendations: any[] = [];
     let metaReason = "Trending";
 
-    // --- STRATEGY 1: VECTOR SEARCH (AI Powered) ---
     if (hasVector) {
         try {
             const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-
             const pipeline: any = [
                 {
                     "$vectorSearch": {
@@ -236,14 +223,13 @@ router.get('/articles/personalized', checkAuth, asyncHandler(async (req: Request
             metaReason = "AI Curated (Interest Match)";
 
         } catch (error) {
-            logger.error(`Vector Search Failed (Falling back to legacy): ${error}`);
+            logger.error(`Vector Search Failed: ${error}`);
         }
     }
 
-    // --- STRATEGY 2: LEGACY CATEGORY MATCH (Fallback) ---
     if (recommendations.length === 0) {
+        // Fallback: Category Match
         const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50).lean();
-        
         if (recentLogs.length > 0) {
             const articleIds = recentLogs.map(l => l.articleId);
             const viewedArticles = await Article.find({ _id: { $in: articleIds } }).select('category');
@@ -252,7 +238,7 @@ router.get('/articles/personalized', checkAuth, asyncHandler(async (req: Request
             
             const topCategories = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]);
             metaReason = `Based on ${topCategories.join(', ')}`;
-
+            
             if (topCategories.length > 0) {
                 recommendations = await Article.aggregate([
                     { $match: { category: { $in: topCategories }, publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } } },
@@ -262,16 +248,20 @@ router.get('/articles/personalized', checkAuth, asyncHandler(async (req: Request
         }
     }
 
-    // --- STRATEGY 3: GENERIC TRENDING (Final Fallback) ---
     if (recommendations.length === 0) {
         recommendations = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
         metaReason = "Trending (No Data)";
     }
 
-    res.status(200).json({ 
+    const responsePayload = { 
         articles: recommendations.map(a => ({ ...a, suggestionType: 'Comfort' })), 
         meta: { topCategories: [metaReason] } 
-    });
+    };
+
+    // Save to Cache for 15 mins (900 seconds)
+    await redis.set(CACHE_KEY, responsePayload, 900);
+
+    res.status(200).json(responsePayload);
 }));
 
 // --- 6. Saved Articles ---
