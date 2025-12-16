@@ -10,7 +10,7 @@ export const startScheduler = () => {
   // Cron Expression: "0 */2 * * *" means "At minute 0 past every 2nd hour"
   cron.schedule('0 */2 * * *', async () => {
     logger.info('⏰ Cron Trigger: Scheduling News Fetch');
-    await queueManager.addNewsJob();
+    await queueManager.addFetchJob();
   });
 
   // --- 2. Cleanup Old Data (Daily at Midnight) ---
@@ -23,6 +23,6 @@ export const startScheduler = () => {
   // This ensures that whenever you deploy, you get fresh news immediately.
   setTimeout(() => {
     logger.info('🚀 Startup: Triggering initial News Fetch...');
-    queueManager.addNewsJob();
+    queueManager.addFetchJob();
   }, 5000); // Wait 5s for connections to settle
 };
