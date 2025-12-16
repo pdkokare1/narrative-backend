@@ -1,5 +1,4 @@
 // services/aiService.ts
-import { jsonrepair } from 'jsonrepair';
 import { z } from 'zod';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
@@ -8,11 +7,51 @@ import apiClient from '../utils/apiClient';
 import { sleep, cleanText } from '../utils/helpers';
 import { IArticle } from '../types';
 
-// Use Environment variables for models (Future Proofing)
+// Use Environment variables for models
 const EMBEDDING_MODEL = process.env.AI_MODEL_EMBEDDING || "text-embedding-004";
-const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-2.5-pro";     
+// Default to 1.5 Pro (Best for JSON Schema) or 1.5 Flash (Cheaper/Faster)
+const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-1.5-pro";     
 
-// --- ZOD SCHEMAS ---
+// --- GEMINI JSON SCHEMAS (Native Constraints) ---
+
+const BASIC_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    summary: { type: "STRING" },
+    category: { type: "STRING" },
+    sentiment: { type: "STRING", enum: ["Positive", "Negative", "Neutral"] }
+  },
+  required: ["summary", "category", "sentiment"]
+};
+
+const FULL_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    summary: { type: "STRING" },
+    category: { type: "STRING" },
+    politicalLean: { type: "STRING" },
+    sentiment: { type: "STRING", enum: ["Positive", "Negative", "Neutral"] },
+    
+    // Scores must be numbers
+    biasScore: { type: "NUMBER" },
+    credibilityScore: { type: "NUMBER" },
+    reliabilityScore: { type: "NUMBER" },
+    
+    clusterTopic: { type: "STRING" },
+    primaryNoun: { type: "STRING" },
+    secondaryNoun: { type: "STRING" },
+    
+    keyFindings: { type: "ARRAY", items: { type: "STRING" } },
+    recommendations: { type: "ARRAY", items: { type: "STRING" } }
+  },
+  required: [
+    "summary", "category", "politicalLean", "sentiment", 
+    "biasScore", "credibilityScore", "reliabilityScore", 
+    "clusterTopic", "keyFindings", "recommendations"
+  ]
+};
+
+// --- ZOD VALIDATION (Safety Net) ---
 const ArticleAnalysisSchema = z.object({
     summary: z.string().default("Summary unavailable"),
     category: z.string().default("General"),
@@ -34,7 +73,7 @@ const ArticleAnalysisSchema = z.object({
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
-    logger.info(`🤖 AI Service Initialized`);
+    logger.info(`🤖 AI Service Initialized (Schema Mode)`);
   }
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -45,15 +84,19 @@ class AIService {
       try {
         apiKey = await KeyManager.getKey('GEMINI');
         
+        // 1. Prepare Prompt & Schema
         const prompt = await promptManager.getAnalysisPrompt(article, mode);
+        const schema = mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA;
+
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
-        // Updated: Use apiClient
+        // 2. Call API with JSON Mode
         const response = await apiClient.post(url, {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: "application/json",
-            temperature: mode === 'Basic' ? 0.2 : 0.3,
+            responseSchema: schema, // <--- THE MAGIC FIX
+            temperature: 0.2,       // Low temp for factual accuracy
             maxOutputTokens: 8192 
           }
         });
@@ -73,7 +116,7 @@ class AIService {
         logger.warn(`⚠️ AI Attempt ${attempt} failed: ${error.message}`);
         
         if (attempt === maxRetries) throw error;
-        await sleep(2000 * attempt); // Updated: Use helper sleep
+        await sleep(2000 * attempt); 
       }
     }
     throw new Error("AI Analysis Failed after retries");
@@ -84,12 +127,9 @@ class AIService {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
         
-        // Updated: Use helper cleanText to protect against bad characters
         const clean = cleanText(text).substring(0, 2000);
-        
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
         
-        // Updated: Use apiClient
         const response = await apiClient.post(url, {
             model: `models/${EMBEDDING_MODEL}`,
             content: { parts: [{ text: clean }] }
@@ -104,20 +144,17 @@ class AIService {
     }
   }
 
-  // --- HELPER: Robust Parser ---
+  // --- HELPER: Schema Parser ---
   private parseGeminiResponse(data: any, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates');
         
-        let text = data.candidates[0].content.parts[0].text || "";
+        const text = data.candidates[0].content.parts[0].text || "";
         
-        // 1. Repair Broken JSON
-        const repairedJson = jsonrepair(text);
-        
-        // 2. Parse
-        const rawObj = JSON.parse(repairedJson);
+        // 1. Native Parse (No repair needed!)
+        const rawObj = JSON.parse(text);
 
-        // 3. Validate & Sanitize with Zod
+        // 2. Zod Validation (Fills defaults if Basic mode misses fields)
         const validation = ArticleAnalysisSchema.safeParse(rawObj);
 
         if (!validation.success) {
@@ -126,7 +163,7 @@ class AIService {
 
         const parsed: any = validation.success ? validation.data : rawObj;
 
-        // If Basic mode, we are done
+        // If Basic mode, return subset
         if (mode === 'Basic') {
             return {
                 summary: parsed.summary,
