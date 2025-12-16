@@ -5,14 +5,28 @@ import aiService from '../services/aiService';
 import clusteringService from '../services/clusteringService';
 import Article from '../models/articleModel';
 import logger from '../utils/logger'; 
+import redisClient from '../utils/redisClient'; // <--- NEW IMPORT
 import { IArticle } from '../types';
 
 // --- PIPELINE STEPS ---
 
-// Step 1: Filter Duplicates (URL Check Only)
+// Step 1: Filter Duplicates (Redis + DB Double Check)
 async function isDuplicate(url: string): Promise<boolean> {
     if (!url) return true;
-    return await Article.exists({ url }) !== null;
+
+    // A. Instant Check: Is it in our fast memory cache?
+    const isCached = await redisClient.sIsMember('processed_urls', url);
+    if (isCached) return true;
+
+    // B. Safety Check: Is it in the database? (In case server restarted and cache cleared)
+    const exists = await Article.exists({ url }) !== null;
+
+    // C. Sync Cache: If DB has it but Cache missed, update Cache for next time
+    if (exists) {
+        await redisClient.sAdd('processed_urls', url);
+    }
+
+    return exists;
 }
 
 // Step 2: Semantic Check (Save $$$ by finding similar articles)
@@ -35,7 +49,7 @@ async function processSingleArticle(article: any): Promise<string> {
     try {
         if (!article?.url || !article?.title) return 'ERROR_INVALID';
         
-        // 1. Quick Dedupe (Exact URL match only)
+        // 1. Quick Dedupe (Exact URL match)
         if (await isDuplicate(article.url)) return 'DUPLICATE_URL';
 
         // 2. Gatekeeper (Junk Filter - now with Keywords from DB)
@@ -110,6 +124,10 @@ async function processSingleArticle(article: any): Promise<string> {
         }
         
         await Article.create(newArticleData);
+
+        // 6. Add to Redis Cache immediately (so we don't process it again)
+        await redisClient.sAdd('processed_urls', article.url);
+
         return isSemanticSkip ? 'SAVED_SEMANTIC' : 'SAVED_FRESH';
 
     } catch (error: any) {
