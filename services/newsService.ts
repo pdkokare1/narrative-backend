@@ -54,13 +54,12 @@ class NewsService {
     }
 
     const cleaned = this.removeDuplicatesAndClean(allArticles);
-    logger.info(`✅ Fetched & Cleaned: ${cleaned.length} articles`);
+    logger.info(`✅ Fetched & Cleaned: ${cleaned.length} articles (from ${allArticles.length} raw)`);
     return cleaned;
   }
 
   private async fetchFromGNews(params: any): Promise<INewsSourceArticle[]> {
     const apiKey = await KeyManager.getKey('GNEWS');
-    // GNews allows joining params, but we keep it simple for now
     const queryParams = { lang: 'en', sortby: 'publishedAt', max: 10, ...params, apikey: apiKey };
     
     return this.fetchExternal('https://gnews.io/api/v4/top-headlines', queryParams, apiKey, 'GNews');
@@ -68,13 +67,12 @@ class NewsService {
 
   private async fetchFromNewsAPI(params: any): Promise<INewsSourceArticle[]> {
     const apiKey = await KeyManager.getKey('NEWS_API');
-    const endpoint = params.q ? 'everything' : 'top-headlines'; // 'q' means we use /everything endpoint
+    const endpoint = params.q ? 'everything' : 'top-headlines'; 
     const queryParams = { pageSize: 10, ...params, apiKey: apiKey };
 
     return this.fetchExternal(`https://newsapi.org/v2/${endpoint}`, queryParams, apiKey, 'NewsAPI');
   }
 
-  // Centralized fetcher to reduce code duplication
   private async fetchExternal(url: string, params: any, apiKey: string, sourceName: string): Promise<INewsSourceArticle[]> {
       try {
           const response = await apiClient.get<INewsAPIResponse>(url, { params });
@@ -97,24 +95,40 @@ class NewsService {
           source: { name: a.source?.name || sourceName },
           title: formatHeadline(a.title || ""),
           description: cleanText(a.description || a.content || ""),
-          url: normalizeUrl(a.url),
-          image: a.image || a.urlToImage, // Unify GNews 'image' and NewsAPI 'urlToImage'
+          url: normalizeUrl(a.url), // Uses our new Smart Normalizer
+          image: a.image || a.urlToImage, 
           publishedAt: a.publishedAt || new Date().toISOString()
       }));
   }
 
+  // UPDATED: Now checks for Duplicate Titles AND URLs
   private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
     const seenUrls = new Set<string>();
+    const seenTitles = new Set<string>();
     
     return articles.filter(article => {
         if (!article.title || !article.url) return false;
-        if (article.title.length < 10) return false; // Skip broken titles
+        
+        // 1. Filter Garbage
+        if (article.title.length < 10) return false; 
+        if (article.title === "No Title") return false;
 
+        // 2. URL Check (Strict)
         const url = article.url;
         if (seenUrls.has(url)) return false;
+
+        // 3. Title Check (Fuzzy)
+        // Normalize title: "Biden Visits France." -> "biden visits france"
+        const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (seenTitles.has(cleanTitle)) {
+             // We found a duplicate story with a different URL? Skip it to be safe.
+             return false;
+        }
         
         seenUrls.add(url);
+        seenTitles.add(cleanTitle);
         return true;
+
     }).sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
