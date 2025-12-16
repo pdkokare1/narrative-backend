@@ -4,7 +4,10 @@ import mongoose from 'mongoose';
 import asyncHandler from '../utils/asyncHandler';
 import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
-import * as admin from 'firebase-admin';
+import logger from '../utils/logger'; // Use centralized logger
+
+// Middleware
+import { checkAuth, optionalAuth } from '../middleware/authMiddleware';
 
 // Models
 import Article from '../models/articleModel';
@@ -16,20 +19,6 @@ import redis from '../utils/redisClient';
 
 const router = express.Router();
 
-// --- AUTH MIDDLEWARE ---
-const authenticate = async (req: Request, res: Response, next: NextFunction) => {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (token) {
-        try {
-            const decoded = await admin.auth().verifyIdToken(token);
-            req.user = decoded;
-        } catch (e) {
-            console.warn("Auth check failed in articleRoutes", e);
-        }
-    }
-    next();
-};
-
 // --- 1. Smart Trending Topics (Optimized) ---
 router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     const CACHE_KEY = 'trending_topics_smart';
@@ -37,7 +26,6 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     // 1. Try Cache (Fast Path)
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
-        // Browser/CDN Cache: Valid for 30 minutes (1800s)
         res.set('Cache-Control', 'public, max-age=1800'); 
         return res.status(200).json({ topics: cachedData });
     }
@@ -66,15 +54,18 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
     
     if (!query) return res.status(200).json({ articles: [], pagination: { total: 0 } });
 
+    // Sanitize input slightly to prevent injection or errors
+    const safeQuery = query.replace(/[^\w\s\-\.\?]/gi, ''); 
+
     const pipeline = [
         {
             $search: {
-                index: 'default', // Ensure 'default' index exists in Atlas
+                index: 'default',
                 compound: {
                     should: [
                         {
                             text: {
-                                query: query,
+                                query: safeQuery,
                                 path: 'headline',
                                 fuzzy: { maxEdits: 2 },
                                 score: { boost: { value: 3 } }
@@ -82,7 +73,7 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
                         },
                         {
                             text: {
-                                query: query,
+                                query: safeQuery,
                                 path: ['summary', 'clusterTopic'],
                                 fuzzy: { maxEdits: 1 }
                             }
@@ -106,8 +97,9 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
         const results = await Article.aggregate(pipeline);
         res.status(200).json({ articles: results, pagination: { total: results.length } });
     } catch (error) {
-        console.warn("Atlas Search failed, falling back to Regex:", error);
-        const regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        logger.warn("Atlas Search failed, falling back to Regex:", error);
+        // Fallback: Simple Regex search
+        const regex = new RegExp(safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
         const fallback = await Article.find({ headline: { $regex: regex } }).limit(limit).lean();
         res.status(200).json({ articles: fallback, pagination: { total: fallback.length } });
     }
@@ -143,7 +135,6 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
     else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 }; 
     else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 }; 
 
-    // Performance: .lean() is faster for read-only data
     const articles = await Article.find(query)
         .sort(sortOptions)
         .skip(Number(offset))
@@ -152,19 +143,20 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
 
     const total = await Article.countDocuments(query);
     
-    // Cache public feeds for 5 minutes
     res.set('Cache-Control', 'public, max-age=300');
     
     res.status(200).json({ articles, pagination: { total } });
 }));
 
-// --- 4. "For You" Feed ---
-router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, res: Response) => {
+// --- 4. "For You" Feed (Uses Optional Auth) ---
+router.get('/articles/for-you', optionalAuth, asyncHandler(async (req: Request, res: Response) => {
+    // If Guest
     if (!req.user || !req.user.uid) {
         const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
         return res.status(200).json({ articles: standard, meta: { reason: "Guest User" } });
     }
 
+    // If User
     const userId = req.user.uid;
     const history = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(20).lean();
     
@@ -201,17 +193,11 @@ router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, 
     });
 }));
 
-// --- 5. Personalized "My Mix" Feed (VECTOR ENHANCED & OPTIMIZED) ---
-router.get('/articles/personalized', authenticate, asyncHandler(async (req: Request, res: Response) => {
-    // A. Guest Fallback
-    if (!req.user || !req.user.uid) {
-        const trending = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
-        return res.status(200).json({ articles: trending, meta: { topCategories: ['Trending'] } });
-    }
-
-    const userId = req.user.uid;
+// --- 5. Personalized "My Mix" Feed ---
+router.get('/articles/personalized', checkAuth, asyncHandler(async (req: Request, res: Response) => {
+    const userId = req.user!.uid; // checkAuth guarantees req.user
     
-    // B. Fetch Profile for Vector
+    // Fetch Profile for Vector
     const profile = await Profile.findOne({ userId }).select('userEmbedding');
     const hasVector = profile && profile.userEmbedding && profile.userEmbedding.length > 0;
 
@@ -221,7 +207,6 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
     // --- STRATEGY 1: VECTOR SEARCH (AI Powered) ---
     if (hasVector) {
         try {
-            // OPTIMIZATION: Date filter moved to Aggregation Pipeline ($match)
             const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
 
             const pipeline: any = [
@@ -231,16 +216,11 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
                         "path": "embedding",
                         "queryVector": profile.userEmbedding,
                         "numCandidates": 150, 
-                        "limit": 50 // Fetch more to allow for filtering
+                        "limit": 50 
                     }
                 },
-                {
-                    // DATABASE SIDE FILTERING (Faster than JS filtering)
-                    "$match": {
-                        "publishedAt": { "$gte": threeDaysAgo }
-                    }
-                },
-                { "$limit": 20 }, // Trim to final size
+                { "$match": { "publishedAt": { "$gte": threeDaysAgo } } },
+                { "$limit": 20 },
                 {
                     "$project": {
                         "headline": 1, "summary": 1, "source": 1, "category": 1,
@@ -256,7 +236,7 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
             metaReason = "AI Curated (Interest Match)";
 
         } catch (error) {
-            console.error("Vector Search Failed (Falling back to legacy):", error);
+            logger.error(`Vector Search Failed (Falling back to legacy): ${error}`);
         }
     }
 
@@ -295,19 +275,17 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
 }));
 
 // --- 6. Saved Articles ---
-router.get('/saved', authenticate, asyncHandler(async (req: Request, res: Response) => {
-    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-    const profile = await Profile.findOne({ userId: req.user.uid }).select('savedArticles');
+router.get('/saved', checkAuth, asyncHandler(async (req: Request, res: Response) => {
+    const profile = await Profile.findOne({ userId: req.user!.uid }).select('savedArticles');
     if (!profile || !profile.savedArticles.length) return res.status(200).json({ articles: [] });
     const articles = await Article.find({ _id: { $in: profile.savedArticles } }).sort({ publishedAt: -1 }).lean();
     res.status(200).json({ articles });
 }));
 
 // --- 7. Toggle Save ---
-router.post('/:id/save', authenticate, validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
-    if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+router.post('/:id/save', checkAuth, validate(schemas.saveArticle, 'params'), asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
-    const userId = req.user.uid;
+    const userId = req.user!.uid;
     const profile = await Profile.findOne({ userId });
     if (!profile) throw new Error('Profile not found');
 
