@@ -78,9 +78,6 @@ class AIService {
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
     
-    // REMOVED: Internal retry loop. 
-    // We now let BullMQ handle retries with exponential backoff to save API quota.
-    
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
@@ -149,15 +146,26 @@ class AIService {
     }
   }
 
-  // --- HELPER: Schema Parser ---
+  // --- HELPER: Schema Parser & Sanitizer ---
   private parseGeminiResponse(data: any, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates returned from AI');
         
-        const text = data.candidates[0].content.parts[0].text || "";
-        const rawObj = JSON.parse(text);
+        const rawText = data.candidates[0].content.parts[0].text || "";
+        
+        // 1. Sanitize the output (Remove Markdown wrappers like ```json ... ```)
+        const cleanJson = this.cleanJsonOutput(rawText);
+        
+        let rawObj;
+        try {
+            rawObj = JSON.parse(cleanJson);
+        } catch (e) {
+            logger.warn(`⚠️ JSON Parse Failed. Attempting repair...`);
+            // Simple repair: sometimes there's trailing text or issues
+            throw new Error(`Invalid JSON format from AI: ${cleanJson.substring(0, 50)}...`);
+        }
 
-        // Zod Validation
+        // 2. Zod Validation
         const validation = ArticleAnalysisSchema.safeParse(rawObj);
 
         if (!validation.success) {
@@ -190,6 +198,27 @@ class AIService {
     } catch (error: any) {
         throw new Error(`Parsing failed: ${error.message}`);
     }
+  }
+
+  // --- HELPER: Strip Markdown & Clean JSON ---
+  private cleanJsonOutput(text: string): string {
+    if (!text) return "{}";
+
+    // Remove markdown code blocks
+    let clean = text.replace(/```json/g, '').replace(/```/g, '');
+
+    // Trim whitespace
+    clean = clean.trim();
+
+    // Ensure we only grab the content between the first { and last }
+    const firstOpen = clean.indexOf('{');
+    const lastClose = clean.lastIndexOf('}');
+
+    if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+      clean = clean.substring(firstOpen, lastClose + 1);
+    }
+
+    return clean;
   }
 
   private getFallbackAnalysis(article: any): Partial<IArticle> {
