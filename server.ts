@@ -11,16 +11,15 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import { initRedis } from './utils/redisClient'; // <--- NEW IMPORT
+import { initRedis } from './utils/redisClient';
 
 // Services & Jobs
-import queueManager from './jobs/queueManager';
 import scheduler from './jobs/scheduler';
 import { errorHandler } from './middleware/errorMiddleware';
 import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService'; 
 
-// Middleware (Refactored)
+// Middleware
 import { checkAuth, checkAppCheck } from './middleware/authMiddleware';
 import { apiLimiter, ttsLimiter } from './middleware/rateLimiters';
 
@@ -34,6 +33,7 @@ import migrationRoutes from './routes/migrationRoutes';
 import assetGenRoutes from './routes/assetGenRoutes';
 import shareRoutes from './routes/shareRoutes';
 import clusterRoutes from './routes/clusterRoutes'; 
+import jobRoutes from './routes/jobRoutes'; // <--- NEW IMPORT
 
 const app = express();
 
@@ -73,7 +73,6 @@ app.get('/', (req: Request, res: Response) => { res.status(200).send('OK'); });
 try {
   if (config.firebase.serviceAccount) {
     const serviceAccount = JSON.parse(config.firebase.serviceAccount);
-    // Check if already initialized to avoid hot-reload errors in dev
     if (!admin.apps.length) {
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
@@ -96,26 +95,24 @@ app.use('/api/tts', ttsLimiter, ttsRoutes);
 app.use('/api/migration', migrationRoutes); 
 app.use('/api/cluster', clusterRoutes);
 
-// Protected Routes (using the new middleware)
+// Protected Routes
 app.use('/api/profile', checkAppCheck, checkAuth, profileRoutes);
 app.use('/api/activity', checkAppCheck, checkAuth, activityRoutes);
 
-// Main Article Routes
+// Job/Admin Routes (Manual Triggers)
+app.use('/api', jobRoutes); // <--- REPLACED INLINE CODE WITH ROUTER
+
+// Main Article Routes (Keep last to avoid conflicts if it has catch-all)
 app.use('/api', articleRoutes); 
 
-// Manual Job Trigger
-app.post('/api/fetch-news', async (req: Request, res: Response) => {
-  await queueManager.addFetchJob('manual-trigger', { source: 'api' });
-  res.status(202).json({ message: 'News fetch job added to queue.' });
-});
+// --- 6. Error Handling ---
+app.use(errorHandler); // <--- IMPORTANT: Activates the custom error handler
 
-// --- 6. Database & Server Start ---
+// --- 7. Database & Server Start ---
 const startServer = async () => {
     try {
-        // 1. Connect to Redis (Critical for rate limits & dedupe)
         await initRedis();
 
-        // 2. Connect to MongoDB
         if (config.mongoUri) {
             await mongoose.connect(config.mongoUri);
             logger.info('MongoDB Connected');
@@ -123,16 +120,13 @@ const startServer = async () => {
             throw new Error("MongoDB URI missing in config");
         }
 
-        // 3. Initialize Services
         await Promise.all([
             emergencyService.initializeEmergencyContacts(),
             gatekeeperService.initialize()
         ]);
         
-        // 4. Start the Scheduler
         scheduler.init();
 
-        // 5. Start Listening
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
@@ -140,7 +134,6 @@ const startServer = async () => {
             logger.info(`Server running on http://${HOST}:${PORT}`);
         });
 
-        // --- Graceful Shutdown ---
         const gracefulShutdown = () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
             server.close(() => {
