@@ -5,11 +5,15 @@ import logger from './logger';
 let client: RedisClientType | null = null;
 let isConnected = false;
 
-const initRedis = async () => {
+// We export this function so server.ts can call it and WAIT for it
+export const initRedis = async () => {
     if (!process.env.REDIS_URL) {
         logger.warn("⚠️ Redis URL not found. Caching will be disabled.");
         return null;
     }
+
+    // If already initialized, just return the client
+    if (client && isConnected) return client;
 
     try {
         client = createClient({
@@ -46,9 +50,6 @@ const initRedis = async () => {
         return null;
     }
 };
-
-// Initialize immediately but don't await (allows app to start)
-initRedis();
 
 const redisClient = {
     get: async (key: string): Promise<any | null> => {
