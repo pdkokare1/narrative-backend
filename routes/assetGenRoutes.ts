@@ -1,10 +1,12 @@
 // routes/assetGenRoutes.ts
 import express, { Request, Response } from 'express';
-// @ts-ignore
 import ttsService from '../services/ttsService';
+import logger from '../utils/logger';
+import config from '../utils/config';
 
 const router = express.Router();
 
+// Defined outside to keep the handler clean
 const SEGUES = [
     // --- MIRA ---
     { id: "mira_segue_01", text: "In other developments,", voiceId: "SmLgXu8CcwHJvjiqq2rw" },
@@ -43,43 +45,52 @@ const SEGUES = [
     { id: "shubhi_segue_10", text: "Also in the mix,", voiceId: "2n8AzqIsQUPMvb1OgO72" }
 ];
 
-const runGeneration = async (res: Response) => {
+const runGeneration = async (req: Request, res: Response) => {
+    // SECURITY CHECK: Ensure the caller has the Admin Secret
+    // Use ?key=YOUR_SECRET in the URL
+    if (req.query.key !== config.adminSecret) {
+        logger.warn(`🚫 Unauthorized Asset Gen Attempt: ${req.ip}`);
+        return res.status(403).json({ error: "Unauthorized. Missing or invalid key." });
+    }
+
     try {
-        console.log(`🚀 STARTING SEGUE BATCH: ${SEGUES.length} items.`);
-        // FIX: Explicitly type the array as any[] to allow pushing objects
+        logger.info(`🚀 STARTING SEGUE BATCH: ${SEGUES.length} items.`);
         const results: any[] = [];
         
         for (const item of SEGUES) {
             try {
+                // Generate and upload
                 const url = await ttsService.generateAndUpload(item.text, item.voiceId, null, item.id);
                 results.push({ id: item.id, url, status: 'success' });
-                // 1 second safety pause
+                
+                // 1 second safety pause to respect API rate limits
                 await new Promise(r => setTimeout(r, 1000));
             } catch (err: any) {
-                console.error(`❌ Failed ${item.id}:`, err.message);
+                logger.error(`❌ Failed ${item.id}: ${err.message}`);
                 results.push({ id: item.id, error: err.message, status: 'failed' });
             }
         }
 
-        console.log("✅ BATCH COMPLETE.");
+        logger.info("✅ SEGUE BATCH COMPLETE.");
         res.status(200).json({ message: "Batch complete", results });
 
     } catch (error: any) {
-        console.error("Batch Fatal Error:", error);
+        logger.error(`🔥 Batch Fatal Error: ${error.message}`);
         if (!res.headersSent) res.status(500).json({ error: error.message });
     }
 };
 
 // --- ROUTES ---
-router.get('/generate-segues', (req: Request, res: Response) => runGeneration(res));
-router.post('/generate-segues', (req: Request, res: Response) => runGeneration(res));
+// We allow GET for easy manual triggering via browser, but protected by ?key=
+router.get('/generate-segues', runGeneration);
+router.post('/generate-segues', runGeneration);
 
 router.get('/test', async (req: Request, res: Response) => {
     try {
         const vars = {
-            elevenLabs: !!process.env.ELEVENLABS_API_KEY,
-            cloudinaryName: !!process.env.CLOUDINARY_CLOUD_NAME,
-            cloudinaryKey: !!process.env.CLOUDINARY_API_KEY
+            elevenLabs: !!config.keys.elevenLabs,
+            cloudinaryName: !!config.cloudinary.cloudName,
+            cloudinaryKey: !!config.cloudinary.apiKey
         };
         res.json({ status: "Online", variables: vars });
     } catch (e: any) {
