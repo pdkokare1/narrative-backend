@@ -6,7 +6,6 @@ import logger from '../utils/logger';
 import config from '../utils/config';
 
 // --- 1. Redis Connection Config ---
-// We parse the URL from config to create a BullMQ compatible object
 let connectionConfig: ConnectionOptions | undefined;
 let isRedisConfigured = false;
 
@@ -32,7 +31,8 @@ if (config.redisUrl) {
     logger.warn("⚠️ REDIS_URL not set. Background jobs will be disabled.");
 }
 
-// --- 2. Initialize Queue & Worker Safely ---
+// --- 2. Initialize Queue (Producer) ---
+// This is always needed so the API can ADD jobs to the list.
 let newsQueue: Queue | null = null;
 let newsWorker: Worker | null = null;
 
@@ -44,29 +44,34 @@ if (isRedisConfigured && connectionConfig) {
                 removeOnComplete: 100, 
                 removeOnFail: 500,     
                 attempts: 3,           
-                backoff: {
-                    type: 'exponential',
-                    delay: 5000        
-                }
+                backoff: { type: 'exponential', delay: 5000 }
             }
         });
+        logger.info("✅ Job Queue (Producer) Initialized");
+    } catch (err: any) {
+        logger.error(`❌ Failed to initialize Queue: ${err.message}`);
+        newsQueue = null;
+    }
+}
 
+// --- 3. Worker Starter (Consumer) ---
+// This is now a function. We only call it in the Worker Process.
+const startWorker = () => {
+    if (!isRedisConfigured || !connectionConfig || newsWorker) return;
+
+    try {
         newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
             logger.info(`👷 Worker started job: ${job.name} (ID: ${job.id})`);
             
             try {
-                // --- JOB ROUTING ---
-                
                 // Case A: Update Trending Topics
                 if (job.name === 'update-trending') {
-                    // logger.info('📈 Worker executing: Update Trending Topics');
                     await statsService.updateTrendingTopics();
                     return { status: 'completed' };
                 }
 
                 // Case B: News Fetcher (Default)
                 const result = await newsFetcher.run();
-                
                 if (!result) {
                     return { status: 'skipped', reason: 'concurrent_execution' };
                 }
@@ -78,16 +83,11 @@ if (isRedisConfigured && connectionConfig) {
             }
         }, { 
             connection: connectionConfig,
-            concurrency: 1, // Global Lock: Only 1 job runs at a time per worker instance
-            limiter: {
-                max: 1,
-                duration: 1500
-            }
+            concurrency: 1, 
+            limiter: { max: 1, duration: 1500 }
         });
 
-        // Event Listeners
         newsWorker.on('completed', (job: Job) => {
-            // Only log non-spammy jobs
             if (job.name !== 'update-trending') {
                 logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
             }
@@ -97,16 +97,13 @@ if (isRedisConfigured && connectionConfig) {
             logger.error(`🔥 Job ${job?.id || 'unknown'} failed: ${err.message}`);
         });
 
-        logger.info("✅ Job Queue Initialized with Rate Limiting");
-
+        logger.info("✅ Background Worker Started & Listening...");
     } catch (err: any) {
-        logger.error(`❌ Failed to initialize Queue: ${err.message}`);
-        newsQueue = null;
-        newsWorker = null;
+        logger.error(`❌ Failed to start Worker: ${err.message}`);
     }
-}
+};
 
-// --- 3. Safe Export ---
+// --- 4. Safe Export ---
 const queueManager = {
     // Basic Add
     addFetchJob: async (name: string = 'manual-fetch', data: any = {}) => {
@@ -144,9 +141,7 @@ const queueManager = {
     },
 
     getStats: async () => {
-        if (!newsQueue) {
-            return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'disabled' };
-        }
+        if (!newsQueue) return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'disabled' };
         try {
             const [waiting, active, completed, failed] = await Promise.all([
                 newsQueue.getWaitingCount(),
@@ -160,16 +155,15 @@ const queueManager = {
         }
     },
 
+    // Initialize the Worker Consumer (Call this only in worker process)
+    startWorker,
+
     // NEW: Graceful Shutdown
     shutdown: async () => {
         logger.info('🛑 Shutting down Job Queue & Workers...');
         try {
-            if (newsWorker) {
-                await newsWorker.close();
-            }
-            if (newsQueue) {
-                await newsQueue.close();
-            }
+            if (newsWorker) await newsWorker.close();
+            if (newsQueue) await newsQueue.close();
             logger.info('✅ Job Queue shutdown complete.');
         } catch (err: any) {
             logger.error(`⚠️ Error during Queue shutdown: ${err.message}`);
