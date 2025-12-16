@@ -4,7 +4,6 @@ import redis from '../utils/redisClient';
 import { IArticle } from '../types';
 
 // --- HELPER: Levenshtein Distance for String Similarity ---
-// Returns a similarity score between 0 and 1 (1 = exact match)
 function getStringSimilarity(str1: string, str2: string): number {
     const s1 = str1.toLowerCase().replace(/[^a-z0-9 ]/g, '');
     const s2 = str2.toLowerCase().replace(/[^a-z0-9 ]/g, '');
@@ -35,23 +34,25 @@ function getStringSimilarity(str1: string, str2: string): number {
 
 class ClusteringService {
 
-    // --- NEW: Stage 1 (Cost Saver) ---
-    // Checks for similar headlines using pure math (No AI API calls)
+    // --- NEW: Stage 1 (Fast Fuzzy Match) ---
+    // Uses MongoDB Text Search to narrow down candidates, then uses Levenshtein for precision.
     async findSimilarHeadline(headline: string): Promise<IArticle | null> {
         if (!headline || headline.length < 5) return null;
 
-        // Fetch only recent headers to keep it fast
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
         
         try {
-            // We select fields needed for "Inheritance" in newsFetcher
+            // OPTIMIZATION: Use MongoDB Text Search First
+            // Instead of scanning ALL articles, we only scan ones with matching words.
             const candidates = await Article.find({ 
+                $text: { $search: headline }, // Requires text index on headline
                 publishedAt: { $gte: oneDayAgo } 
             })
+            .limit(20) // Only compare against the top 20 relevant text matches
             .select('headline summary category politicalLean biasScore trustScore sentiment analysisType clusterTopic clusterId createdAt')
             .lean();
 
-            // Find best match in memory
+            // Find best match in memory among the top candidates
             let bestMatch: any = null;
             let bestScore = 0;
 
@@ -64,14 +65,14 @@ class ClusteringService {
             }
 
             // SAFETY THRESHOLD: 0.80 (80%)
-            // We increased this from 0.65 to 0.80 to be safer. 
-            // This ensures "Stock Market Up" and "Stock Market Down" are NOT treated as duplicates,
-            // but "Apple releases iPhone 15" and "iPhone 15 released by Apple" likely match.
             if (bestScore > 0.80 && bestMatch) {
                 return bestMatch as IArticle;
             }
 
-        } catch (error) { /* Ignore DB errors in soft check */ }
+        } catch (error) { 
+            // Fallback: If text search fails (e.g. index missing), return null to be safe
+            // System will just generate a fresh analysis instead of crashing.
+        }
 
         return null;
     }
@@ -83,7 +84,6 @@ class ClusteringService {
         const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
         try {
-            // We cast pipeline to 'any' for $vectorSearch compatibility
             const pipeline: any = [
                 {
                     "$vectorSearch": {
