@@ -39,7 +39,10 @@ const app = express();
 
 // --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
-    logger.http(`${req.method} ${req.url}`);
+    // Exclude health check from logging to keep logs clean
+    if (req.url !== '/health') {
+        logger.http(`${req.method} ${req.url}`);
+    }
     next();
 });
 
@@ -54,39 +57,46 @@ app.use(compression());
 app.use(mongoSanitize());
 app.use(hpp());
 
-// --- CORS Configuration ---
-const defaultOrigins = [
+// --- 3. CORS Configuration ---
+const allowedOrigins = [
+    config.frontendUrl,
     'https://thegamut.in', 
     'https://www.thegamut.in', 
     'https://api.thegamut.in',
     'http://localhost:3000'
 ];
 
-const envOrigins = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : [];
-const allowedOrigins = [...defaultOrigins, ...envOrigins];
+if (process.env.CORS_ORIGINS) {
+    allowedOrigins.push(...process.env.CORS_ORIGINS.split(','));
+}
 
 app.use(cors({
-  origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      
-      if (allowedOrigins.indexOf(origin) !== -1) {
-          callback(null, true);
-      } else {
-          logger.warn(`🚫 CORS Blocked: ${origin}`);
-          callback(new Error('Not allowed by CORS'));
-      }
-  },
+  origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck'],
   credentials: true
 }));
 
-// SECURITY: Reduced limit from 1mb to 200kb (since we use Cloudinary for media)
+// SECURITY: Limit body size (Cloudinary handles large media)
 app.use(express.json({ limit: '200kb' }));
 
+// --- 4. System Routes (Health Check) ---
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
-// --- 3. Firebase Init ---
+app.get('/health', async (req: Request, res: Response) => {
+    // Deep Health Check for Railway
+    const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
+    // @ts-ignore
+    const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
+    
+    if (mongoStatus === 'UP' && redisStatus === 'UP') {
+        res.status(200).json({ status: 'OK', mongo: mongoStatus, redis: redisStatus });
+    } else {
+        res.status(503).json({ status: 'ERROR', mongo: mongoStatus, redis: redisStatus });
+    }
+});
+
+// --- 5. Firebase Init ---
 try {
   if (config.firebase.serviceAccount) {
     const serviceAccount = JSON.parse(config.firebase.serviceAccount);
@@ -101,10 +111,10 @@ try {
   logger.error(`Firebase Admin Init Error: ${error.message}`);
 }
 
-// --- 4. Global Rate Limiter ---
+// --- 6. Global Rate Limiter ---
 app.use('/api/', apiLimiter); 
 
-// --- 5. Mount Routes ---
+// --- 7. Mount Routes ---
 app.use('/share', shareRoutes); 
 app.use('/api/assets', assetGenRoutes); 
 app.use('/api/emergency-resources', emergencyRoutes);
@@ -122,10 +132,10 @@ app.use('/api/jobs', jobRoutes);
 // Main Article Routes
 app.use('/api', articleRoutes); 
 
-// --- 6. Error Handling ---
+// --- 8. Error Handling ---
 app.use(errorHandler);
 
-// --- 7. Database & Server Start ---
+// --- 9. Database & Server Start ---
 const startServer = async () => {
     try {
         await initRedis();
@@ -142,9 +152,6 @@ const startServer = async () => {
             gatekeeperService.initialize()
         ]);
         
-        // NOTE: Scheduler is no longer initialized here. 
-        // It should be run via the separate Worker process.
-
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
@@ -156,12 +163,19 @@ const startServer = async () => {
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
             
+            // Force close after 10s if connections hang
+            setTimeout(() => {
+                logger.error('🛑 Force Shutdown (Timeout)');
+                process.exit(1);
+            }, 10000);
+
             server.close(async () => {
                 logger.info('Http server closed.');
                 try {
-                    await queueManager.shutdown(); // Closes the connection to the queue
+                    await queueManager.shutdown(); 
                     await redisClient.quit();
                     await mongoose.connection.close(false);
+                    logger.info('✅ Resources released. Exiting.');
                     process.exit(0);
                 } catch (err: any) {
                     logger.error(`⚠️ Error during shutdown: ${err.message}`);
