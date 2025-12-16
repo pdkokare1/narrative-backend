@@ -9,8 +9,8 @@ import { IArticle } from '../types';
 
 // Use Environment variables for models
 const EMBEDDING_MODEL = process.env.AI_MODEL_EMBEDDING || "text-embedding-004";
-// Default to 1.5 Pro (Best for JSON Schema) or 1.5 Flash (Cheaper/Faster)
-const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-1.5-pro";     
+// Restored your preferred model version
+const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-2.5-pro";     
 
 // --- GEMINI JSON SCHEMAS (Native Constraints) ---
 
@@ -95,8 +95,8 @@ class AIService {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: "application/json",
-            responseSchema: schema, // <--- THE MAGIC FIX
-            temperature: 0.2,       // Low temp for factual accuracy
+            responseSchema: schema, 
+            temperature: 0.2,       
             maxOutputTokens: 8192 
           }
         });
