@@ -1,5 +1,6 @@
 // utils/KeyManager.ts
 import redis from './redisClient';
+import logger from './logger'; // Assumed logger exists
 
 interface IKey {
     key: string;
@@ -40,7 +41,7 @@ class KeyManager {
         if (defaultKey && !foundKeys.includes(defaultKey)) foundKeys.push(defaultKey);
 
         if (foundKeys.length === 0) {
-            console.warn(`⚠️ No API Keys found for ${providerName} (Prefix: ${envPrefix})`);
+            logger.warn(`⚠️ No API Keys found for ${providerName} (Prefix: ${envPrefix})`);
             return;
         }
 
@@ -57,7 +58,7 @@ class KeyManager {
             }
         });
 
-        console.log(`✅ Loaded ${foundKeys.length} keys for ${providerName}`);
+        logger.info(`✅ Loaded ${foundKeys.length} keys for ${providerName}`);
         
         // Trigger initial sync to check if any keys are already cold in Redis
         this.syncWithRedis(providerName);
@@ -67,20 +68,25 @@ class KeyManager {
      * Checks Redis for existing cooldowns on startup/reload
      */
     private async syncWithRedis(providerName: string) {
-        // @ts-ignore
-        if (!redis.isReady || !redis.isReady()) return;
+        try {
+             // We check if the redis client is usable
+            // @ts-ignore
+            if (!redis || (redis.isOpen === false && redis.isReady === false)) return;
 
-        const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
-        
-        for (const keyObj of allKeys) {
-            try {
-                const redisStatus = await redis.get(`key_status:${keyObj.key}`);
-                if (redisStatus === 'cooldown') {
+            const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
+            
+            for (const keyObj of allKeys) {
+                // Check if this specific key has a cooldown marker in Redis
+                const redisStatus = await redis.get(`key_cooldown:${keyObj.key}`);
+                
+                if (redisStatus) {
                     keyObj.status = 'cooldown';
-                    keyObj.lastFailed = Date.now(); // Reset local timer to now to be safe
-                    console.log(`❄️ Synced Cooldown status for key ...${keyObj.key.slice(-4)}`);
+                    keyObj.lastFailed = Date.now(); // Reset local timer
+                    logger.info(`❄️ Synced Cooldown status for key ...${keyObj.key.slice(-4)} from Redis`);
                 }
-            } catch (e) { /* Ignore redis errors during sync */ }
+            }
+        } catch (e: any) {
+             logger.warn(`Redis Sync Warning: ${e.message}`);
         }
     }
 
@@ -92,7 +98,7 @@ class KeyManager {
         // 1. Check Circuit Breaker
         if (this.globalCircuitBreaker) {
             if (Date.now() > this.circuitBreakerResetTime) {
-                console.log("🟢 Global Circuit Breaker Reset. Resuming AI operations.");
+                logger.info("🟢 Global Circuit Breaker Reset. Resuming AI operations.");
                 this.globalCircuitBreaker = false;
                 this.consecutiveGlobalErrors = 0;
             } else {
@@ -121,22 +127,27 @@ class KeyManager {
             // A. Check Local Status
             if (candidate.status === 'cooldown') {
                 if (Date.now() - candidate.lastFailed > this.COOLDOWN_TIME) {
-                    // Local Cooldown expired, check Redis to be sure
+                    // Local Cooldown expired. 
+                    // We optimistically assume it's good unless Redis says otherwise below.
                 } else {
                     continue; // Still cooling locally
                 }
             }
 
             // B. Check Redis Status (Persistence)
-            // @ts-ignore
-            if (redis.isReady && redis.isReady()) {
-                const redisStatus = await redis.get(`key_status:${candidate.key}`);
-                if (redisStatus === 'cooldown') {
-                    // Update local state to match Redis
-                    candidate.status = 'cooldown';
-                    candidate.lastFailed = Date.now(); // Reset local timer
-                    continue; // Skip this key
+            try {
+                // @ts-ignore
+                if (redis && (redis.isOpen || redis.isReady)) {
+                    const redisStatus = await redis.get(`key_cooldown:${candidate.key}`);
+                    if (redisStatus) {
+                        // Update local state to match Redis
+                        candidate.status = 'cooldown';
+                        candidate.lastFailed = Date.now(); 
+                        continue; // Skip this key, it is still in timeout
+                    }
                 }
+            } catch (e) {
+                // If redis fails, we rely on local state
             }
 
             // If we got here, the key is good
@@ -156,11 +167,11 @@ class KeyManager {
     public async reportFailure(key: string, isRateLimit: boolean = false): Promise<void> {
         this.consecutiveGlobalErrors++;
         
-        // Trigger Circuit Breaker if system is failing globally
+        // Trigger Circuit Breaker if system is failing globally (e.g. 20 fails in a row)
         if (this.consecutiveGlobalErrors >= this.GLOBAL_ERROR_THRESHOLD) {
             this.globalCircuitBreaker = true;
             this.circuitBreakerResetTime = Date.now() + (5 * 60 * 1000); // 5 minutes
-            console.error("⛔ CRITICAL: Too many API failures. Global Circuit Breaker TRIPPED.");
+            logger.error("⛔ CRITICAL: Too many API failures. Global Circuit Breaker TRIPPED.");
         }
 
         const keyObj = this.keys.get(key);
@@ -170,17 +181,30 @@ class KeyManager {
         
         if (isRateLimit) {
             keyObj.status = 'cooldown';
-            console.warn(`⏳ KeyManager: Rate Limit hit on ...${key.slice(-4)}. Cooling down.`);
+            logger.warn(`⏳ KeyManager: Rate Limit hit on ...${key.slice(-4)}. Cooling down.`);
+            
             // Persist Cooldown to Redis (TTL = Cooldown Time)
-            // @ts-ignore
-            if (redis.isReady && redis.isReady()) {
-                await redis.set(`key_status:${key}`, 'cooldown', this.COOLDOWN_TIME / 1000);
-            }
+            try {
+                // @ts-ignore
+                if (redis && (redis.isOpen || redis.isReady)) {
+                    // Set key with Expiry (TTL) in seconds
+                    await redis.set(`key_cooldown:${key}`, 'true', this.COOLDOWN_TIME / 1000);
+                }
+            } catch (e) { /* ignore redis write errors */ }
+
         } else {
             keyObj.errorCount++;
             if (keyObj.errorCount >= this.MAX_ERRORS_BEFORE_COOLDOWN) {
                 keyObj.status = 'cooldown';
-                console.warn(`⚠️ KeyManager: Key ...${key.slice(-4)} unstable. Cooling down.`);
+                logger.warn(`⚠️ KeyManager: Key ...${key.slice(-4)} unstable. Cooling down.`);
+                
+                // Persist instability cooldown too
+                try {
+                     // @ts-ignore
+                     if (redis && (redis.isOpen || redis.isReady)) {
+                        await redis.set(`key_cooldown:${key}`, 'true', this.COOLDOWN_TIME / 1000);
+                    }
+                } catch (e) { /* ignore */ }
             }
         }
     }
