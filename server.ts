@@ -2,7 +2,6 @@
 import express, { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
-import cron from 'node-cron';
 import compression from 'compression';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
@@ -10,21 +9,18 @@ import mongoSanitize from 'express-mongo-sanitize';
 import hpp from 'hpp';
 import * as admin from 'firebase-admin';
 
-// --- 1. Load & Validate Config FIRST ---
+// Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
 
-// Import local modules
+// Services & Jobs
 import queueManager from './jobs/queueManager';
+import scheduler from './jobs/scheduler';
 import { errorHandler } from './middleware/errorMiddleware';
 import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService'; 
-import redis from './utils/redisClient'; 
 
-// Import Models
-import Article from './models/articleModel';
-
-// Import Routes
+// Routes
 import profileRoutes from './routes/profileRoutes';
 import activityRoutes from './routes/activityRoutes';
 import articleRoutes from './routes/articleRoutes';
@@ -35,7 +31,7 @@ import assetGenRoutes from './routes/assetGenRoutes';
 import shareRoutes from './routes/shareRoutes';
 import clusterRoutes from './routes/clusterRoutes'; 
 
-// Extend Express Request interface to include 'user'
+// Extend Express Request interface
 declare global {
   namespace Express {
     interface Request {
@@ -46,7 +42,7 @@ declare global {
 
 const app = express();
 
-// --- 2. Request Logging ---
+// --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
     logger.http(`${req.method} ${req.url}`);
     next();
@@ -54,17 +50,13 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.set('trust proxy', 1);
 
-// --- 3. SECURITY MIDDLEWARE STACK ---
+// --- 2. Security Middleware ---
 app.use(helmet({ 
   contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" } 
 }));
 app.use(compression());
-
-// Prevent NoSQL Injection
 app.use(mongoSanitize());
-
-// Prevent HTTP Parameter Pollution
 app.use(hpp());
 
 app.use(cors({
@@ -82,7 +74,7 @@ app.use(express.json({ limit: '1mb' }));
 
 app.get('/', (req: Request, res: Response) => { res.status(200).send('OK'); });
 
-// Firebase Init
+// --- 3. Firebase Init ---
 try {
   if (config.firebase.serviceAccount) {
     const serviceAccount = JSON.parse(config.firebase.serviceAccount);
@@ -95,9 +87,7 @@ try {
   logger.error(`Firebase Admin Init Error: ${error.message}`);
 }
 
-// --- RATE LIMITERS ---
-
-// 1. General API Limiter (Standard)
+// --- 4. Rate Limiters ---
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, 
   max: 1000, 
@@ -106,19 +96,17 @@ const apiLimiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' }
 });
 
-// 2. TTS Cost-Protection Limiter (Strict)
-// Limits audio generation to 10 requests per 15 mins per IP
 const ttsLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10, 
-  standardHeaders: true,
+  standardHeaders: true, 
   legacyHeaders: false,
   message: { error: 'Audio generation limit reached. Please wait a while.' }
 });
 
 app.use('/api/', apiLimiter); 
 
-// Security Middleware
+// --- 5. Security Gates ---
 const checkAppCheck = async (req: Request, res: Response, next: NextFunction) => {
   const appCheckToken = req.header('X-Firebase-AppCheck');
   if (!appCheckToken) {
@@ -152,70 +140,37 @@ const checkAuth = async (req: Request, res: Response, next: NextFunction) => {
   }
 };
 
-// --- Mount Routes ---
+// --- 6. Mount Routes ---
 app.use('/share', shareRoutes); 
 app.use('/api/assets', assetGenRoutes); 
 app.use('/api/profile', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), profileRoutes);
 app.use('/api/activity', (req, res, next) => checkAppCheck(req, res, () => checkAuth(req, res, next)), activityRoutes);
 app.use('/api/emergency-resources', emergencyRoutes);
-
-// Apply strict limiter to TTS
 app.use('/api/tts', ttsLimiter, ttsRoutes); 
-
 app.use('/api/migration', migrationRoutes); 
 app.use('/api/cluster', clusterRoutes);
 app.use('/api', articleRoutes); 
 
-// --- Jobs Endpoint ---
+// Manual Job Trigger
 app.post('/api/fetch-news', async (req: Request, res: Response) => {
   await queueManager.addFetchJob('manual-trigger', { source: 'api' });
   res.status(202).json({ message: 'News fetch job added to queue.' });
 });
 
-// --- SAFE SCHEDULING ---
-cron.schedule('*/30 5-22 * * *', async () => { 
-    logger.info('☀️ Daytime Fetch (30m interval)...');
-    await queueManager.addFetchJob('cron-day', { source: 'cron-day' });
-});
-
-cron.schedule('0 23,1,3 * * *', async () => {
-    logger.info('🌙 Night Mode Fetch (2h interval)...');
-    await queueManager.addFetchJob('cron-night', { source: 'cron-night' });
-});
-
-cron.schedule('*/30 * * * *', async () => {
-    logger.info('📈 Updating Trending Topics Cache...');
-    try {
-        const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
-        const results = await Article.aggregate([
-            { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
-            { $group: { _id: "$clusterTopic", count: { $sum: 1 }, sampleScore: { $max: "$trustScore" } } },
-            { $match: { count: { $gte: 3 } } }, 
-            { $sort: { count: -1 } },
-            { $limit: 10 }
-        ]);
-        
-        const topics = results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
-        
-        // @ts-ignore
-        if (redis.isReady()) {
-            await redis.set('trending_topics_smart', topics, 3600); 
-            logger.info(`✅ Trending Topics Updated (${topics.length} topics)`);
-        }
-    } catch (err: any) {
-        logger.error(`❌ Trending Calc Failed: ${err.message}`);
-    }
-});
-
-// Database Connection
+// --- 7. Database & Server Start ---
 if (config.mongoUri) {
     mongoose.connect(config.mongoUri)
         .then(async () => {
             logger.info('MongoDB Connected');
+            
+            // Initialize Services
             await Promise.all([
                 emergencyService.initializeEmergencyContacts(),
                 gatekeeperService.initialize()
             ]);
+            
+            // Start the Scheduler
+            scheduler.init();
         })
         .catch((err: any) => logger.error(`MongoDB Connection Failed: ${err.message}`));
 }
@@ -229,7 +184,7 @@ const server = app.listen(Number(PORT), HOST, () => {
     logger.info(`Server running on http://${HOST}:${PORT}`);
 });
 
-// --- GRACEFUL SHUTDOWN ---
+// --- Graceful Shutdown ---
 const gracefulShutdown = () => {
     logger.info('🛑 Received Kill Signal, shutting down gracefully...');
     server.close(() => {
