@@ -11,6 +11,7 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
+import { initRedis } from './utils/redisClient'; // <--- NEW IMPORT
 
 // Services & Jobs
 import queueManager from './jobs/queueManager';
@@ -109,45 +110,57 @@ app.post('/api/fetch-news', async (req: Request, res: Response) => {
 });
 
 // --- 6. Database & Server Start ---
-if (config.mongoUri) {
-    mongoose.connect(config.mongoUri)
-        .then(async () => {
+const startServer = async () => {
+    try {
+        // 1. Connect to Redis (Critical for rate limits & dedupe)
+        await initRedis();
+
+        // 2. Connect to MongoDB
+        if (config.mongoUri) {
+            await mongoose.connect(config.mongoUri);
             logger.info('MongoDB Connected');
-            
-            // Initialize Services
-            await Promise.all([
-                emergencyService.initializeEmergencyContacts(),
-                gatekeeperService.initialize()
-            ]);
-            
-            // Start the Scheduler
-            scheduler.init();
-        })
-        .catch((err: any) => logger.error(`MongoDB Connection Failed: ${err.message}`));
-}
+        } else {
+            throw new Error("MongoDB URI missing in config");
+        }
 
-app.use(errorHandler);
+        // 3. Initialize Services
+        await Promise.all([
+            emergencyService.initializeEmergencyContacts(),
+            gatekeeperService.initialize()
+        ]);
+        
+        // 4. Start the Scheduler
+        scheduler.init();
 
-const PORT = config.port || 3001;
-const HOST = '0.0.0.0'; 
+        // 5. Start Listening
+        const PORT = config.port || 3001;
+        const HOST = '0.0.0.0'; 
 
-const server = app.listen(Number(PORT), HOST, () => {
-    logger.info(`Server running on http://${HOST}:${PORT}`);
-});
-
-// --- Graceful Shutdown ---
-const gracefulShutdown = () => {
-    logger.info('🛑 Received Kill Signal, shutting down gracefully...');
-    server.close(() => {
-        logger.info('Http server closed.');
-        mongoose.connection.close(false).then(() => {
-            logger.info('MongoDB connection closed.');
-            process.exit(0);
+        const server = app.listen(Number(PORT), HOST, () => {
+            logger.info(`Server running on http://${HOST}:${PORT}`);
         });
-    });
+
+        // --- Graceful Shutdown ---
+        const gracefulShutdown = () => {
+            logger.info('🛑 Received Kill Signal, shutting down gracefully...');
+            server.close(() => {
+                logger.info('Http server closed.');
+                mongoose.connection.close(false).then(() => {
+                    logger.info('MongoDB connection closed.');
+                    process.exit(0);
+                });
+            });
+        };
+
+        process.on('SIGTERM', gracefulShutdown);
+        process.on('SIGINT', gracefulShutdown);
+
+    } catch (err: any) {
+        logger.error(`❌ Critical Startup Error: ${err.message}`);
+        process.exit(1);
+    }
 };
 
-process.on('SIGTERM', gracefulShutdown);
-process.on('SIGINT', gracefulShutdown);
+startServer();
 
 export default app;
