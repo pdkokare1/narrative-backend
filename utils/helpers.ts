@@ -28,7 +28,7 @@ export const formatHeadline = (title: string): string => {
     return clean;
 };
 
-// 4. Smart URL Normalization (The "Anti-Duplicate" Logic)
+// 4. Smart URL Normalization (Balanced: Safe but Clean)
 export const normalizeUrl = (url: string): string => {
     if (!url) return "";
     try {
@@ -37,19 +37,25 @@ export const normalizeUrl = (url: string): string => {
         // A. Remove Fragment (#section)
         urlObj.hash = '';
 
-        // B. Smart Query Cleaning
-        // If the path is long (indicating a slug-based URL like /2024/01/story-title),
-        // we can safely strip the ENTIRE query string (usually just tracking garbage).
-        if (urlObj.pathname.length > 5 && !urlObj.pathname.endsWith('.php')) {
-            urlObj.search = ''; 
-        } else {
-            // C. Fallback for ID-based URLs (site.com/?p=123)
-            // Only strip known tracking parameters
-            const trackingParams = [
-                'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-                'ref', 'source', 'fbclid', 'gclid', 'si', 'context', 'igsh'
-            ];
-            trackingParams.forEach(param => urlObj.searchParams.delete(param));
+        // B. Robust Tracking Parameter Removal
+        // We strip these from ALL URLs because they are never needed for the article itself.
+        const trackingParams = [
+            'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+            'fbclid', 'gclid', 'igsh', '_ga', 'yclid', 'msclkid', 'ref', 'source', 
+            'context', 'si' 
+        ];
+        trackingParams.forEach(param => urlObj.searchParams.delete(param));
+
+        // C. Conditional Deep Cleaning
+        // If the path is a long "slug" (e.g. /2024/01/my-news-story), the query string is likely junk.
+        // But if the path is short (e.g. /article), the query string might contain the ID (?id=123).
+        
+        const isLongPath = urlObj.pathname.length > 20;
+        const isPhpOrAsp = urlObj.pathname.endsWith('.php') || urlObj.pathname.endsWith('.asp');
+        
+        // Only strip ALL params if it's a long path AND not a script file like index.php
+        if (isLongPath && !isPhpOrAsp) {
+            urlObj.search = '';
         }
 
         // D. Remove Trailing Slash (cnn.com/story/ == cnn.com/story)
