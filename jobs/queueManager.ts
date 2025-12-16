@@ -3,15 +3,16 @@ import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
 import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import logger from '../utils/logger';
+import config from '../utils/config';
 
 // --- 1. Redis Connection Config ---
-const redisUrl = process.env.REDIS_URL;
+// We parse the URL from config to create a BullMQ compatible object
 let connectionConfig: ConnectionOptions | undefined;
 let isRedisConfigured = false;
 
-if (redisUrl) {
+if (config.redisUrl) {
     try {
-        const url = new URL(redisUrl);
+        const url = new URL(config.redisUrl);
         connectionConfig = {
             host: url.hostname,
             port: Number(url.port),
@@ -19,13 +20,13 @@ if (redisUrl) {
             username: url.username,
             maxRetriesPerRequest: null 
         };
-        // Handle rediss:// protocol
+        // Handle rediss:// protocol (TLS)
         if (url.protocol === 'rediss:') {
             connectionConfig.tls = { rejectUnauthorized: false };
         }
         isRedisConfigured = true;
     } catch (e: any) {
-        logger.error(`❌ Invalid REDIS_URL: ${e.message}`);
+        logger.error(`❌ Invalid REDIS_URL in QueueManager: ${e.message}`);
     }
 } else {
     logger.warn("⚠️ REDIS_URL not set. Background jobs will be disabled.");
@@ -58,7 +59,7 @@ if (isRedisConfigured && connectionConfig) {
                 
                 // Case A: Update Trending Topics
                 if (job.name === 'update-trending') {
-                    logger.info('📈 Worker executing: Update Trending Topics');
+                    // logger.info('📈 Worker executing: Update Trending Topics');
                     await statsService.updateTrendingTopics();
                     return { status: 'completed' };
                 }
@@ -86,7 +87,10 @@ if (isRedisConfigured && connectionConfig) {
 
         // Event Listeners
         newsWorker.on('completed', (job: Job) => {
-            logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
+            // Only log non-spammy jobs
+            if (job.name !== 'update-trending') {
+                logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
+            }
         });
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
@@ -118,24 +122,20 @@ const queueManager = {
         }
     },
     
-    // NEW: Smart Schedule Handler
+    // Smart Schedule Handler
     scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
         if (!newsQueue) return null;
         try {
-            // 1. Clean up old schedules for this job name to prevent duplicates/conflicts
             const repeatableJobs = await newsQueue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
             
             if (existing) {
-                // If the schedule exists, we remove it to ensure we apply the latest Cron pattern
                 await newsQueue.removeRepeatableByKey(existing.key);
             }
 
-            // 2. Add the fresh schedule
             const job = await newsQueue.add(name, data, {
                 repeat: { pattern: cronPattern }
             });
-            
             return job;
         } catch (err: any) {
              logger.error(`❌ Failed to schedule job ${name}: ${err.message}`);
@@ -157,6 +157,22 @@ const queueManager = {
             return { waiting, active, completed, failed, status: 'active' };
         } catch (err) {
             return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'error' };
+        }
+    },
+
+    // NEW: Graceful Shutdown
+    shutdown: async () => {
+        logger.info('🛑 Shutting down Job Queue & Workers...');
+        try {
+            if (newsWorker) {
+                await newsWorker.close();
+            }
+            if (newsQueue) {
+                await newsQueue.close();
+            }
+            logger.info('✅ Job Queue shutdown complete.');
+        } catch (err: any) {
+            logger.error(`⚠️ Error during Queue shutdown: ${err.message}`);
         }
     }
 };
