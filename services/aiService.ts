@@ -1,24 +1,24 @@
 // services/aiService.ts
-import axios from 'axios';
 import { jsonrepair } from 'jsonrepair';
 import { z } from 'zod';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
+import apiClient from '../utils/apiClient';
+import { sleep, cleanText } from '../utils/helpers';
 import { IArticle } from '../types';
 
-const EMBEDDING_MODEL = "text-embedding-004";
-const PRO_MODEL = "gemini-2.5-pro";     
+// Use Environment variables for models (Future Proofing)
+const EMBEDDING_MODEL = process.env.AI_MODEL_EMBEDDING || "text-embedding-004";
+const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-2.5-pro";     
 
-// --- ZOD SCHEMAS (The "Bodyguards") ---
-// This defines exactly what we expect from the AI.
+// --- ZOD SCHEMAS ---
 const ArticleAnalysisSchema = z.object({
     summary: z.string().default("Summary unavailable"),
     category: z.string().default("General"),
     politicalLean: z.string().default("Not Applicable"),
     sentiment: z.enum(['Positive', 'Negative', 'Neutral']).default('Neutral'),
     
-    // Auto-convert strings to numbers if the AI messes up
     biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
     credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
     reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
@@ -31,14 +31,10 @@ const ArticleAnalysisSchema = z.object({
     recommendations: z.array(z.string()).optional().default([])
 });
 
-function sleep(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
-    logger.info(`🤖 AI Service Initialized (Hardened)`);
+    logger.info(`🤖 AI Service Initialized`);
   }
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -52,14 +48,15 @@ class AIService {
         const prompt = await promptManager.getAnalysisPrompt(article, mode);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
-        const response = await axios.post(url, {
+        // Updated: Use apiClient
+        const response = await apiClient.post(url, {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: "application/json",
             temperature: mode === 'Basic' ? 0.2 : 0.3,
             maxOutputTokens: 8192 
           }
-        }, { timeout: 60000 });
+        });
 
         KeyManager.reportSuccess(apiKey);
         return this.parseGeminiResponse(response.data, mode);
@@ -76,7 +73,7 @@ class AIService {
         logger.warn(`⚠️ AI Attempt ${attempt} failed: ${error.message}`);
         
         if (attempt === maxRetries) throw error;
-        await sleep(2000 * attempt);
+        await sleep(2000 * attempt); // Updated: Use helper sleep
       }
     }
     throw new Error("AI Analysis Failed after retries");
@@ -86,12 +83,16 @@ class AIService {
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
-        const cleanText = text.replace(/\n/g, " ").substring(0, 2000);
+        
+        // Updated: Use helper cleanText to protect against bad characters
+        const clean = cleanText(text).substring(0, 2000);
         
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
-        const response = await axios.post(url, {
+        
+        // Updated: Use apiClient
+        const response = await apiClient.post(url, {
             model: `models/${EMBEDDING_MODEL}`,
-            content: { parts: [{ text: cleanText }] }
+            content: { parts: [{ text: clean }] }
         });
 
         KeyManager.reportSuccess(apiKey);
@@ -110,24 +111,19 @@ class AIService {
         
         let text = data.candidates[0].content.parts[0].text || "";
         
-        // 1. Repair Broken JSON (The Magic Fix)
+        // 1. Repair Broken JSON
         const repairedJson = jsonrepair(text);
         
         // 2. Parse
         const rawObj = JSON.parse(repairedJson);
 
         // 3. Validate & Sanitize with Zod
-        // "safeParse" tries to validate. If it fails, it tells us why instead of crashing.
         const validation = ArticleAnalysisSchema.safeParse(rawObj);
 
         if (!validation.success) {
             logger.warn(`⚠️ JSON Validation issues: ${validation.error.message}`);
-            // We can still try to use the raw object if it has some data, 
-            // but for safety, let's assume we need to fallback or use partial data.
-            // For now, let's trust the 'transform' in Zod to have fixed mostly everything.
         }
 
-        // If validation completely failed (rare with .safeParse), fallback to rawObj
         const parsed: any = validation.success ? validation.data : rawObj;
 
         // If Basic mode, we are done
@@ -145,7 +141,7 @@ class AIService {
         // Full Mode Logic
         parsed.analysisType = 'Full';
         
-        // Calculate Trust Score (Standardized logic)
+        // Calculate Trust Score
         parsed.trustScore = 0;
         if (parsed.credibilityScore > 0) {
             parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
