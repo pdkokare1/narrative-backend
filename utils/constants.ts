@@ -3,6 +3,7 @@
 export const ONE_MINUTE = 60 * 1000;
 export const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
+// --- CENTRAL CONFIGURATION ---
 export const CONSTANTS = {
   // Rate Limiting
   RATE_LIMIT: {
@@ -24,8 +25,72 @@ export const CONSTANTS = {
     TTL_SHORT: 300,   // 5 mins
   },
   
-  // Timeouts
+  // Timeouts (Standardized)
   TIMEOUTS: {
-    EXTERNAL_API: 30000, // 30 seconds
+    EXTERNAL_API: 15000, // 15 seconds (Increased for stability)
+  },
+
+  // AI Configuration
+  AI_MODELS: {
+    FAST: "gemini-2.5-flash", // For Gatekeeper & Quick Checks
+    QUALITY: "gemini-2.5-pro", // For Deep Analysis
+    EMBEDDING: "text-embedding-004"
+  },
+
+  // Redis Keys (Prevent typos)
+  REDIS_KEYS: {
+    BANNED_DOMAINS: 'GATEKEEPER:BANNED_DOMAINS',
+    GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_',
+    TRENDING: 'trending_topics_smart',
   }
 };
+
+// --- GLOBAL BLOCKLISTS ---
+// Moved here to keep service logic clean.
+
+export const DEFAULT_BANNED_DOMAINS = [
+    // Tabloids & Gossip
+    'dailymail.co.uk', 'thesun.co.uk', 'nypost.com', 'tmz.com', 'perezhilton.com', 
+    'mirror.co.uk', 'express.co.uk', 'dailystar.co.uk', 'radaronline.com',
+    
+    // Clickbait & Viral
+    'buzzfeed.com', 'upworthy.com', 'viralnova.com', 'clickhole.com', 
+    'ladbible.com', 'unilad.com', 'boredpanda.com',
+    
+    // Satire (AI gets confused by these)
+    'theonion.com', 'babylonbee.com', 'duffelblog.com', 'newyorker.com/humor',
+    
+    // Propaganda / Extreme Bias
+    'infowars.com', 'sputniknews.com', 'rt.com', 'breitbart.com', 'naturalnews.com',
+    
+    // Shopping / PR Wires
+    'prweb.com', 'businesswire.com', 'prnewswire.com', 'globenewswire.com'
+];
+
+export const JUNK_KEYWORDS = [
+    // Shopping & Deals
+    'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
+    'shopping', 'gift guide', 'best buy', 'amazon prime', 'black friday', 
+    'cyber monday', 'sale', '% off', 'where to buy', 'restock', 'clearance',
+    'bargain', 'doorbuster', 'cheapest',
+    
+    // Gaming Guides (Keep "Gaming News", block "Guides")
+    'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
+    'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\'s answer', 'quordle',
+    'patch notes', 'loadout', 'tier list', 'how to get', 'where to find', 
+    'twitch drops', 'codes for',
+    
+    // Fluff & Lifestyle
+    'horoscope', 'zodiac', 'astrology', 'tarot', 'psychic', 'manifesting',
+    'celeb look', 'red carpet', 'outfit', 'dress', 'fashion', 'makeup',
+    'royal family', 'kardashian', 'jenner', 'relationship timeline', 'net worth',
+    
+    // Clickbait Phrases
+    'watch:', 'video:', 'photos:', 'gallery:', 'live:', 'live updates', 
+    'you need to know', 'here\'s why', 'what we know', 'everything we know',
+    'reaction', 'reacts to', 'internet is losing it', 'fans are',
+    
+    // Gambling / Lottery
+    'powerball', 'mega millions', 'lottery results', 'winning numbers', 
+    'betting odds', 'prediction', 'parlay', 'gambling'
+];
