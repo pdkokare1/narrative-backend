@@ -48,11 +48,13 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.set('trust proxy', 1);
 
-// --- 2. Security Middleware ---
+// --- 2. Security Middleware (Hardened) ---
+// Enable standard security headers.
+// We allow cross-origin resources because your Frontend (Vercel) talks to this Backend (Railway).
 app.use(helmet({ 
-  contentSecurityPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" } 
 }));
+
 app.use(compression());
 app.use(mongoSanitize());
 app.use(hpp());
