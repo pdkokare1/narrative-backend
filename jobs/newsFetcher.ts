@@ -5,43 +5,27 @@ import aiService from '../services/aiService';
 import clusteringService from '../services/clusteringService';
 import Article from '../models/articleModel';
 import logger from '../utils/logger'; 
-import redisClient from '../utils/redisClient'; // <--- NEW IMPORT
+import redisClient from '../utils/redisClient';
 import { IArticle } from '../types';
 
-// --- PIPELINE STEPS ---
+// --- PIPELINE CONSTANTS ---
+const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24; // If match is older than this, re-analyze
+const BATCH_SIZE = 5;
 
-// Step 1: Filter Duplicates (Redis + DB Double Check)
+// --- HELPERS ---
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function isDuplicate(url: string): Promise<boolean> {
     if (!url) return true;
-
-    // A. Instant Check: Is it in our fast memory cache?
-    const isCached = await redisClient.sIsMember('processed_urls', url);
-    if (isCached) return true;
-
-    // B. Safety Check: Is it in the database? (In case server restarted and cache cleared)
-    const exists = await Article.exists({ url }) !== null;
-
-    // C. Sync Cache: If DB has it but Cache missed, update Cache for next time
-    if (exists) {
-        await redisClient.sAdd('processed_urls', url);
+    // 1. Redis Cache Check (Fast)
+    if (await redisClient.sIsMember('processed_urls', url)) return true;
+    // 2. DB Check (Reliable)
+    if (await Article.exists({ url })) {
+        await redisClient.sAdd('processed_urls', url); // Sync back to cache
+        return true;
     }
-
-    return exists;
+    return false;
 }
-
-// Step 2: Semantic Check (Save $$$ by finding similar articles)
-async function findExistingAnalysis(embedding: number[] | undefined, country: string = 'Global') {
-    if (!embedding) return null;
-    return await clusteringService.findSemanticDuplicate(embedding, country);
-}
-
-// Step 3: Full AI Analysis
-async function performDeepAnalysis(article: any, model: string) {
-    return await aiService.analyzeArticle(article, model);
-}
-
-// --- HELPER: Sleep function for pacing ---
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // --- MAIN PROCESSOR ---
 
@@ -49,30 +33,36 @@ async function processSingleArticle(article: any): Promise<string> {
     try {
         if (!article?.url || !article?.title) return 'ERROR_INVALID';
         
-        // 1. Quick Dedupe (Exact URL match)
+        // 1. Exact Duplicate Check
         if (await isDuplicate(article.url)) return 'DUPLICATE_URL';
 
-        // 2. Gatekeeper (Junk Filter - now with Keywords from DB)
+        // 2. Gatekeeper (Junk Filter)
         const gatekeeperResult = await gatekeeper.evaluateArticle(article);
         if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
-        logger.info(`🔍 Processing [${gatekeeperResult.type}]: "${article.title.substring(0, 30)}..."`);
-
-        // 3. Create Embedding (Vector)
+        // 3. Create Embedding
         const textToEmbed = `${article.title}. ${article.description}`;
         const embedding = await aiService.createEmbedding(textToEmbed);
 
-        // 4. Semantic Search (Cost Saver)
-        const existingMatch = await findExistingAnalysis(embedding || undefined, 'Global');
+        // 4. Semantic Search (The "Cost Saver")
+        // We look for a similar article in the DB to potentially reuse its analysis
+        const existingMatch = await clusteringService.findSemanticDuplicate(embedding || undefined, 'Global');
         
         let analysis: Partial<IArticle>;
         let isSemanticSkip = false;
 
+        // --- NEW LOGIC: Freshness Check ---
+        // Only inherit if the match is recent. If it's old news, we re-analyze.
+        let isMatchFresh = false;
         if (existingMatch) {
-            logger.info(`💰 Cost Saver! Inheriting analysis from: "${existingMatch.headline.substring(0,20)}..."`);
+            const hoursDiff = (new Date().getTime() - new Date(existingMatch.createdAt!).getTime()) / (1000 * 60 * 60);
+            isMatchFresh = hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS;
+        }
+
+        if (existingMatch && isMatchFresh) {
+            logger.info(`💰 Cost Saver! Inheriting analysis from recent match: "${existingMatch.headline.substring(0,20)}..."`);
             isSemanticSkip = true;
             
-            // Clone the expensive data
             analysis = {
                 summary: existingMatch.summary, 
                 category: existingMatch.category,
@@ -86,8 +76,11 @@ async function processSingleArticle(article: any): Promise<string> {
                 clusterId: existingMatch.clusterId,
             };
         } else {
-            // New Analysis required
-            analysis = await performDeepAnalysis(article, gatekeeperResult.recommendedModel);
+            if (existingMatch && !isMatchFresh) {
+                logger.info(`🔄 Semantic match found but too old (>24h). Re-analyzing as fresh story.`);
+            }
+            // Generate Fresh Analysis
+            analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
         }
 
         // 5. Construct & Save
@@ -98,8 +91,8 @@ async function processSingleArticle(article: any): Promise<string> {
             category: analysis.category || "General", 
             politicalLean: analysis.politicalLean || "Not Applicable",
             url: article.url,
-            imageUrl: article.urlToImage,
-            publishedAt: article.publishedAt,
+            imageUrl: article.image, // Note: Normalized in newsService
+            publishedAt: new Date(article.publishedAt),
             analysisType: analysis.analysisType || 'Full',
             sentiment: analysis.sentiment || 'Neutral',
             
@@ -118,14 +111,11 @@ async function processSingleArticle(article: any): Promise<string> {
             embedding: embedding || []
         };
         
-        // Final Cluster Check (if not inherited)
         if (!newArticleData.clusterId) {
             newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding || undefined);
         }
         
         await Article.create(newArticleData);
-
-        // 6. Add to Redis Cache immediately (so we don't process it again)
         await redisClient.sAdd('processed_urls', article.url);
 
         return isSemanticSkip ? 'SAVED_SEMANTIC' : 'SAVED_FRESH';
@@ -145,7 +135,7 @@ async function fetchAndAnalyzeNews() {
   };
 
   try {
-    // A. Fetch
+    // A. Fetch (Now Uses Rotation internally)
     const rawArticles = await newsService.fetchNews(); 
     if (!rawArticles || rawArticles.length === 0) {
         logger.warn('Job: No new articles found.');
@@ -153,36 +143,25 @@ async function fetchAndAnalyzeNews() {
     }
 
     stats.totalFetched = rawArticles.length;
-    logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline (Batch Mode)...`);
+    logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline...`);
 
-    // B. Process Items in Batches (Concurrency Control)
-    const BATCH_SIZE = 5;
-    const results: string[] = [];
-
+    // B. Process Items in Batches
     for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
         const batch = rawArticles.slice(i, i + BATCH_SIZE);
-        const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
-        const totalBatches = Math.ceil(rawArticles.length / BATCH_SIZE);
-
-        logger.info(`📦 Processing Batch ${batchNumber}/${totalBatches} (${batch.length} items)...`);
-        
-        // Process current batch in parallel
         const batchResults = await Promise.all(batch.map(article => processSingleArticle(article)));
-        results.push(...batchResults);
-
-        // Small breather between batches to prevent Rate Limiting / CPU Spikes
-        if (i + BATCH_SIZE < rawArticles.length) {
-            await sleep(1000); 
-        }
-    }
         
-    results.forEach(res => {
-        if (res === 'SAVED_FRESH') stats.savedFresh++;
-        else if (res === 'SAVED_SEMANTIC') stats.savedSemantic++;
-        else if (res === 'DUPLICATE_URL') stats.duplicates++;
-        else if (res === 'JUNK_CONTENT') stats.junk++;
-        else stats.errors++;
-    });
+        // Accumulate Stats
+        batchResults.forEach(res => {
+            if (res === 'SAVED_FRESH') stats.savedFresh++;
+            else if (res === 'SAVED_SEMANTIC') stats.savedSemantic++;
+            else if (res === 'DUPLICATE_URL') stats.duplicates++;
+            else if (res === 'JUNK_CONTENT') stats.junk++;
+            else stats.errors++;
+        });
+
+        // Rate Limit Breather
+        if (i + BATCH_SIZE < rawArticles.length) await sleep(1000); 
+    }
 
     logger.info('Job Complete: Summary', { stats });
     return stats;
