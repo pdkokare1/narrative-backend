@@ -4,6 +4,7 @@ import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
 import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle, INewsAPIResponse } from '../types';
+import Article from '../models/articleModel'; // Imported to check for duplicates
 
 // Rotation cycles to save API quota
 const FETCH_CYCLES = [
@@ -53,9 +54,28 @@ class NewsService {
       }
     }
 
+    // 3. Clean and Deduplicate (In-Memory)
     const cleaned = this.removeDuplicatesAndClean(allArticles);
-    logger.info(`✅ Fetched & Cleaned: ${cleaned.length} articles (from ${allArticles.length} raw)`);
-    return cleaned;
+    
+    // 4. Database Deduplication (Check against history)
+    const finalUnique = await this.filterExistingInDB(cleaned);
+
+    logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
+    return finalUnique;
+  }
+
+  // NEW: Check Database for existing URLs to prevent duplicates
+  private async filterExistingInDB(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
+      if (articles.length === 0) return [];
+      
+      const urls = articles.map(a => a.url);
+      
+      // Find which of these URLs already exist in Mongo
+      const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
+      const existingUrls = new Set(existingDocs.map(d => d.url));
+      
+      // Only keep the ones NOT in the set
+      return articles.filter(a => !existingUrls.has(a.url));
   }
 
   private async fetchFromGNews(params: any): Promise<INewsSourceArticle[]> {
@@ -77,7 +97,6 @@ class NewsService {
       try {
           const response = await apiClient.get<INewsAPIResponse>(url, { params });
           
-          // Fix: Report success even if 0 articles, as long as status is 200
           KeyManager.reportSuccess(apiKey);
 
           if (!response.data?.articles?.length) return [];
@@ -102,19 +121,17 @@ class NewsService {
       }));
   }
 
-  // UPDATED: Quality-First Deduplication
   private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
     const seenUrls = new Set<string>();
     const seenTitles = new Set<string>();
     
-    // 1. Sort by Quality Score first so we process the best articles first
-    // (Has Image = +2 points, Title Length > 40 = +1 point)
+    // Sort by Quality Score first
     const scoredArticles = articles.map(a => {
         let score = 0;
         if (a.image && a.image.startsWith('http')) score += 2;
         if (a.title && a.title.length > 40) score += 1;
         return { article: a, score };
-    }).sort((a, b) => b.score - a.score); // Highest score first
+    }).sort((a, b) => b.score - a.score);
 
     const uniqueArticles: INewsSourceArticle[] = [];
 
@@ -123,27 +140,20 @@ class NewsService {
 
         if (!article.title || !article.url) continue;
         
-        // Filter Garbage
         if (article.title.length < 10) continue; 
         if (article.title === "No Title") continue;
 
-        // URL Check (Strict)
         const url = article.url;
         if (seenUrls.has(url)) continue;
 
-        // Title Check (Fuzzy)
         const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (seenTitles.has(cleanTitle)) {
-             // Since we sorted by score, if we see a duplicate now, it's lower quality. Skip it.
-             continue;
-        }
+        if (seenTitles.has(cleanTitle)) continue;
         
         seenUrls.add(url);
         seenTitles.add(cleanTitle);
         uniqueArticles.push(article);
     }
 
-    // 2. Finally, sort by Date for the actual feed
     return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
