@@ -26,6 +26,9 @@ async function performDeepAnalysis(article: any, model: string) {
     return await aiService.analyzeArticle(article, model);
 }
 
+// --- HELPER: Sleep function for pacing ---
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 // --- MAIN PROCESSOR ---
 
 async function processSingleArticle(article: any): Promise<string> {
@@ -132,11 +135,28 @@ async function fetchAndAnalyzeNews() {
     }
 
     stats.totalFetched = rawArticles.length;
-    logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline...`);
+    logger.info(`📡 Fetched ${stats.totalFetched} articles. Starting Pipeline (Batch Mode)...`);
 
-    // B. Process ALL items
-    // Queue Rate Limiter will handle the speed, so we can just loop
-    const results = await Promise.all(rawArticles.map(article => processSingleArticle(article)));
+    // B. Process Items in Batches (Concurrency Control)
+    const BATCH_SIZE = 5;
+    const results: string[] = [];
+
+    for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
+        const batch = rawArticles.slice(i, i + BATCH_SIZE);
+        const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+        const totalBatches = Math.ceil(rawArticles.length / BATCH_SIZE);
+
+        logger.info(`📦 Processing Batch ${batchNumber}/${totalBatches} (${batch.length} items)...`);
+        
+        // Process current batch in parallel
+        const batchResults = await Promise.all(batch.map(article => processSingleArticle(article)));
+        results.push(...batchResults);
+
+        // Small breather between batches to prevent Rate Limiting / CPU Spikes
+        if (i + BATCH_SIZE < rawArticles.length) {
+            await sleep(1000); 
+        }
+    }
         
     results.forEach(res => {
         if (res === 'SAVED_FRESH') stats.savedFresh++;
