@@ -15,7 +15,7 @@ import redisClient, { initRedis } from './utils/redisClient';
 
 // Services & Jobs
 import scheduler from './jobs/scheduler';
-import queueManager from './jobs/queueManager'; // Import for shutdown
+import queueManager from './jobs/queueManager'; 
 import { errorHandler } from './middleware/errorMiddleware';
 import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService'; 
@@ -55,20 +55,38 @@ app.use(compression());
 app.use(mongoSanitize());
 app.use(hpp());
 
-app.use(cors({
-  origin: [
+// --- CORS Configuration ---
+// Allows defining origins in ENV or defaults to known domains
+const defaultOrigins = [
     'https://thegamut.in', 
     'https://www.thegamut.in', 
     'https://api.thegamut.in',
     'http://localhost:3000'
-  ],
+];
+
+const envOrigins = process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',') : [];
+const allowedOrigins = [...defaultOrigins, ...envOrigins];
+
+app.use(cors({
+  origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.indexOf(origin) !== -1) {
+          callback(null, true);
+      } else {
+          logger.warn(`🚫 CORS Blocked: ${origin}`);
+          callback(new Error('Not allowed by CORS'));
+      }
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck'],
+  credentials: true
 }));
 
 app.use(express.json({ limit: '1mb' }));
 
-app.get('/', (req: Request, res: Response) => { res.status(200).send('OK'); });
+app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
 // --- 3. Firebase Init ---
 try {
@@ -135,24 +153,30 @@ const startServer = async () => {
             logger.info(`Server running on http://${HOST}:${PORT}`);
         });
 
+        // --- Graceful Shutdown Logic ---
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
             
-            // 1. Close HTTP Server
+            // 1. Close HTTP Server (Stop accepting new requests)
             server.close(async () => {
                 logger.info('Http server closed.');
                 
-                // 2. Close Job Queues (New)
-                await queueManager.shutdown();
+                try {
+                    // 2. Stop Background Jobs (Wait for current job to finish)
+                    await queueManager.shutdown();
 
-                // 3. Close Redis
-                await redisClient.quit();
+                    // 3. Close Redis
+                    await redisClient.quit();
 
-                // 4. Close Mongo
-                mongoose.connection.close(false).then(() => {
+                    // 4. Close Mongo
+                    await mongoose.connection.close(false);
                     logger.info('MongoDB connection closed.');
+                    
                     process.exit(0);
-                });
+                } catch (err: any) {
+                    logger.error(`⚠️ Error during shutdown: ${err.message}`);
+                    process.exit(1);
+                }
             });
         };
 
