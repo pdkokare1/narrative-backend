@@ -31,10 +31,12 @@
     "helmet": "^7.0.0",
     "hpp": "^0.2.3",
     "joi": "^17.11.0",
+    "json-repair": "^3.6.0",
     "mongoose": "^7.6.0",
     "node-cron": "^3.0.2",
     "redis": "^4.6.10",
-    "winston": "^3.11.0"
+    "winston": "^3.11.0",
+    "zod": "^3.22.4"
   },
   "devDependencies": {
     "@types/compression": "^1.7.5",
