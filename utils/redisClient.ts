@@ -1,11 +1,13 @@
 // utils/redisClient.ts
 import { createClient, RedisClientType } from 'redis';
 import logger from './logger';
+import config from './config'; // Import the central config
 
 let client: RedisClientType | null = null;
 
 export const initRedis = async () => {
-    if (!process.env.REDIS_URL) {
+    // Use config.redisUrl to ensure we use the validated variable
+    if (!config.redisUrl) {
         logger.warn("⚠️ Redis URL not found. Caching and Background Jobs will be limited.");
         return null;
     }
@@ -17,7 +19,7 @@ export const initRedis = async () => {
 
     try {
         client = createClient({
-            url: process.env.REDIS_URL,
+            url: config.redisUrl,
             socket: {
                 // Exponential backoff for reconnection: min 100ms, max 5000ms
                 reconnectStrategy: (retries) => Math.min(retries * 100, 5000)
