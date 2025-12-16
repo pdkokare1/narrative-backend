@@ -1,6 +1,7 @@
 // services/newsService.ts
 import axios from 'axios';
 import KeyManager from '../utils/KeyManager';
+import logger from '../utils/logger';
 
 interface IRawArticle {
     source: { name: string };
@@ -59,7 +60,7 @@ class NewsService {
   constructor() {
     KeyManager.loadKeys('GNEWS', 'GNEWS');
     KeyManager.loadKeys('NEWS_API', 'NEWS_API');
-    console.log(`堂 News Service Initialized`);
+    logger.info(`堂 News Service Initialized`);
   }
 
   async fetchNews(): Promise<any[]> {
@@ -67,7 +68,7 @@ class NewsService {
     
     // 1. GNews Fetch
     try {
-        console.log('藤 Fetching from GNews...');
+        logger.info('藤 Fetching from GNews...');
         const gnewsRequests = [
             { params: { country: 'us', max: 15 }, name: 'GNews-US' }, 
             { params: { country: 'in', max: 15 }, name: 'GNews-IN' },
@@ -84,12 +85,12 @@ class NewsService {
             }
         });
     } catch (err: any) {
-        console.warn("GNews fetch skipped/failed:", err.message);
+        logger.warn(`GNews fetch skipped/failed: ${err.message}`);
     }
 
     // 2. NewsAPI Fallback
     if (allArticles.length < 15) {
-      console.log('藤 Fetching fallback from NewsAPI...');
+      logger.info('藤 Fetching fallback from NewsAPI...');
       const newsapiRequests = [
          { params: { country: 'us', pageSize: 15 }, endpoint: 'top-headlines' },
          { params: { country: 'in', pageSize: 15 }, endpoint: 'top-headlines' },
