@@ -1,6 +1,6 @@
 // services/aiService.ts
 import axios from 'axios';
-import { jsonrepair } from 'json-repair';
+import { jsonrepair } from 'jsonrepair';
 import { z } from 'zod';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
