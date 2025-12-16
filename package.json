@@ -1,6 +1,6 @@
 {
   "name": "narrative-backend",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Narrative News Backend API (TypeScript Migration)",
   "main": "dist/server.js",
   "scripts": {
@@ -30,7 +30,6 @@
     "firebase-admin": "^11.11.0",
     "helmet": "^7.0.0",
     "hpp": "^0.2.3",
-    "joi": "^17.11.0",
     "jsonrepair": "^3.6.0",
     "mongoose": "^7.6.0",
     "node-cron": "^3.0.2",
