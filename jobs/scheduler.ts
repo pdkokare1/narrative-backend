@@ -1,21 +1,28 @@
 // jobs/scheduler.ts
-import queueManager from './queueManager';
+import cron from 'node-cron';
 import logger from '../utils/logger';
+import queueManager from './queueManager';
 
-const initScheduler = async () => {
-    logger.info('⏳ Initializing Distributed Scheduler (BullMQ)...');
+export const startScheduler = () => {
+  logger.info('⏰ Scheduler Initialized');
 
-    // 1. News Fetch: Daytime (Every 30 mins at :00 and :30, from 5 AM to 10 PM)
-    await queueManager.scheduleRepeatableJob('cron-day', '0,30 5-22 * * *', { source: 'cron-day' });
+  // --- 1. News Fetch Job (Every 2 Hours) ---
+  // Cron Expression: "0 */2 * * *" means "At minute 0 past every 2nd hour"
+  cron.schedule('0 */2 * * *', async () => {
+    logger.info('⏰ Cron Trigger: Scheduling News Fetch');
+    await queueManager.addNewsJob();
+  });
 
-    // 2. News Fetch: Night Mode (At 23:00, 01:00, 03:00)
-    await queueManager.scheduleRepeatableJob('cron-night', '0 23,1,3 * * *', { source: 'cron-night' });
+  // --- 2. Cleanup Old Data (Daily at Midnight) ---
+  cron.schedule('0 0 * * *', async () => {
+    logger.info('⏰ Cron Trigger: Scheduling System Cleanup');
+    // You can add a cleanup job to the queue here in the future
+  });
 
-    // 3. Trending Topics: Update every 30 minutes (Offset by 15 mins)
-    // Runs at :15 and :45 to avoid spiking the CPU alongside the News Fetch
-    await queueManager.scheduleRepeatableJob('update-trending', '15,45 * * * *', {});
-    
-    logger.info('✅ Scheduled Jobs Registered in Redis');
+  // --- Run Immediately on Startup (Optional but recommended for testing) ---
+  // This ensures that whenever you deploy, you get fresh news immediately.
+  setTimeout(() => {
+    logger.info('🚀 Startup: Triggering initial News Fetch...');
+    queueManager.addNewsJob();
+  }, 5000); // Wait 5s for connections to settle
 };
-
-export default { init: initScheduler };
