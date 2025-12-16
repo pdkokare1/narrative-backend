@@ -1,5 +1,6 @@
 // services/aiService.ts
 import { z } from 'zod';
+import { jsonrepair } from 'jsonrepair';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
@@ -72,7 +73,7 @@ const ArticleAnalysisSchema = z.object({
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
-    logger.info(`🤖 AI Service Initialized`);
+    logger.info(`🤖 AI Service Initialized (with Robust JSON Repair)`);
   }
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -153,16 +154,22 @@ class AIService {
         
         const rawText = data.candidates[0].content.parts[0].text || "";
         
-        // 1. Sanitize the output (Remove Markdown wrappers like ```json ... ```)
-        const cleanJson = this.cleanJsonOutput(rawText);
-        
         let rawObj;
         try {
-            rawObj = JSON.parse(cleanJson);
+            // First try: Standard Parse
+            rawObj = JSON.parse(rawText);
         } catch (e) {
-            logger.warn(`⚠️ JSON Parse Failed. Attempting repair...`);
-            // Simple repair: sometimes there's trailing text or issues
-            throw new Error(`Invalid JSON format from AI: ${cleanJson.substring(0, 50)}...`);
+            // Second try: Robust Repair (Fixes missing commas, unclosed brackets, etc.)
+            logger.warn(`⚠️ JSON Parse Failed. Attempting repair with jsonrepair...`);
+            try {
+                const repaired = jsonrepair(rawText);
+                rawObj = JSON.parse(repaired);
+                logger.info("✅ JSON successfully repaired.");
+            } catch (repairError) {
+                // Third try: Minimal Clean
+                const clean = this.cleanJsonOutput(rawText);
+                rawObj = JSON.parse(clean); 
+            }
         }
 
         // 2. Zod Validation
