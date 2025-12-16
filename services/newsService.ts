@@ -1,7 +1,8 @@
 // services/newsService.ts
-import axios from 'axios';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
+import apiClient from '../utils/apiClient';
+import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
 
 interface IRawArticle {
     source: { name: string };
@@ -12,28 +13,6 @@ interface IRawArticle {
     image?: string;
     urlToImage?: string;
     publishedAt: string;
-}
-
-function formatHeadline(title: string): string {
-    if (!title) return "No Title";
-    let clean = title.trim();
-    clean = clean.charAt(0).toUpperCase() + clean.slice(1);
-    if (!/[.!?]["']?$/.test(clean)) {
-        clean += ".";
-    }
-    return clean;
-}
-
-function normalizeUrl(url: string): string {
-    if (!url) return "";
-    try {
-        const urlObj = new URL(url);
-        const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'ref', 'source', 'fbclid', 'gclid'];
-        trackingParams.forEach(param => urlObj.searchParams.delete(param));
-        return urlObj.toString();
-    } catch (e) {
-        return url; 
-    }
 }
 
 function removeDuplicatesAndClean(articles: any[]): any[] {
@@ -60,7 +39,7 @@ class NewsService {
   constructor() {
     KeyManager.loadKeys('GNEWS', 'GNEWS');
     KeyManager.loadKeys('NEWS_API', 'NEWS_API');
-    logger.info(`堂 News Service Initialized`);
+    logger.info(`📰 News Service Initialized`);
   }
 
   async fetchNews(): Promise<any[]> {
@@ -68,7 +47,7 @@ class NewsService {
     
     // 1. GNews Fetch
     try {
-        logger.info('藤 Fetching from GNews...');
+        logger.info('📡 Fetching from GNews...');
         const gnewsRequests = [
             { params: { country: 'us', max: 15 }, name: 'GNews-US' }, 
             { params: { country: 'in', max: 15 }, name: 'GNews-IN' },
@@ -88,9 +67,9 @@ class NewsService {
         logger.warn(`GNews fetch skipped/failed: ${err.message}`);
     }
 
-    // 2. NewsAPI Fallback
+    // 2. NewsAPI Fallback (Only if GNews results are low)
     if (allArticles.length < 15) {
-      logger.info('藤 Fetching fallback from NewsAPI...');
+      logger.info('📡 Fetching fallback from NewsAPI...');
       const newsapiRequests = [
          { params: { country: 'us', pageSize: 15 }, endpoint: 'top-headlines' },
          { params: { country: 'in', pageSize: 15 }, endpoint: 'top-headlines' },
@@ -117,7 +96,6 @@ class NewsService {
   async fetchFromGNews(params: any): Promise<any[]> {
     let apiKey = '';
     try {
-        // Updated: await getKey
         apiKey = await KeyManager.getKey('GNEWS');
     } catch (e) {
         return Promise.reject(new Error("No GNews Keys available"));
@@ -125,9 +103,9 @@ class NewsService {
 
     const url = 'https://gnews.io/api/v4/top-headlines';
     try {
-      const response = await axios.get(url, { 
-          params: { lang: 'en', sortby: 'publishedAt', max: 10, ...params, apikey: apiKey }, 
-          timeout: 20000 
+      // Updated: Use apiClient
+      const response = await apiClient.get(url, { 
+          params: { lang: 'en', sortby: 'publishedAt', max: 10, ...params, apikey: apiKey }
       });
 
       if (!response.data?.articles?.length) return [];
@@ -145,7 +123,6 @@ class NewsService {
   async fetchFromNewsAPI(params: any, endpointType: string): Promise<any[]> {
       let apiKey = '';
       try {
-          // Updated: await getKey
           apiKey = await KeyManager.getKey('NEWS_API');
       } catch (e) {
           return Promise.reject(new Error("No NewsAPI Keys available"));
@@ -153,9 +130,9 @@ class NewsService {
 
       const url = `https://newsapi.org/v2/${endpointType}`;
       try {
-          const response = await axios.get(url, { 
-              params: { language: 'en', pageSize: 10, ...params, apiKey: apiKey }, 
-              timeout: 20000 
+          // Updated: Use apiClient
+          const response = await apiClient.get(url, { 
+              params: { language: 'en', pageSize: 10, ...params, apiKey: apiKey }
           });
 
          if (!response.data?.articles?.length) return [];
@@ -175,7 +152,8 @@ class NewsService {
     return articles.map(article => ({
         source: { name: article?.source?.name?.trim() || 'GNews Source' },
         title: article?.title?.trim(),
-        description: (article?.description || article?.content)?.trim(),
+        // Updated: Use cleanText helper
+        description: cleanText(article?.description || article?.content || ""),
         url: article?.url?.trim(),
         urlToImage: article?.image?.trim(),
         publishedAt: article?.publishedAt || new Date().toISOString()
@@ -187,7 +165,8 @@ class NewsService {
     return articles.map(article => ({
         source: { name: article?.source?.name?.trim() || 'NewsAPI Source' },
         title: article?.title?.trim(),
-        description: article?.description?.trim(),
+        // Updated: Use cleanText helper
+        description: cleanText(article?.description || ""),
         url: article?.url?.trim(),
         urlToImage: article?.urlToImage?.trim(),
         publishedAt: article?.publishedAt || new Date().toISOString()
