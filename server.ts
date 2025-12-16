@@ -11,10 +11,11 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import redisClient, { initRedis } from './utils/redisClient'; // Imported redisClient for shutdown
+import redisClient, { initRedis } from './utils/redisClient';
 
 // Services & Jobs
 import scheduler from './jobs/scheduler';
+import queueManager from './jobs/queueManager'; // Import for shutdown
 import { errorHandler } from './middleware/errorMiddleware';
 import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService'; 
@@ -100,7 +101,7 @@ app.use('/api/profile', checkAppCheck, checkAuth, profileRoutes);
 app.use('/api/activity', checkAppCheck, checkAuth, activityRoutes);
 
 // Job/Admin Routes (Manual Triggers)
-app.use('/api/jobs', jobRoutes); // Separated to /api/jobs for clarity
+app.use('/api/jobs', jobRoutes); 
 
 // Main Article Routes
 app.use('/api', articleRoutes); 
@@ -137,13 +138,17 @@ const startServer = async () => {
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
             
+            // 1. Close HTTP Server
             server.close(async () => {
                 logger.info('Http server closed.');
                 
-                // Close Redis
+                // 2. Close Job Queues (New)
+                await queueManager.shutdown();
+
+                // 3. Close Redis
                 await redisClient.quit();
 
-                // Close Mongo
+                // 4. Close Mongo
                 mongoose.connection.close(false).then(() => {
                     logger.info('MongoDB connection closed.');
                     process.exit(0);
