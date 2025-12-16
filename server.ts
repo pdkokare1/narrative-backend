@@ -11,7 +11,7 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import { initRedis } from './utils/redisClient';
+import redisClient, { initRedis } from './utils/redisClient'; // Imported redisClient for shutdown
 
 // Services & Jobs
 import scheduler from './jobs/scheduler';
@@ -33,7 +33,7 @@ import migrationRoutes from './routes/migrationRoutes';
 import assetGenRoutes from './routes/assetGenRoutes';
 import shareRoutes from './routes/shareRoutes';
 import clusterRoutes from './routes/clusterRoutes'; 
-import jobRoutes from './routes/jobRoutes'; // <--- NEW IMPORT
+import jobRoutes from './routes/jobRoutes';
 
 const app = express();
 
@@ -100,13 +100,13 @@ app.use('/api/profile', checkAppCheck, checkAuth, profileRoutes);
 app.use('/api/activity', checkAppCheck, checkAuth, activityRoutes);
 
 // Job/Admin Routes (Manual Triggers)
-app.use('/api', jobRoutes); // <--- REPLACED INLINE CODE WITH ROUTER
+app.use('/api/jobs', jobRoutes); // Separated to /api/jobs for clarity
 
-// Main Article Routes (Keep last to avoid conflicts if it has catch-all)
+// Main Article Routes
 app.use('/api', articleRoutes); 
 
 // --- 6. Error Handling ---
-app.use(errorHandler); // <--- IMPORTANT: Activates the custom error handler
+app.use(errorHandler);
 
 // --- 7. Database & Server Start ---
 const startServer = async () => {
@@ -134,10 +134,16 @@ const startServer = async () => {
             logger.info(`Server running on http://${HOST}:${PORT}`);
         });
 
-        const gracefulShutdown = () => {
+        const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
-            server.close(() => {
+            
+            server.close(async () => {
                 logger.info('Http server closed.');
+                
+                // Close Redis
+                await redisClient.quit();
+
+                // Close Mongo
                 mongoose.connection.close(false).then(() => {
                     logger.info('MongoDB connection closed.');
                     process.exit(0);
