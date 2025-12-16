@@ -6,26 +6,54 @@ import SystemConfig from '../models/systemConfigModel';
 
 const MODEL_NAME = "gemini-2.5-flash"; 
 
-// --- INITIAL SEEDS (Used only if DB is empty) ---
+// --- 1. LOCAL BLOCKLISTS (Expanded for Cost Savings) ---
+// These domains produce high-volume low-value content.
 const DEFAULT_BANNED = [
-    'dailymail.co.uk', 'thesun.co.uk', 'nypost.com', 'breitbart.com', 
-    'infowars.com', 'sputniknews.com', 'rt.com', 'tmz.com', 
-    'perezhilton.com', 'gawker.com', 'buzzfeed.com', 'upworthy.com',
-    'viralnova.com', 'clickhole.com', 'theonion.com', 'babylonbee.com'
+    // Tabloids & Gossip
+    'dailymail.co.uk', 'thesun.co.uk', 'nypost.com', 'tmz.com', 'perezhilton.com', 
+    'mirror.co.uk', 'express.co.uk', 'dailystar.co.uk', 'radaronline.com',
+    
+    // Clickbait & Viral
+    'buzzfeed.com', 'upworthy.com', 'viralnova.com', 'clickhole.com', 
+    'ladbible.com', 'unilad.com', 'boredpanda.com',
+    
+    // Satire (AI gets confused by these)
+    'theonion.com', 'babylonbee.com', 'duffelblog.com', 'newyorker.com/humor',
+    
+    // Propaganda / Extreme Bias (Optional - adjust as needed)
+    'infowars.com', 'sputniknews.com', 'rt.com', 'breitbart.com', 'naturalnews.com',
+    
+    // Shopping / PR Wires
+    'prweb.com', 'businesswire.com', 'prnewswire.com', 'globenewswire.com'
 ];
 
+// These keywords flag an article as "Junk" instantly without AI analysis.
 const DEFAULT_KEYWORDS = [
+    // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
     'shopping', 'gift guide', 'best buy', 'amazon prime', 'black friday', 
-    'cyber monday', 'sale', '% off', 'hands-on:', 'where to buy', 'restock',
-    'review:', 'deal:', 'bargain', 'clearance',
+    'cyber monday', 'sale', '% off', 'where to buy', 'restock', 'clearance',
+    'bargain', 'doorbuster', 'cheapest',
+    
+    // Gaming Guides (Keep "Gaming News", block "Guides")
     'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
     'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\'s answer', 'quordle',
-    'gameplay', 'patch notes', 'twitch', 'discord',
+    'patch notes', 'loadout', 'tier list', 'how to get', 'where to find', 
+    'twitch drops', 'codes for',
+    
+    // Fluff & Lifestyle
     'horoscope', 'zodiac', 'astrology', 'tarot', 'psychic', 'manifesting',
     'celeb look', 'red carpet', 'outfit', 'dress', 'fashion', 'makeup',
+    'royal family', 'kardashian', 'jenner', 'relationship timeline', 'net worth',
+    
+    // Clickbait Phrases
     'watch:', 'video:', 'photos:', 'gallery:', 'live:', 'live updates', 
-    'you need to know', 'here\'s why', 'what we know', 'everything we know'
+    'you need to know', 'here\'s why', 'what we know', 'everything we know',
+    'reaction', 'reacts to', 'internet is losing it', 'fans are',
+    
+    // Gambling / Lottery
+    'powerball', 'mega millions', 'lottery results', 'winning numbers', 
+    'betting odds', 'prediction', 'parlay', 'gambling'
 ];
 
 class GatekeeperService {
@@ -44,7 +72,7 @@ class GatekeeperService {
                 bannedDoc = await SystemConfig.create({ key: 'BANNED_DOMAINS', value: DEFAULT_BANNED });
             }
             
-            // Push to Redis for global access
+            // Push to Redis for global access (Set structure allows O(1) lookup)
             if (redis.isReady() && bannedDoc.value.length > 0) {
                 for (const domain of bannedDoc.value) {
                     await redis.sAdd(this.REDIS_BANNED_KEY, domain);
@@ -52,6 +80,7 @@ class GatekeeperService {
             }
 
             // 2. Sync Keywords (Mongo -> Local Memory)
+            // Keywords are kept in memory because regex checking 100 words is faster than 100 Redis calls.
             let keywordsDoc = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
             if (!keywordsDoc) {
                 console.log('🛡️ Seeding Junk Keywords...');
@@ -59,7 +88,7 @@ class GatekeeperService {
             }
             this.localKeywords = keywordsDoc ? keywordsDoc.value : DEFAULT_KEYWORDS;
             
-            console.log('✅ Gatekeeper Config Loaded & Synced');
+            console.log(`✅ Gatekeeper Config Loaded: ${this.localKeywords.length} keywords blocked locally.`);
         } catch (error) {
             console.error('❌ Gatekeeper Init Failed:', error);
         }
@@ -90,17 +119,19 @@ class GatekeeperService {
             const isBanned = await redis.sIsMember(this.REDIS_BANNED_KEY, domain);
             if (isBanned) return { isJunk: true, reason: 'Banned Domain (Redis)' };
         } 
-        // Fallback to local default if Redis down (optional, keeping it simple here)
-
-        // 2. Keyword Check (Memory)
-        const foundKeyword = this.localKeywords.find(word => title.includes(word));
+        
+        // 2. Keyword Check (Memory) - Check Title AND Description
+        // We use a simple loop which is extremely fast for <1000 keywords
+        const combinedText = `${title} ${desc}`;
+        const foundKeyword = this.localKeywords.find(word => combinedText.includes(word));
+        
         if (foundKeyword) {
-            return { isJunk: true, reason: `Keyword Match: ${foundKeyword}` };
+            return { isJunk: true, reason: `Keyword Match: "${foundKeyword}"` };
         }
 
-        // 3. Length Check
+        // 3. Length Check (Too short usually means bad metadata or broken link)
         if ((title.length + desc.length) < 80) {
-            return { isJunk: true, reason: 'Too Short' };
+            return { isJunk: true, reason: 'Too Short / Empty' };
         }
 
         return { isJunk: false };
@@ -108,7 +139,7 @@ class GatekeeperService {
 
     /**
      * AUTO BAN LOGIC:
-     * If AI marks as junk, increment strike counter in Redis.
+     * If AI marks as junk repeatedly, we learn from it.
      * If strikes > 5, ban the domain GLOBALLY.
      */
     private async handleJunkDetection(url: string) {
@@ -119,10 +150,11 @@ class GatekeeperService {
             const key = `strikes:${domain}`;
             const strikes = await redis.incr(key);
             
-            if (strikes === 1) await redis.expire(key, 86400 * 3); // 3 Days to get 5 strikes
+            // Set expiry on first strike (3 days to get 5 strikes)
+            if (strikes === 1) await redis.expire(key, 86400 * 3); 
 
             if (strikes >= 5) {
-                console.warn(`🚫 AUTO-BANNING DOMAIN: ${domain} (5 Junk Strikes)`);
+                console.warn(`🚫 AUTO-BANNING DOMAIN: ${domain} (5 AI-Confirmed Junk Strikes)`);
                 
                 // 1. Add to Redis (Instant block for all servers)
                 await redis.sAdd(this.REDIS_BANNED_KEY, domain);
@@ -141,12 +173,12 @@ class GatekeeperService {
     }
 
     /**
-     * FULL EVALUATION: Uses AI if local check passes.
+     * FULL EVALUATION: Uses AI only if local check passes.
      */
     async evaluateArticle(article: any): Promise<{ type: string; isJunk: boolean; category?: string; recommendedModel: string }> {
         const CACHE_KEY = `GATEKEEPER_DECISION_${article.url}`;
         
-        // 1. Check Cache
+        // 1. Check Cache (Avoid re-processing same URL)
         const cached = await redis.get(CACHE_KEY);
         if (cached) return cached;
 
@@ -155,11 +187,12 @@ class GatekeeperService {
         if (localCheck.isJunk) {
             console.log(`🚫 Gatekeeper Blocked: ${article.title.substring(0, 30)}... [${localCheck.reason}]`);
             const result = { type: 'Junk', isJunk: true, recommendedModel: 'none' };
-            await redis.set(CACHE_KEY, result, 86400); // Cache rejection
+            // Cache rejection for 24 hours so we don't check again
+            await redis.set(CACHE_KEY, result, 86400); 
             return result;
         }
 
-        // 3. Run AI Check (Costs Money)
+        // 3. Run AI Check (Costs Money) - Only for articles that passed local check
         try {
             const apiKey = await KeyManager.getKey('GEMINI');
             const prompt = `
@@ -168,9 +201,9 @@ class GatekeeperService {
                 Description: "${article.description}"
                 
                 Classify into one of these types:
-                - "Hard News": Politics, Economy, War, Science, Major Crimes, Policy.
-                - "Soft News": Entertainment, Sports, Lifestyle, Human Interest, Opinion.
-                - "Junk": Shopping, Ads, Wordle/Game Guides, Horoscopes, minor viral videos, pure clickbait.
+                - "Hard News": Politics, Economy, War, Science, Major Crimes, Policy, Global Events.
+                - "Soft News": Entertainment, Sports, Lifestyle, Human Interest, Opinion, Reviews.
+                - "Junk": Shopping, Ads, Game Guides, Horoscopes, minor viral videos, pure clickbait, lottery results.
 
                 Respond ONLY in JSON: { "type": "Hard News" | "Soft News" | "Junk", "category": "String" }
             `;
@@ -191,12 +224,14 @@ class GatekeeperService {
             const isJunk = result.type === 'Junk';
 
             if (isJunk) {
+                // If AI found junk that local check missed, record a strike against the domain
                 this.handleJunkDetection(article.url);
             }
 
             const finalDecision = {
                 ...result,
                 isJunk: isJunk,
+                // Use cheaper model for Soft News if we ever split models in future
                 recommendedModel: result.type === 'Hard News' ? 'gemini-2.5-pro' : 'gemini-2.5-flash'
             };
 
@@ -214,7 +249,7 @@ class GatekeeperService {
             
             console.error(`Gatekeeper Error for "${article.title.substring(0, 20)}...":`, error.message);
             
-            // Fallback: Assume Soft News (safe default)
+            // Fallback: Assume Soft News (safe default to avoid blocking good news on error)
             return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: 'gemini-2.5-flash' };
         }
     }
