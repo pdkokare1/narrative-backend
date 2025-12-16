@@ -7,13 +7,7 @@ import redisClient from '../utils/redisClient';
 import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle, INewsAPIResponse } from '../types';
 import Article from '../models/articleModel';
-
-// Rotation cycles to save API quota
-const FETCH_CYCLES = [
-    { name: 'US-Focus', gnews: { country: 'us' }, newsapi: { country: 'us' } },
-    { name: 'IN-Focus', gnews: { country: 'in' }, newsapi: { country: 'in' } },
-    { name: 'World-Focus', gnews: { topic: 'world' }, newsapi: { q: 'international', language: 'en' } }
-];
+import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
 
 class NewsService {
   constructor() {
@@ -24,20 +18,19 @@ class NewsService {
 
   /**
    * Retrieves the current cycle index from Redis to ensure rotation persists
-   * across server restarts (common in containerized/serverless environments).
+   * across server restarts.
    */
   private async getNextCycle() {
-      const redisKey = 'news:fetch_cycle';
+      const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
       let index = 0;
 
       // @ts-ignore
       if (redisClient.isReady()) {
           try {
-              // Get current index, increment, and save back modulo length
               const stored = await redisClient.get(redisKey);
               const current = stored ? parseInt(stored, 10) : 0;
               index = (current + 1) % FETCH_CYCLES.length;
-              await redisClient.set(redisKey, index.toString(), 86400); // 1 day TTL
+              await redisClient.set(redisKey, index.toString(), 86400); 
           } catch (e) {
               logger.warn(`Redis Cycle Fetch Error, defaulting to 0: ${e}`);
           }
@@ -52,7 +45,7 @@ class NewsService {
     
     logger.info(`🔄 News Fetch Cycle: ${currentCycle.name}`);
 
-    // 1. Try GNews First (Preferred Source)
+    // 1. Try GNews First
     try {
         const gnewsArticles = await this.fetchFromGNews(currentCycle.gnews);
         allArticles.push(...gnewsArticles);
@@ -60,7 +53,7 @@ class NewsService {
         logger.warn(`GNews fetch failed: ${err.message}`);
     }
 
-    // 2. Fallback to NewsAPI ONLY if GNews gave us very little (save quota)
+    // 2. Fallback to NewsAPI ONLY if GNews gave us very little
     if (allArticles.length < 5) {
       logger.info('⚠️ Low yield from GNews, triggering NewsAPI fallback...');
       try {
@@ -71,26 +64,25 @@ class NewsService {
       }
     }
 
-    // 3. Clean and Deduplicate (In-Memory)
+    // 3. Clean and Deduplicate
     const cleaned = this.removeDuplicatesAndClean(allArticles);
 
-    // 4. Redis "Bouncer" Check (Fast Filter)
+    // 4. Redis "Bouncer" Check
     const redisFiltered = await this.filterSeenInRedis(cleaned);
     
-    // 5. Database Deduplication (Deep Check)
+    // 5. Database Deduplication
     const finalUnique = await this.filterExistingInDB(redisFiltered);
 
-    // 6. Mark accepted articles as "Seen" in Redis for next time
+    // 6. Mark accepted articles as "Seen" in Redis
     await this.markAsSeenInRedis(finalUnique);
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
     return finalUnique;
   }
 
-  // --- REDIS HELPERS (The Bouncer) ---
+  // --- REDIS HELPERS ---
 
   private getRedisKey(url: string): string {
-    // We create a short "fingerprint" (MD5 hash) of the URL to save memory
     const hash = crypto.createHash('md5').update(url).digest('hex');
     return `news:seen:${hash}`;
   }
@@ -122,30 +114,25 @@ class NewsService {
   private async markAsSeenInRedis(articles: INewsSourceArticle[]) {
       for (const article of articles) {
           const key = this.getRedisKey(article.url);
-          // Set key with '1' and expire in 48 hours (172800 seconds)
-          await redisClient.set(key, '1', 172800);
+          await redisClient.set(key, '1', 172800); // 48 hours
       }
   }
 
-  // --- EXISTING DB HELPERS ---
+  // --- DB HELPERS ---
 
   private async filterExistingInDB(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
       if (articles.length === 0) return [];
       
       const urls = articles.map(a => a.url);
-      
-      // Find which of these URLs already exist in Mongo
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
       const existingUrls = new Set(existingDocs.map((d: any) => d.url));
       
-      // Only keep the ones NOT in the set
       return articles.filter(a => !existingUrls.has(a.url));
   }
 
   private async fetchFromGNews(params: any): Promise<INewsSourceArticle[]> {
     const apiKey = await KeyManager.getKey('GNEWS');
     const queryParams = { lang: 'en', sortby: 'publishedAt', max: 10, ...params, apikey: apiKey };
-    
     return this.fetchExternal('https://gnews.io/api/v4/top-headlines', queryParams, apiKey, 'GNews');
   }
 
@@ -153,23 +140,18 @@ class NewsService {
     const apiKey = await KeyManager.getKey('NEWS_API');
     const endpoint = params.q ? 'everything' : 'top-headlines'; 
     const queryParams = { pageSize: 10, ...params, apiKey: apiKey };
-
     return this.fetchExternal(`https://newsapi.org/v2/${endpoint}`, queryParams, apiKey, 'NewsAPI');
   }
 
   private async fetchExternal(url: string, params: any, apiKey: string, sourceName: string): Promise<INewsSourceArticle[]> {
       try {
           const response = await apiClient.get<INewsAPIResponse>(url, { params });
-          
           KeyManager.reportSuccess(apiKey);
-
           if (!response.data?.articles?.length) return [];
           return this.normalizeArticles(response.data.articles, sourceName);
-
       } catch (error: any) {
           const status = error.response?.status;
-          const isRateLimit = status === 429 || status === 403;
-          await KeyManager.reportFailure(apiKey, isRateLimit);
+          await KeyManager.reportFailure(apiKey, status === 429 || status === 403);
           throw error;
       }
   }
@@ -189,7 +171,6 @@ class NewsService {
     const seenUrls = new Set<string>();
     const seenTitles = new Set<string>();
     
-    // Sort by Quality Score first
     const scoredArticles = articles.map(a => {
         let score = 0;
         if (a.image && a.image.startsWith('http')) score += 2;
@@ -203,7 +184,6 @@ class NewsService {
         const article = item.article;
 
         if (!article.title || !article.url) continue;
-        
         if (article.title.length < 10) continue; 
         if (article.title === "No Title") continue;
 
