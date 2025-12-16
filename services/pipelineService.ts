@@ -76,17 +76,24 @@ class PipelineService {
                 logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match.`);
                 isSemanticSkip = true;
                 
+                // Copy ALL relevant AI fields to prevent "blank" features in frontend
                 analysis = {
                     summary: existingMatch.summary, 
                     category: existingMatch.category,
                     politicalLean: existingMatch.politicalLean, 
                     biasScore: existingMatch.biasScore,
+                    credibilityScore: existingMatch.credibilityScore,
+                    reliabilityScore: existingMatch.reliabilityScore,
                     trustScore: existingMatch.trustScore,
                     sentiment: existingMatch.sentiment,
                     analysisType: existingMatch.analysisType || 'Full', 
                     clusterTopic: existingMatch.clusterTopic,
                     country: 'Global',
                     clusterId: existingMatch.clusterId,
+                    primaryNoun: existingMatch.primaryNoun,
+                    secondaryNoun: existingMatch.secondaryNoun,
+                    keyFindings: existingMatch.keyFindings,
+                    recommendations: existingMatch.recommendations
                 };
             } else {
                 // FRESH GENERATION (Paid)
@@ -116,8 +123,10 @@ class PipelineService {
                 primaryNoun: analysis.primaryNoun,
                 secondaryNoun: analysis.secondaryNoun,
                 clusterId: analysis.clusterId, 
+                keyFindings: analysis.keyFindings || [],
+                recommendations: analysis.recommendations || [],
                 
-                analysisVersion: isSemanticSkip ? '3.5-Inherited' : '3.5-Full',
+                analysisVersion: isSemanticSkip ? '3.6-Inherited' : '3.6-Full',
                 embedding: embedding || [] 
             };
             
