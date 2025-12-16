@@ -1,39 +1,38 @@
 // utils/redisClient.ts
 import { createClient, RedisClientType } from 'redis';
 import logger from './logger';
-import config from './config'; // Import the central config
+import config from './config';
 
 let client: RedisClientType | null = null;
 
 export const initRedis = async () => {
-    // Use config.redisUrl to ensure we use the validated variable
-    if (!config.redisUrl) {
-        logger.warn("⚠️ Redis URL not found. Caching and Background Jobs will be limited.");
-        return null;
-    }
-
-    // If client exists and is open (or connecting), return it
+    // If client exists and is ready, return it immediately
     if (client && (client.isOpen || client.isReady)) {
         return client;
+    }
+
+    // Check configuration
+    if (!config.redisUrl) {
+        logger.warn("⚠️ Redis URL not found in config. Caching and Background Jobs will be disabled.");
+        return null;
     }
 
     try {
         client = createClient({
             url: config.redisUrl,
             socket: {
-                // Exponential backoff for reconnection: min 100ms, max 5000ms
+                // Exponential backoff: Start at 100ms, cap at 5000ms
                 reconnectStrategy: (retries) => Math.min(retries * 100, 5000)
             }
         });
 
         client.on('error', (err) => {
-            // Log errors but don't crash; Redis client handles reconnection automatically
-            logger.warn(`Redis Client Error: ${err.message}`);
+            logger.error(`❌ Redis Client Error: ${err.message}`);
         });
 
-        client.on('connect', () => logger.info('✅ Redis Client Connected'));
+        client.on('connect', () => logger.info('🔌 Redis Client Connecting...'));
         client.on('reconnecting', () => logger.info('🔄 Redis Reconnecting...'));
-        client.on('ready', () => logger.info('✅ Redis Client Ready'));
+        client.on('ready', () => logger.info('✅ Redis Client Ready & Connected'));
 
         await client.connect();
         return client;
@@ -52,7 +51,8 @@ const redisClient = {
         try {
             const data = await client.get(key);
             return data ? JSON.parse(data) : null;
-        } catch (e) {
+        } catch (e: any) {
+            logger.warn(`Redis Get Error [${key}]: ${e.message}`);
             return null;
         }
     },
@@ -61,10 +61,9 @@ const redisClient = {
     set: async (key: string, data: any, ttlSeconds: number = 900): Promise<void> => {
         if (!client || !client.isReady) return;
         try {
-            // EX: seconds, NX: Only set if not exists (optional, not used here)
             await client.set(key, JSON.stringify(data), { EX: ttlSeconds });
         } catch (e: any) {
-            logger.warn(`Redis Set Error: ${e.message}`);
+            logger.warn(`Redis Set Error [${key}]: ${e.message}`);
         }
     },
     
@@ -116,7 +115,7 @@ const redisClient = {
         }
     },
 
-    // Direct Access if needed (for BullMQ or other libraries)
+    // Direct Access (Important for libraries like rate-limit-redis)
     getClient: () => client,
     isReady: () => client?.isReady ?? false
 };
