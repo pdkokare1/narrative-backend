@@ -1,6 +1,7 @@
 // jobs/queueManager.ts
 import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
 import newsFetcher from './newsFetcher';
+import statsService from '../services/statsService';
 import logger from '../utils/logger';
 
 // --- 1. Redis Connection Config ---
@@ -53,22 +54,30 @@ if (isRedisConfigured && connectionConfig) {
             logger.info(`👷 Worker started job: ${job.name} (ID: ${job.id})`);
             
             try {
-                // Run the actual heavy lifting
+                // --- JOB ROUTING ---
+                
+                // Case A: Update Trending Topics
+                if (job.name === 'update-trending') {
+                    logger.info('📈 Worker executing: Update Trending Topics');
+                    await statsService.updateTrendingTopics();
+                    return { status: 'completed' };
+                }
+
+                // Case B: News Fetcher (Default)
                 const result = await newsFetcher.run();
                 
                 if (!result) {
                     return { status: 'skipped', reason: 'concurrent_execution' };
                 }
                 return { status: 'completed' };
+
             } catch (err: any) {
                 logger.error(`❌ Worker Job Failed: ${err.message}`);
                 throw err; 
             }
         }, { 
             connection: connectionConfig,
-            concurrency: 1,
-            // --- RATE LIMITING ---
-            // Max 1 job every 1500ms to allow AI and APIs to breathe
+            concurrency: 1, // Global Lock: Only 1 job runs at a time per worker instance
             limiter: {
                 max: 1,
                 duration: 1500
@@ -77,7 +86,7 @@ if (isRedisConfigured && connectionConfig) {
 
         // Event Listeners
         newsWorker.on('completed', (job: Job) => {
-            logger.info(`✅ Job ${job.id} completed successfully.`);
+            logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
         });
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
@@ -95,7 +104,8 @@ if (isRedisConfigured && connectionConfig) {
 
 // --- 3. Safe Export ---
 const queueManager = {
-    addFetchJob: async (name: string = 'scheduled-fetch', data: any = {}) => {
+    // Basic Add
+    addFetchJob: async (name: string = 'manual-fetch', data: any = {}) => {
         if (!newsQueue) {
             logger.warn("⚠️ Cannot add job: Redis unavailable.");
             return null;
@@ -108,6 +118,31 @@ const queueManager = {
         }
     },
     
+    // NEW: Smart Schedule Handler
+    scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
+        if (!newsQueue) return null;
+        try {
+            // 1. Clean up old schedules for this job name to prevent duplicates/conflicts
+            const repeatableJobs = await newsQueue.getRepeatableJobs();
+            const existing = repeatableJobs.find(j => j.name === name);
+            
+            if (existing) {
+                // If the schedule exists, we remove it to ensure we apply the latest Cron pattern
+                await newsQueue.removeRepeatableByKey(existing.key);
+            }
+
+            // 2. Add the fresh schedule
+            const job = await newsQueue.add(name, data, {
+                repeat: { pattern: cronPattern }
+            });
+            
+            return job;
+        } catch (err: any) {
+             logger.error(`❌ Failed to schedule job ${name}: ${err.message}`);
+             return null;
+        }
+    },
+
     getStats: async () => {
         if (!newsQueue) {
             return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'disabled' };
