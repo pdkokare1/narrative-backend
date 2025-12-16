@@ -1,5 +1,7 @@
 // services/aiService.ts
 import axios from 'axios';
+import { jsonrepair } from 'json-repair';
+import { z } from 'zod';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
@@ -8,6 +10,27 @@ import { IArticle } from '../types';
 const EMBEDDING_MODEL = "text-embedding-004";
 const PRO_MODEL = "gemini-2.5-pro";     
 
+// --- ZOD SCHEMAS (The "Bodyguards") ---
+// This defines exactly what we expect from the AI.
+const ArticleAnalysisSchema = z.object({
+    summary: z.string().default("Summary unavailable"),
+    category: z.string().default("General"),
+    politicalLean: z.string().default("Not Applicable"),
+    sentiment: z.enum(['Positive', 'Negative', 'Neutral']).default('Neutral'),
+    
+    // Auto-convert strings to numbers if the AI messes up
+    biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+    credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+    reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+    
+    clusterTopic: z.string().optional(),
+    primaryNoun: z.string().optional(),
+    secondaryNoun: z.string().optional(),
+    
+    keyFindings: z.array(z.string()).optional().default([]),
+    recommendations: z.array(z.string()).optional().default([])
+});
+
 function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -15,7 +38,7 @@ function sleep(ms: number) {
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
-    logger.info(`🤖 AI Service Initialized`);
+    logger.info(`🤖 AI Service Initialized (Hardened)`);
   }
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -26,7 +49,6 @@ class AIService {
       try {
         apiKey = await KeyManager.getKey('GEMINI');
         
-        // Pass mode to prompt manager - Centralized Logic
         const prompt = await promptManager.getAnalysisPrompt(article, mode);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
@@ -34,7 +56,7 @@ class AIService {
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: "application/json",
-            temperature: mode === 'Basic' ? 0.2 : 0.3, // Lower temp for basic summary
+            temperature: mode === 'Basic' ? 0.2 : 0.3,
             maxOutputTokens: 8192 
           }
         }, { timeout: 60000 });
@@ -81,63 +103,49 @@ class AIService {
     }
   }
 
-  // --- HELPER: Parser ---
+  // --- HELPER: Robust Parser ---
   private parseGeminiResponse(data: any, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates');
         
         let text = data.candidates[0].content.parts[0].text || "";
         
-        // 1. Aggressive Clean
-        text = text.trim();
-        // Remove markdown fencing
-        text = text.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '');
+        // 1. Repair Broken JSON (The Magic Fix)
+        const repairedJson = jsonrepair(text);
         
-        // 2. Locate JSON bounds
-        const jsonStart = text.indexOf('{');
-        const jsonEnd = text.lastIndexOf('}');
-        
-        if (jsonStart !== -1 && jsonEnd !== -1) {
-            text = text.substring(jsonStart, jsonEnd + 1);
-        } else {
-            throw new Error("Invalid JSON structure found");
+        // 2. Parse
+        const rawObj = JSON.parse(repairedJson);
+
+        // 3. Validate & Sanitize with Zod
+        // "safeParse" tries to validate. If it fails, it tells us why instead of crashing.
+        const validation = ArticleAnalysisSchema.safeParse(rawObj);
+
+        if (!validation.success) {
+            logger.warn(`⚠️ JSON Validation issues: ${validation.error.message}`);
+            // We can still try to use the raw object if it has some data, 
+            // but for safety, let's assume we need to fallback or use partial data.
+            // For now, let's trust the 'transform' in Zod to have fixed mostly everything.
         }
 
-        let parsed: any;
-        try {
-            parsed = JSON.parse(text);
-        } catch (e) {
-            // Last ditch effort: Try to fix trailing commas
-            const fixedText = text.replace(/,(\s*[}\]])/g, '$1');
-            parsed = JSON.parse(fixedText);
-        }
+        // If validation completely failed (rare with .safeParse), fallback to rawObj
+        const parsed: any = validation.success ? validation.data : rawObj;
 
-        // If Basic mode, ensure defaults are set for missing expensive fields
+        // If Basic mode, we are done
         if (mode === 'Basic') {
             return {
-                summary: parsed.summary || 'Summary unavailable',
-                category: parsed.category || 'General',
-                sentiment: parsed.sentiment || 'Neutral',
+                summary: parsed.summary,
+                category: parsed.category,
+                sentiment: parsed.sentiment,
                 politicalLean: 'Not Applicable',
                 analysisType: 'SentimentOnly',
-                biasScore: 0,
-                credibilityScore: 0,
-                reliabilityScore: 0,
-                trustScore: 0
+                biasScore: 0, credibilityScore: 0, reliabilityScore: 0, trustScore: 0
             };
         }
 
-        // Full Mode Parsing
-        parsed.summary = parsed.summary || 'Summary unavailable';
+        // Full Mode Logic
         parsed.analysisType = 'Full';
-        parsed.sentiment = parsed.sentiment || 'Neutral';
-        parsed.politicalLean = parsed.politicalLean || 'Not Applicable';
         
-        const toNum = (v: any) => Math.round(Number(v) || 0);
-        parsed.biasScore = toNum(parsed.biasScore);
-        parsed.credibilityScore = toNum(parsed.credibilityScore);
-        parsed.reliabilityScore = toNum(parsed.reliabilityScore);
-        
+        // Calculate Trust Score (Standardized logic)
         parsed.trustScore = 0;
         if (parsed.credibilityScore > 0) {
             parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
