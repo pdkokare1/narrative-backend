@@ -58,6 +58,30 @@ class KeyManager {
         });
 
         console.log(`✅ Loaded ${foundKeys.length} keys for ${providerName}`);
+        
+        // Trigger initial sync to check if any keys are already cold in Redis
+        this.syncWithRedis(providerName);
+    }
+
+    /**
+     * Checks Redis for existing cooldowns on startup/reload
+     */
+    private async syncWithRedis(providerName: string) {
+        // @ts-ignore
+        if (!redis.isReady || !redis.isReady()) return;
+
+        const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
+        
+        for (const keyObj of allKeys) {
+            try {
+                const redisStatus = await redis.get(`key_status:${keyObj.key}`);
+                if (redisStatus === 'cooldown') {
+                    keyObj.status = 'cooldown';
+                    keyObj.lastFailed = Date.now(); // Reset local timer to now to be safe
+                    console.log(`❄️ Synced Cooldown status for key ...${keyObj.key.slice(-4)}`);
+                }
+            } catch (e) { /* Ignore redis errors during sync */ }
+        }
     }
 
     /**
