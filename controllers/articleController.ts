@@ -17,6 +17,7 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
     // 1. Try Cache
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
+        // Cache-Control header helps the Browser cache it too
         res.set('Cache-Control', 'public, max-age=1800'); 
         return res.status(200).json({ topics: cachedData });
     }
@@ -33,6 +34,7 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
     
     const topics = results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
     
+    // Save to Redis for 30 minutes (1800 seconds)
     await redis.set(CACHE_KEY, topics, 1800);
     
     res.status(200).json({ topics });
@@ -45,8 +47,10 @@ export const searchArticles = asyncHandler(async (req: Request, res: Response) =
     
     if (!query) return res.status(200).json({ articles: [], pagination: { total: 0 } });
 
+    // Sanitize input to prevent injection
     const safeQuery = query.replace(/[^\w\s\-\.\?]/gi, ''); 
 
+    // Atlas Search Pipeline
     const pipeline: any[] = [
         {
             $search: {
@@ -74,16 +78,29 @@ export const searchArticles = asyncHandler(async (req: Request, res: Response) =
         const results = await Article.aggregate(pipeline);
         res.status(200).json({ articles: results, pagination: { total: results.length } });
     } catch (error) {
-        logger.warn("Atlas Search failed, falling back to Regex:", error);
+        logger.warn("Atlas Search failed (or not configured), falling back to Regex");
         const regex = new RegExp(safeQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
         const fallback = await Article.find({ headline: { $regex: regex } }).limit(limit).lean();
         res.status(200).json({ articles: fallback, pagination: { total: fallback.length } });
     }
 });
 
-// --- 3. Main Feed ---
+// --- 3. Main Feed (Now Cached!) ---
 export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     const { category, lean, region, articleType, quality, sort, limit, offset } = req.query;
+    
+    // Create a unique Cache Key based on the user's filters
+    // e.g., "feed:Technology:Left:Global:0:20"
+    const CACHE_KEY = `feed:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${offset || 0}:${limit || 20}`;
+
+    // 1. Check Redis
+    const cachedFeed = await redis.get(CACHE_KEY);
+    if (cachedFeed) {
+        res.set('Cache-Control', 'public, max-age=300'); // Browser cache 5 min
+        return res.status(200).json(cachedFeed);
+    }
+
+    // 2. Build Query
     const query: any = {};
 
     if (category && category !== 'All Categories') query.category = category;
@@ -111,19 +128,27 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 }; 
     else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 }; 
 
+    // 3. Database Fetch
     const articles = await Article.find(query)
         .sort(sortOptions)
         .skip(Number(offset))
         .limit(Number(limit))
-        .lean();
+        .lean(); // .lean() makes it faster
 
     const total = await Article.countDocuments(query);
+    
+    const responsePayload = { articles, pagination: { total } };
+
+    // 4. Save to Redis (5 Minutes Expiry)
+    await redis.set(CACHE_KEY, responsePayload, 300);
+
     res.set('Cache-Control', 'public, max-age=300');
-    res.status(200).json({ articles, pagination: { total } });
+    res.status(200).json(responsePayload);
 });
 
 // --- 4. "For You" Feed ---
 export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
+    // This feed is highly personalized, so we DO NOT cache it globally.
     if (!req.user || !req.user.uid) {
         const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
         return res.status(200).json({ articles: standard, meta: { reason: "Guest User" } });
@@ -137,6 +162,7 @@ export const getForYouFeed = asyncHandler(async (req: Request, res: Response) =>
         return res.status(200).json({ articles: standard, meta: { reason: "No history" } });
     }
 
+    // Logic: Find the user's dominant political lean, then show them the OPPOSITE (Challenger)
     const articleIds = history.map(h => h.articleId);
     const viewedDocs = await Article.find({ _id: { $in: articleIds } }).select('politicalLean');
     const leanCounts: Record<string, number> = {};
@@ -168,6 +194,7 @@ export const getForYouFeed = asyncHandler(async (req: Request, res: Response) =>
 // --- 5. Personalized "My Mix" Feed ---
 export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.uid; 
+    // Cache Per User for 15 minutes
     const CACHE_KEY = `my_mix_${userId}`;
     
     const cachedMix = await redis.get(CACHE_KEY);
@@ -181,6 +208,7 @@ export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Respon
     let recommendations: any[] = [];
     let metaReason = "Trending";
 
+    // A. Vector Search (Best Quality)
     if (hasVector) {
         try {
             const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
@@ -215,6 +243,7 @@ export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Respon
         }
     }
 
+    // B. Fallback: Category Matching
     if (recommendations.length === 0) {
         const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50).lean();
         if (recentLogs.length > 0) {
@@ -235,6 +264,7 @@ export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Respon
         }
     }
 
+    // C. Fallback: Just Latest News
     if (recommendations.length === 0) {
         recommendations = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
         metaReason = "Trending (No Data)";
