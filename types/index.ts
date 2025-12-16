@@ -1,9 +1,8 @@
 // types/index.ts
 
 // --- 1. Article Interface ---
-// Defines exactly what a news article looks like in our system.
 export interface IArticle {
-  _id?: string; // MongoDB ID (optional because it's created by DB)
+  _id?: string;
   headline: string;
   summary: string;
   source: string;
@@ -24,7 +23,7 @@ export interface IArticle {
   // Scores
   biasScore: number; // 0-100
   biasLabel?: string;
-  biasComponents?: any; // We can make this stricter later
+  biasComponents?: any;
   
   credibilityScore: number;
   credibilityGrade?: string;
@@ -60,45 +59,55 @@ export interface IArticle {
   updatedAt?: Date;
 }
 
-// --- 2. Gamification Interfaces ---
+// --- 2. External News API Interfaces (NEW) ---
+export interface INewsSourceArticle {
+  source: { id?: string; name: string };
+  title: string;
+  description: string;
+  content?: string;
+  url: string;
+  image?: string;      // GNews style
+  urlToImage?: string; // NewsAPI style
+  publishedAt: string;
+}
+
+export interface INewsAPIResponse {
+  status: string;
+  totalResults: number;
+  articles: INewsSourceArticle[];
+}
+
+// --- 3. Gamification Interfaces ---
 export interface IBadge {
-  id: string;        // e.g., 'streak_5', 'read_balanced'
-  label: string;     // e.g., '5 Day Streak'
-  icon: string;      // e.g., '🔥'
+  id: string;
+  label: string;
+  icon: string;
   description: string;
   earnedAt: Date;
 }
 
-// --- 3. User Profile Interface ---
-// Defines a user account.
+// --- 4. User Profile Interface ---
 export interface IUserProfile {
-  userId: string; // Firebase UID
+  userId: string;
   email: string;
   username: string;
   
-  // Stats
   articlesViewedCount: number;
   comparisonsViewedCount: number;
   articlesSharedCount: number;
   
-  // Gamification
   currentStreak: number;
-  lastActiveDate?: Date; // To calculate streaks
+  lastActiveDate?: Date;
   badges: IBadge[];
   
-  // Relationships
-  savedArticles: string[]; // Array of Article IDs
-  
-  // Personalization Vector (NEW)
+  savedArticles: string[];
   userEmbedding?: number[];
 
-  // Notifications
   fcmToken?: string | null;
   notificationsEnabled: boolean;
 }
 
-// --- 4. Activity Log Interface ---
-// Defines a user action (view, share, etc.)
+// --- 5. Activity Log Interface ---
 export interface IActivityLog {
   userId: string;
   articleId: string;
@@ -106,19 +115,19 @@ export interface IActivityLog {
   timestamp?: Date;
 }
 
-// --- 5. Emergency Contact Interface ---
+// --- 6. Emergency Contact Interface ---
 export interface IEmergencyContact {
   category: string;
   serviceName: string;
   description?: string;
   number: string;
-  scope: string; // e.g., "All India", "Mumbai"
+  scope: string;
   hours: string;
   country: string;
   isGlobal: boolean;
 }
 
-// --- 6. AI Prompt Interface ---
+// --- 7. AI Prompt Interface ---
 export interface IAIPrompt {
   type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION';
   text: string;
