@@ -77,9 +77,10 @@ class NewsService {
       try {
           const response = await apiClient.get<INewsAPIResponse>(url, { params });
           
-          if (!response.data?.articles?.length) return [];
-
+          // Fix: Report success even if 0 articles, as long as status is 200
           KeyManager.reportSuccess(apiKey);
+
+          if (!response.data?.articles?.length) return [];
           return this.normalizeArticles(response.data.articles, sourceName);
 
       } catch (error: any) {
@@ -95,41 +96,55 @@ class NewsService {
           source: { name: a.source?.name || sourceName },
           title: formatHeadline(a.title || ""),
           description: cleanText(a.description || a.content || ""),
-          url: normalizeUrl(a.url), // Uses our new Smart Normalizer
+          url: normalizeUrl(a.url), 
           image: a.image || a.urlToImage, 
           publishedAt: a.publishedAt || new Date().toISOString()
       }));
   }
 
-  // UPDATED: Now checks for Duplicate Titles AND URLs
+  // UPDATED: Quality-First Deduplication
   private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
     const seenUrls = new Set<string>();
     const seenTitles = new Set<string>();
     
-    return articles.filter(article => {
-        if (!article.title || !article.url) return false;
+    // 1. Sort by Quality Score first so we process the best articles first
+    // (Has Image = +2 points, Title Length > 40 = +1 point)
+    const scoredArticles = articles.map(a => {
+        let score = 0;
+        if (a.image && a.image.startsWith('http')) score += 2;
+        if (a.title && a.title.length > 40) score += 1;
+        return { article: a, score };
+    }).sort((a, b) => b.score - a.score); // Highest score first
+
+    const uniqueArticles: INewsSourceArticle[] = [];
+
+    for (const item of scoredArticles) {
+        const article = item.article;
+
+        if (!article.title || !article.url) continue;
         
-        // 1. Filter Garbage
-        if (article.title.length < 10) return false; 
-        if (article.title === "No Title") return false;
+        // Filter Garbage
+        if (article.title.length < 10) continue; 
+        if (article.title === "No Title") continue;
 
-        // 2. URL Check (Strict)
+        // URL Check (Strict)
         const url = article.url;
-        if (seenUrls.has(url)) return false;
+        if (seenUrls.has(url)) continue;
 
-        // 3. Title Check (Fuzzy)
-        // Normalize title: "Biden Visits France." -> "biden visits france"
+        // Title Check (Fuzzy)
         const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
         if (seenTitles.has(cleanTitle)) {
-             // We found a duplicate story with a different URL? Skip it to be safe.
-             return false;
+             // Since we sorted by score, if we see a duplicate now, it's lower quality. Skip it.
+             continue;
         }
         
         seenUrls.add(url);
         seenTitles.add(cleanTitle);
-        return true;
+        uniqueArticles.push(article);
+    }
 
-    }).sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+    // 2. Finally, sort by Date for the actual feed
+    return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
 
