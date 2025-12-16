@@ -37,6 +37,7 @@ router.get('/trending', asyncHandler(async (req: Request, res: Response) => {
     // 1. Try Cache (Fast Path)
     const cachedData = await redis.get(CACHE_KEY);
     if (cachedData) {
+        // Browser/CDN Cache: Valid for 30 minutes (1800s)
         res.set('Cache-Control', 'public, max-age=1800'); 
         return res.status(200).json({ topics: cachedData });
     }
@@ -68,7 +69,7 @@ router.get('/search', validate(schemas.search, 'query'), asyncHandler(async (req
     const pipeline = [
         {
             $search: {
-                index: 'default',
+                index: 'default', // Ensure 'default' index exists in Atlas
                 compound: {
                     should: [
                         {
@@ -142,6 +143,7 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
     else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 }; 
     else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 }; 
 
+    // Performance: .lean() is faster for read-only data
     const articles = await Article.find(query)
         .sort(sortOptions)
         .skip(Number(offset))
@@ -149,6 +151,10 @@ router.get('/articles', validate(schemas.feedFilters, 'query'), asyncHandler(asy
         .lean();
 
     const total = await Article.countDocuments(query);
+    
+    // Cache public feeds for 5 minutes
+    res.set('Cache-Control', 'public, max-age=300');
+    
     res.status(200).json({ articles, pagination: { total } });
 }));
 
@@ -195,7 +201,7 @@ router.get('/articles/for-you', authenticate, asyncHandler(async (req: Request, 
     });
 }));
 
-// --- 5. Personalized "My Mix" Feed (VECTOR ENHANCED) ---
+// --- 5. Personalized "My Mix" Feed (VECTOR ENHANCED & OPTIMIZED) ---
 router.get('/articles/personalized', authenticate, asyncHandler(async (req: Request, res: Response) => {
     // A. Guest Fallback
     if (!req.user || !req.user.uid) {
@@ -215,17 +221,26 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
     // --- STRATEGY 1: VECTOR SEARCH (AI Powered) ---
     if (hasVector) {
         try {
-            // FIX: Explicitly cast pipeline to 'any' for $vectorSearch support in TS
+            // OPTIMIZATION: Date filter moved to Aggregation Pipeline ($match)
+            const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+
             const pipeline: any = [
                 {
                     "$vectorSearch": {
-                        "index": "vector_index", // Ensure this index exists in Atlas!
+                        "index": "vector_index", 
                         "path": "embedding",
                         "queryVector": profile.userEmbedding,
-                        "numCandidates": 150, // Scan 150 nearest
-                        "limit": 20           // Return top 20
+                        "numCandidates": 150, 
+                        "limit": 50 // Fetch more to allow for filtering
                     }
                 },
+                {
+                    // DATABASE SIDE FILTERING (Faster than JS filtering)
+                    "$match": {
+                        "publishedAt": { "$gte": threeDaysAgo }
+                    }
+                },
+                { "$limit": 20 }, // Trim to final size
                 {
                     "$project": {
                         "headline": 1, "summary": 1, "source": 1, "category": 1,
@@ -237,15 +252,8 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
                 }
             ];
 
-            const candidates = await Article.aggregate(pipeline);
-            
-            // Filter: Don't show old news even if it matches vector perfectly
-            // (Vector search doesn't filter by date efficiently inside the search stage on all tiers)
-            const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-            recommendations = candidates.filter((a: any) => new Date(a.publishedAt) > threeDaysAgo);
-            
+            recommendations = await Article.aggregate(pipeline);
             metaReason = "AI Curated (Interest Match)";
-            // console.log(`🤖 Serving ${recommendations.length} vector recs for ${userId}`);
 
         } catch (error) {
             console.error("Vector Search Failed (Falling back to legacy):", error);
@@ -254,7 +262,7 @@ router.get('/articles/personalized', authenticate, asyncHandler(async (req: Requ
 
     // --- STRATEGY 2: LEGACY CATEGORY MATCH (Fallback) ---
     if (recommendations.length === 0) {
-        const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50);
+        const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50).lean();
         
         if (recentLogs.length > 0) {
             const articleIds = recentLogs.map(l => l.articleId);
