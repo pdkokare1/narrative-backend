@@ -1,7 +1,8 @@
-// src/services/aiService.ts
+// services/aiService.ts
 import axios from 'axios';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
+import logger from '../utils/logger';
 import { IArticle } from '../types';
 
 const EMBEDDING_MODEL = "text-embedding-004";
@@ -14,7 +15,7 @@ function sleep(ms: number) {
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
-    console.log(`🤖 AI Service Initialized`);
+    logger.info(`🤖 AI Service Initialized`);
   }
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -43,14 +44,14 @@ class AIService {
 
       } catch (error: any) {
         if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
-            console.warn(`⚡ AI Skipped: ${error.message}`);
+            logger.warn(`⚡ AI Skipped: ${error.message}`);
             return this.getFallbackAnalysis(article);
         }
 
         const isRateLimit = error.response?.status === 429;
         if (apiKey) await KeyManager.reportFailure(apiKey, isRateLimit);
         
-        console.warn(`⚠️ AI Attempt ${attempt} failed: ${error.message}`);
+        logger.warn(`⚠️ AI Attempt ${attempt} failed: ${error.message}`);
         
         if (attempt === maxRetries) throw error;
         await sleep(2000 * attempt);
@@ -75,7 +76,7 @@ class AIService {
         return response.data.embedding.values;
 
     } catch (error: any) {
-        console.error("Embedding Error:", error.message);
+        logger.error(`Embedding Error: ${error.message}`);
         return null; 
     }
   }
