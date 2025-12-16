@@ -25,7 +25,7 @@ class AIService {
       try {
         apiKey = await KeyManager.getKey('GEMINI');
         
-        // Pass mode to prompt manager
+        // Pass mode to prompt manager - Centralized Logic
         const prompt = await promptManager.getAnalysisPrompt(article, mode);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
