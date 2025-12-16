@@ -4,18 +4,19 @@ import logger from './logger';
 
 let client: RedisClientType | null = null;
 let isConnected = false;
+let isConnecting = false; // Prevents race conditions
 
-// We export this function so server.ts can call it and WAIT for it
 export const initRedis = async () => {
     if (!process.env.REDIS_URL) {
         logger.warn("⚠️ Redis URL not found. Caching will be disabled.");
         return null;
     }
 
-    // If already initialized, just return the client
-    if (client && isConnected) return client;
+    // If already connected or currently connecting, return existing client
+    if ((client && isConnected) || isConnecting) return client;
 
     try {
+        isConnecting = true;
         client = createClient({
             url: process.env.REDIS_URL,
             socket: {
@@ -39,6 +40,7 @@ export const initRedis = async () => {
         client.on('connect', () => {
             logger.info('✅ Redis Connected');
             isConnected = true;
+            isConnecting = false;
         });
 
         await client.connect();
@@ -47,6 +49,7 @@ export const initRedis = async () => {
         logger.error(`❌ Redis Connection Failed: ${err.message}`);
         client = null;
         isConnected = false;
+        isConnecting = false;
         return null;
     }
 };
@@ -114,6 +117,15 @@ const redisClient = {
         try {
             return await client.sIsMember(key, value);
         } catch (e) { return false; }
+    },
+
+    // --- SYSTEM ---
+    quit: async (): Promise<void> => {
+        if (client) {
+            await client.quit();
+            isConnected = false;
+            logger.info('Redis connection closed gracefully.');
+        }
     },
 
     isReady: () => isConnected,
