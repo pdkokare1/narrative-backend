@@ -15,8 +15,6 @@ const FETCH_CYCLES = [
     { name: 'World-Focus', gnews: { topic: 'world' }, newsapi: { q: 'international', language: 'en' } }
 ];
 
-let currentCycleIndex = 0;
-
 class NewsService {
   constructor() {
     KeyManager.loadKeys('GNEWS', 'GNEWS');
@@ -24,16 +22,33 @@ class NewsService {
     logger.info(`📰 News Service Initialized`);
   }
 
-  // Rotate to the next region for the next run
-  private getNextCycle() {
-    const cycle = FETCH_CYCLES[currentCycleIndex];
-    currentCycleIndex = (currentCycleIndex + 1) % FETCH_CYCLES.length;
-    return cycle;
+  /**
+   * Retrieves the current cycle index from Redis to ensure rotation persists
+   * across server restarts (common in containerized/serverless environments).
+   */
+  private async getNextCycle() {
+      const redisKey = 'news:fetch_cycle';
+      let index = 0;
+
+      // @ts-ignore
+      if (redisClient.isReady()) {
+          try {
+              // Get current index, increment, and save back modulo length
+              const stored = await redisClient.get(redisKey);
+              const current = stored ? parseInt(stored, 10) : 0;
+              index = (current + 1) % FETCH_CYCLES.length;
+              await redisClient.set(redisKey, index.toString(), 86400); // 1 day TTL
+          } catch (e) {
+              logger.warn(`Redis Cycle Fetch Error, defaulting to 0: ${e}`);
+          }
+      }
+
+      return FETCH_CYCLES[index];
   }
 
   async fetchNews(): Promise<INewsSourceArticle[]> {
     const allArticles: INewsSourceArticle[] = [];
-    const currentCycle = this.getNextCycle();
+    const currentCycle = await this.getNextCycle();
     
     logger.info(`🔄 News Fetch Cycle: ${currentCycle.name}`);
 
@@ -45,7 +60,7 @@ class NewsService {
         logger.warn(`GNews fetch failed: ${err.message}`);
     }
 
-    // 2. Fallback to NewsAPI ONLY if GNews gave us very little
+    // 2. Fallback to NewsAPI ONLY if GNews gave us very little (save quota)
     if (allArticles.length < 5) {
       logger.info('⚠️ Low yield from GNews, triggering NewsAPI fallback...');
       try {
