@@ -1,17 +1,18 @@
 // middleware/rateLimiters.ts
 import rateLimit from 'express-rate-limit';
+import { CONSTANTS } from '../utils/constants';
 
 export const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 1000 requests per windowMs
+  windowMs: CONSTANTS.RATE_LIMIT.WINDOW_MS,
+  max: CONSTANTS.RATE_LIMIT.API_MAX_REQUESTS,
   standardHeaders: true, 
   legacyHeaders: false, 
   message: { error: 'Too many requests, please try again later.' }
 });
 
 export const ttsLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10, // Strict limit for expensive AI audio generation
+  windowMs: CONSTANTS.RATE_LIMIT.WINDOW_MS,
+  max: CONSTANTS.RATE_LIMIT.TTS_MAX_REQUESTS,
   standardHeaders: true, 
   legacyHeaders: false,
   message: { error: 'Audio generation limit reached. Please wait a while.' }
