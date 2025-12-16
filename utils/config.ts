@@ -12,22 +12,24 @@ const envSchema = z.object({
   
   // Database & Cache
   MONGODB_URI: z.string().url(),
-  REDIS_URL: z.string().optional(), // Optional but recommended
+  REDIS_URL: z.string().optional(),
 
-  // Cloudinary (Required)
+  // Cloudinary
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
   CLOUDINARY_API_KEY: z.string().min(1),
   CLOUDINARY_API_SECRET: z.string().min(1),
 
   // AI & News Keys
-  // We check for at least one Gemini key
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_API_KEY_1: z.string().optional(),
-  
   ELEVENLABS_API_KEY: z.string().optional(),
 
   // Firebase
   FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
+  
+  // URLs & Secrets
+  FRONTEND_URL: z.string().url().default('https://thegamut.in'),
+  ADMIN_SECRET: z.string().optional(), // For protecting manual jobs
 });
 
 // Parse and validate
@@ -39,18 +41,19 @@ const parseConfig = () => {
     result.error.issues.forEach((issue) => {
       logger.error(`   -> ${issue.path.join('.')}: ${issue.message}`);
     });
-    process.exit(1); // Stop server if config is bad
+    process.exit(1);
   }
   return result.data;
 };
 
 const env = parseConfig();
 
-// Export the structured config object
 const config = {
   port: env.PORT,
   mongoUri: env.MONGODB_URI,
   redisUrl: env.REDIS_URL,
+  frontendUrl: env.FRONTEND_URL,
+  adminSecret: env.ADMIN_SECRET || 'change_this_secret_locally', 
   
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
@@ -59,7 +62,6 @@ const config = {
   },
 
   keys: {
-    // Logic to pick whichever key is available
     gemini: env.GEMINI_API_KEY || env.GEMINI_API_KEY_1 || '',
     elevenLabs: env.ELEVENLABS_API_KEY || '',
   },
