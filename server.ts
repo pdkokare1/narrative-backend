@@ -11,7 +11,6 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import './types/express.d.ts'; // Ensure types are loaded
 
 // Services & Jobs
 import queueManager from './jobs/queueManager';
