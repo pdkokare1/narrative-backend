@@ -1,12 +1,10 @@
 // jobs/queueManager.ts
-import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
-import newsFetcher from './newsFetcher';
-import statsService from '../services/statsService';
+import { Queue, ConnectionOptions } from 'bullmq';
 import logger from '../utils/logger';
 import config from '../utils/config';
 
 // --- 1. Redis Connection Config ---
-const connectionConfig = config.redisOptions; 
+const connectionConfig = config.redisOptions;
 const isRedisConfigured = !!connectionConfig;
 
 if (!isRedisConfigured) {
@@ -15,7 +13,6 @@ if (!isRedisConfigured) {
 
 // --- 2. Initialize Queue (Producer) ---
 let newsQueue: Queue | null = null;
-let newsWorker: Worker | null = null;
 
 if (isRedisConfigured && connectionConfig) {
     try {
@@ -35,98 +32,42 @@ if (isRedisConfigured && connectionConfig) {
     }
 }
 
-// --- 3. Worker Starter (Consumer) ---
-const startWorker = () => {
-    if (!isRedisConfigured || !connectionConfig) {
-        logger.error("❌ Cannot start worker: Redis not configured.");
-        return;
-    }
-    if (newsWorker) return; 
-
-    try {
-        newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
-            
-            // --- A. Maintenance Jobs ---
-            if (job.name === 'update-trending') {
-                logger.info(`👷 Job: Updating Trending Topics...`);
-                await statsService.updateTrendingTopics();
-                return { status: 'completed' };
-            }
-
-            // --- B. Feed Fetcher (The Fan-Out) ---
-            if (job.name === 'fetch-feed' || job.name === 'scheduled-news-fetch' || job.name === 'manual-fetch') {
-                logger.info(`👷 Job: Fetching Feed...`);
-                const articles = await newsFetcher.fetchFeed();
-
-                if (articles.length > 0 && newsQueue) {
-                    const jobs = articles.map(article => ({
-                        name: 'process-article',
-                        data: article,
-                        opts: { 
-                            removeOnComplete: true, 
-                            attempts: 3 
-                        }
-                    }));
-
-                    await newsQueue.addBulk(jobs);
-                    logger.info(`✨ Dispatched ${articles.length} individual article jobs.`);
-                }
-                return { status: 'dispatched', count: articles.length };
-            }
-
-            // --- C. Article Processor ---
-            if (job.name === 'process-article') {
-                return await newsFetcher.processArticleJob(job.data);
-            }
-
-        }, { 
-            connection: connectionConfig as ConnectionOptions,
-            concurrency: Number(process.env.WORKER_CONCURRENCY) || 5, // Extracted to Env
-            limiter: { max: 10, duration: 1000 } 
-        });
-
-        newsWorker.on('completed', (job: Job) => {
-            if (job.name === 'fetch-feed' || job.name === 'update-trending') {
-                logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
-            }
-        });
-
-        newsWorker.on('failed', (job: Job | undefined, err: Error) => {
-            logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
-        });
-
-        logger.info("✅ Background Worker Started & Listening...");
-    } catch (err: any) {
-        logger.error(`❌ Failed to start Worker: ${err.message}`);
-    }
-};
-
 const queueManager = {
     /**
-     * SMART ADD: Checks if a job is already waiting/active before adding.
-     * Prevents "Startup Storms" where 3 replicas add 3 identical jobs.
+     * Adds a single job to the queue.
+     * @param name - The name of the job (e.g., 'fetch-feed')
+     * @param data - Data to pass to the worker
+     * @param jobId - (Optional) A unique ID. If a job with this ID already exists, this add will be ignored.
      */
-    addFetchJob: async (name: string = 'fetch-feed', data: any = {}) => {
+    addFetchJob: async (name: string = 'fetch-feed', data: any = {}, jobId?: string) => {
         if (!newsQueue) return null;
         try {
-            // Check concurrency: Is this job already running?
-            const counts = await newsQueue.getJobCounts('active', 'waiting', 'delayed');
-            
-            // If the queue is busy with feed fetching (assuming it's the main task), 
-            // skip adding another immediate fetch to prevent duplicates.
-            // Note: This is a simple heuristic. For stricter locking, we'd check specific Job IDs.
-            if (counts.active > 5 || counts.waiting > 10) {
-                 logger.warn(`⚠️ Queue busy (Active: ${counts.active}, Waiting: ${counts.waiting}). Skipping ${name} request.`);
-                 return null;
+            const options: any = {};
+            if (jobId) {
+                options.jobId = jobId; // deduplication key
             }
 
-            return await newsQueue.add(name, data);
+            return await newsQueue.add(name, data, options);
         } catch (err: any) {
             logger.error(`❌ Failed to add job: ${err.message}`);
             return null;
         }
     },
     
+    /**
+     * Adds multiple jobs at once (Fan-Out).
+     * Used by the worker to split 1 feed into 10 article processing jobs.
+     */
+    addBulk: async (jobs: { name: string; data: any; opts?: any }[]) => {
+        if (!newsQueue) return null;
+        try {
+            return await newsQueue.addBulk(jobs);
+        } catch (err: any) {
+            logger.error(`❌ Failed to add bulk jobs: ${err.message}`);
+            return null;
+        }
+    },
+
     /**
      * Schedules a recurring job using Cron syntax.
      */
@@ -146,7 +87,6 @@ const queueManager = {
                     await newsQueue.removeRepeatableByKey(existing.key);
                     logger.info(`🔄 Updating schedule for: ${name}`);
                 } else {
-                    // Schedule exists and is correct. Do nothing.
                     return existing;
                 }
             }
@@ -180,17 +120,9 @@ const queueManager = {
         }
     },
 
-    startWorker, 
-
     shutdown: async () => {
-        logger.info('🛑 Shutting down Job Queue & Workers...');
-        try {
-            if (newsWorker) await newsWorker.close();
-            if (newsQueue) await newsQueue.close();
-            logger.info('✅ Job Queue shutdown complete.');
-        } catch (err: any) {
-            logger.error(`⚠️ Error during Queue shutdown: ${err.message}`);
-        }
+        if (newsQueue) await newsQueue.close();
+        logger.info('✅ Job Queue Producer shutdown complete.');
     }
 };
 
