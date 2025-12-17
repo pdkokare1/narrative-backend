@@ -23,15 +23,17 @@ const envSchema = z.object({
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_API_KEY_1: z.string().optional(),
   ELEVENLABS_API_KEY: z.string().optional(),
+  
+  // AI Model Configuration (Centralized Control)
+  AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
+  AI_MODEL_PRO: z.string().default('gemini-2.0-flash'),
 
   // Firebase
   // Accepts JSON string OR Base64 encoded JSON (better for some env vars)
   FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
   
-  // URLs & Secrets
+  // URLs
   FRONTEND_URL: z.string().url().default('https://thegamut.in'),
-  // Force a strong secret in production
-  ADMIN_SECRET: z.string().default('change_this_secret_locally'), 
 });
 
 // Parse and validate
@@ -73,7 +75,6 @@ const config = {
   mongoUri: env.MONGODB_URI,
   redisUrl: env.REDIS_URL,
   frontendUrl: env.FRONTEND_URL,
-  adminSecret: env.ADMIN_SECRET, 
   isProduction: env.NODE_ENV === 'production',
   
   cloudinary: {
@@ -86,16 +87,17 @@ const config = {
     gemini: env.GEMINI_API_KEY || env.GEMINI_API_KEY_1 || '',
     elevenLabs: env.ELEVENLABS_API_KEY || '',
   },
+  
+  // New Centralized AI Config
+  aiModels: {
+    embedding: env.AI_MODEL_EMBEDDING,
+    pro: env.AI_MODEL_PRO,
+  },
 
   firebase: {
     serviceAccount: getFirebaseConfig(),
   }
 };
-
-// Security Check for Production
-if (config.isProduction && config.adminSecret === 'change_this_secret_locally') {
-    logger.warn('⚠️  SECURITY WARNING: Using default ADMIN_SECRET in production! Please update your environment variables.');
-}
 
 logger.info('✅ Configuration Validated & Loaded');
 
