@@ -12,7 +12,7 @@ export const startScheduler = async () => {
   // --- 1. News Fetch Job (Every 2 Hours) ---
   // Cron Expression: "0 */2 * * *" -> At minute 0 past every 2nd hour.
   await queueManager.scheduleRepeatableJob(
-    'scheduled-news-fetch', 
+    'fetch-feed', 
     '0 */2 * * *', 
     { type: 'auto-fetch', source: 'scheduler' }
   );
@@ -27,9 +27,9 @@ export const startScheduler = async () => {
 
   // --- 3. Startup Check ---
   // Optional: Trigger an immediate fetch 5 seconds after boot if it's a fresh deployment.
-  // We use a timeout to let the DB connection settle first.
   setTimeout(() => {
     logger.info('🚀 Startup: Triggering initial News Fetch...');
-    queueManager.addFetchJob('manual-fetch', { reason: 'startup' });
+    // We use the new job name 'fetch-feed'
+    queueManager.addFetchJob('fetch-feed', { reason: 'startup' });
   }, 5000);
 };
