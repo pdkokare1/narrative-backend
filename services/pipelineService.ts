@@ -14,9 +14,7 @@ class PipelineService {
     // Helper: Check for duplicates
     private async isDuplicate(url: string): Promise<boolean> {
         if (!url) return true;
-        // 1. Redis Cache Check (Fast)
         if (await redisClient.sIsMember('processed_urls', url)) return true;
-        // 2. DB Check (Reliable)
         if (await Article.exists({ url })) {
             await redisClient.sAdd('processed_urls', url); 
             return true;
@@ -24,38 +22,39 @@ class PipelineService {
         return false;
     }
 
-    // Main Logic: Process one article completely
     async processSingleArticle(article: any): Promise<string> {
         try {
             if (!article?.url || !article?.title) return 'ERROR_INVALID';
             
-            // 1. Exact Duplicate Check (URL)
+            // 1. Instant Duplicate Check
             if (await this.isDuplicate(article.url)) return 'DUPLICATE_URL';
 
-            // --- COST SAVER: Pre-Flight Checks ---
-            // Don't waste AI tokens on empty/short content
+            // 2. Content Length Check
             const contentLen = (article.description || "").length + (article.content || "").length;
-            if (contentLen < 50) {
-                logger.warn(`Skipping short content: ${article.title}`);
-                return 'JUNK_CONTENT';
-            }
+            if (contentLen < 50) return 'JUNK_CONTENT';
 
-            // 2. Gatekeeper (Junk Filter)
-            const gatekeeperResult = await gatekeeper.evaluateArticle(article);
-            if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
+            // 3. Gatekeeper LOCAL Check (Free)
+            // We do NOT run the AI check yet. We just check keywords/banned domains.
+            const localCheck = await gatekeeper.evaluateArticle(article, true); // true = localOnly
+            if (localCheck.isJunk) return 'JUNK_CONTENT';
 
-            // --- STAGE 1: Fuzzy Match (Free & Fast) ---
+            // --- STAGE 1: Fuzzy Match (Free) ---
+            // If we find a match here, we SKIP the expensive Gatekeeper AI check
             let existingMatch = await clusteringService.findSimilarHeadline(article.title);
-            let usedFuzzyMatch = false;
+            let usedFuzzyMatch = !!existingMatch;
 
-            if (existingMatch) {
-                usedFuzzyMatch = true;
+            // --- STAGE 2: Gatekeeper AI Check (Paid) ---
+            // Only run this if we didn't find a fuzzy match (because if we matched, it's valid news)
+            let recommendedModel = 'gemini-1.5-pro';
+            
+            if (!existingMatch) {
+                const gatekeeperResult = await gatekeeper.evaluateArticle(article, false); // false = full check
+                if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
+                recommendedModel = gatekeeperResult.recommendedModel;
             }
 
+            // --- STAGE 3: Semantic Search (Paid) ---
             let embedding: number[] | null = null;
-
-            // --- STAGE 2: Semantic Search (Paid) ---
-            // Only create embedding if fuzzy match failed
             if (!existingMatch) {
                 const textToEmbed = `${article.title}. ${article.description}`;
                 embedding = await aiService.createEmbedding(textToEmbed);
@@ -63,31 +62,23 @@ class PipelineService {
                 if (embedding) {
                     existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
                 } else {
-                    // CRITICAL FIX: If embedding fails (API Error), do NOT proceed.
-                    // If we proceed, we might create a duplicate because we couldn't check semantics.
-                    // Throwing error here forces the Job Queue to retry this article later.
-                    throw new Error('Embedding generation failed (Network/API). Retrying article later.');
+                    throw new Error('Embedding generation failed. Retrying article later.');
                 }
             }
 
             // --- Analysis Logic ---
             let analysis: Partial<IArticle>;
             let isSemanticSkip = false;
-
-            // Check Freshness & Validity of the match
             let isMatchFresh = false;
-            let isMatchValid = false;
 
             if (existingMatch) {
                 const hoursDiff = (new Date().getTime() - new Date(existingMatch.createdAt!).getTime()) / (1000 * 60 * 60);
                 isMatchFresh = hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS;
-                isMatchValid = !!existingMatch.summary && existingMatch.summary !== "Summary Unavailable";
             }
 
-            if (existingMatch && isMatchFresh && isMatchValid) {
-                // INHERITANCE (Free)
-                const matchType = usedFuzzyMatch ? "Fuzzy" : "Semantic";
-                logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match (ID: ${existingMatch._id})`);
+            // INHERITANCE (Free)
+            if (existingMatch && isMatchFresh) {
+                logger.info(`💰 Cost Saver! Inheriting analysis from match (ID: ${existingMatch._id})`);
                 isSemanticSkip = true;
                 
                 analysis = {
@@ -110,13 +101,10 @@ class PipelineService {
                 };
             } else {
                 // FRESH GENERATION (Paid)
-                if (existingMatch) {
-                    logger.info(`🔄 Match found but stale/invalid (${existingMatch.createdAt}). Regenerating AI Analysis.`);
-                }
-                analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
+                analysis = await aiService.analyzeArticle(article, recommendedModel);
             }
 
-            // 5. Construct & Save
+            // 4. Construct & Save
             const newArticleData: Partial<IArticle> = {
                 headline: article.title,
                 summary: analysis.summary || "Summary Unavailable",
@@ -125,7 +113,6 @@ class PipelineService {
                 politicalLean: analysis.politicalLean || "Not Applicable",
                 url: article.url,
                 imageUrl: article.image, 
-                // SAFETY FIX: Ensure date is valid, default to now if missing
                 publishedAt: article.publishedAt ? new Date(article.publishedAt) : new Date(),
                 analysisType: analysis.analysisType || 'Full',
                 sentiment: analysis.sentiment || 'Neutral',
@@ -160,14 +147,8 @@ class PipelineService {
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
         } catch (error: any) {
-            // Log full error for debugging
             logger.error(`❌ Pipeline Error for "${article.title}": ${error.message}`);
-            
-            // Re-throw if it's a critical infrastructure error so the Job Queue knows to retry
-            if (error.message.includes('Embedding') || error.message.includes('Connection')) {
-                throw error;
-            }
-            
+            if (error.message.includes('Embedding') || error.message.includes('Connection')) throw error;
             return 'ERROR_PIPELINE';
         }
     }
