@@ -1,16 +1,11 @@
-import { Request } from 'express';
+// types/express.d.ts
+import { DecodedIdToken } from 'firebase-admin/auth';
 
-// Extend the global Express Request interface
 declare global {
   namespace Express {
     interface Request {
-      user?: {
-        uid: string;
-        email?: string;
-        [key: string]: any; 
-      };
+      // Improved: Now specifically uses Firebase's official user definition
+      user?: DecodedIdToken;
     }
   }
 }
-
-export {};
