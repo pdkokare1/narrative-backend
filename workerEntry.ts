@@ -13,7 +13,24 @@ import dbLoader from './utils/dbLoader';
 import { startWorker, shutdownWorker } from './jobs/worker';
 import { startScheduler } from './jobs/scheduler';
 
-// --- Firebase Init (Needed for some background tasks) ---
+// --- 1. Start Health Check Server IMMEDIATELY ---
+// This ensures Railway deployment passes even if DB takes time to connect
+const port = process.env.PORT || 8080;
+const server = http.createServer((req, res) => {
+    if (req.url === '/health' || req.url === '/') {
+        res.writeHead(200);
+        res.end('Worker Running');
+    } else {
+        res.writeHead(404);
+        res.end();
+    }
+});
+
+server.listen(port, () => {
+    logger.info(`🏥 Worker Health Check Server listening on port ${port}`);
+});
+
+// --- 2. Firebase Init ---
 try {
   if (config.firebase.serviceAccount) {
     if (!admin.apps.length) {
@@ -27,69 +44,54 @@ try {
   logger.error(`Firebase Admin Init Error: ${error.message}`);
 }
 
+// --- 3. Start Background Services ---
 const startBackgroundService = async () => {
     try {
         logger.info('👷 Starting Background Worker Process...');
 
-        // 1. Connect to Database & Redis
+        // Connect to Database & Redis
         await dbLoader.connect();
 
-        // 2. Start the Job Processor (Consumer)
+        // Start the Job Processor (Consumer)
         startWorker();
 
-        // 3. Start the Scheduler (Producer)
-        // Checks if it needs to trigger new jobs
+        // Start the Scheduler (Producer)
         await startScheduler();
 
         logger.info('✅ Worker & Scheduler are fully operational.');
 
-        // --- NEW: Health Check Server for Railway ---
-        // This prevents Railway from killing the worker for not binding a port.
-        const port = process.env.PORT || 8080;
-        const server = http.createServer((req, res) => {
-            if (req.url === '/health' || req.url === '/') {
-                res.writeHead(200);
-                res.end('Worker Running');
-            } else {
-                res.writeHead(404);
-                res.end();
-            }
-        });
-
-        server.listen(port, () => {
-            logger.info(`🏥 Worker Health Check Server listening on port ${port}`);
-        });
-
-        // --- Graceful Shutdown ---
-        const gracefulShutdown = async () => {
-            logger.info('🛑 Worker received Kill Signal...');
-            
-            const forceExit = setTimeout(() => {
-                logger.error('🛑 Force Shutdown (Timeout)');
-                process.exit(1);
-            }, 10000);
-
-            try {
-                // Close HTTP server first
-                server.close();
-                await shutdownWorker();
-                await dbLoader.disconnect();
-                clearTimeout(forceExit);
-                logger.info('✅ Worker resources released. Exiting.');
-                process.exit(0);
-            } catch (err: any) {
-                logger.error(`⚠️ Error during worker shutdown: ${err.message}`);
-                process.exit(1);
-            }
-        };
-
-        process.on('SIGTERM', gracefulShutdown);
-        process.on('SIGINT', gracefulShutdown);
-
     } catch (err: any) {
         logger.error(`❌ Critical Worker Startup Error: ${err.message}`);
+        // We exit here because if the DB fails, the worker is useless. 
+        // Railway will restart the process.
         process.exit(1);
     }
 };
 
 startBackgroundService();
+
+// --- Graceful Shutdown ---
+const gracefulShutdown = async () => {
+    logger.info('🛑 Worker received Kill Signal...');
+    
+    const forceExit = setTimeout(() => {
+        logger.error('🛑 Force Shutdown (Timeout)');
+        process.exit(1);
+    }, 10000);
+
+    try {
+        // Close HTTP server first
+        server.close();
+        await shutdownWorker();
+        await dbLoader.disconnect();
+        clearTimeout(forceExit);
+        logger.info('✅ Worker resources released. Exiting.');
+        process.exit(0);
+    } catch (err: any) {
+        logger.error(`⚠️ Error during worker shutdown: ${err.message}`);
+        process.exit(1);
+    }
+};
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
