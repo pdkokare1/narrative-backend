@@ -11,7 +11,8 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import redisClient, { initRedis } from './utils/redisClient';
+import redisClient from './utils/redisClient';
+import dbLoader from './utils/dbLoader'; // Import new centralized loader
 
 // Services & Middleware
 import emergencyService from './services/emergencyService';
@@ -74,7 +75,6 @@ app.get('/health', async (req: Request, res: Response) => {
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
     // Always return 200 if the web server is running and Mongo is connected (or connecting)
-    // This prevents "Flapping" where a temporary Redis blip kills the deployment.
     res.status(200).json({ 
         status: 'OK', 
         mongo: mongoStatus, 
@@ -111,13 +111,8 @@ const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
-        // 1. Connect MongoDB (Blocking - We need DB to function)
-        if (config.mongoUri) {
-            await mongoose.connect(config.mongoUri);
-            logger.info('✅ MongoDB Connected');
-        } else {
-            throw new Error("MongoDB URI missing in config");
-        }
+        // 1. Unified Database & Redis Connection
+        await dbLoader.connect();
         
         // 2. Start HTTP Server (Blocking - Get this UP fast!)
         const PORT = config.port || 3001;
@@ -129,11 +124,11 @@ const startServer = async () => {
 
         // 3. Initialize Background Services (Non-blocking / Async)
         // We let the server respond to requests while these connect in the background.
-        // The Rate Limiter will gracefully handle missing Redis.
         (async () => {
             try {
                 logger.info('⏳ Initializing Background Services...');
-                await initRedis();
+                // Note: dbLoader already initialized Redis, so we don't need to call initRedis() here.
+                
                 await Promise.all([
                     emergencyService.initializeEmergencyContacts(),
                     gatekeeperService.initialize()
@@ -157,8 +152,9 @@ const startServer = async () => {
             server.close(async () => {
                 logger.info('Http server closed.');
                 try {
-                    await redisClient.quit();
-                    await mongoose.connection.close(false);
+                    // Use the centralized disconnect
+                    await dbLoader.disconnect();
+                    
                     clearTimeout(forceExit);
                     logger.info('✅ Resources released. Exiting.');
                     process.exit(0);
