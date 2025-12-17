@@ -60,6 +60,17 @@ const redisClient = {
         }
     },
 
+    // Helper: Multi Get (Batch Optimization)
+    mGet: async (keys: string[]): Promise<(string | null)[]> => {
+        if (!client || !client.isReady || keys.length === 0) return [];
+        try {
+            return await client.mGet(keys);
+        } catch (e: any) {
+            logger.warn(`Redis mGet Error: ${e.message}`);
+            return new Array(keys.length).fill(null);
+        }
+    },
+
     // Helper: Safe Set
     set: async (key: string, data: any, ttlSeconds: number = 900): Promise<void> => {
         if (!client || !client.isReady) return;
@@ -118,7 +129,7 @@ const redisClient = {
         }
     },
 
-    // Direct Access (Important for libraries like rate-limit-redis)
+    // Direct Access (Important for libraries like rate-limit-redis or bulk ops)
     getClient: () => client,
     isReady: () => client?.isReady ?? false
 };
