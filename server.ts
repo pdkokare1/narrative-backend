@@ -12,7 +12,7 @@ import * as admin from 'firebase-admin';
 import config from './utils/config';
 import logger from './utils/logger';
 import redisClient from './utils/redisClient';
-import dbLoader from './utils/dbLoader'; // Import new centralized loader
+import dbLoader from './utils/dbLoader';
 
 // Services & Middleware
 import emergencyService from './services/emergencyService';
@@ -46,20 +46,9 @@ app.use(mongoSanitize());
 app.use(hpp());
 
 // --- 3. CORS Configuration ---
-const allowedOrigins = [
-    config.frontendUrl,
-    'https://thegamut.in', 
-    'https://www.thegamut.in', 
-    'https://api.thegamut.in',
-    'http://localhost:3000'
-];
-
-if (process.env.CORS_ORIGINS) {
-    allowedOrigins.push(...process.env.CORS_ORIGINS.split(','));
-}
-
+// Improved: Uses centralized list from config (includes env variables)
 app.use(cors({
-  origin: allowedOrigins,
+  origin: config.corsOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck', 'x-admin-secret'],
   credentials: true
@@ -74,7 +63,7 @@ app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
-    // Always return 200 if the web server is running and Mongo is connected (or connecting)
+    // Always return 200 if the web server is running
     res.status(200).json({ 
         status: 'OK', 
         mongo: mongoStatus, 
@@ -114,7 +103,7 @@ const startServer = async () => {
         // 1. Unified Database & Redis Connection
         await dbLoader.connect();
         
-        // 2. Start HTTP Server (Blocking - Get this UP fast!)
+        // 2. Start HTTP Server
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
@@ -122,12 +111,10 @@ const startServer = async () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 3. Initialize Background Services (Non-blocking / Async)
-        // We let the server respond to requests while these connect in the background.
+        // 3. Initialize Background Services (Non-blocking)
         (async () => {
             try {
                 logger.info('⏳ Initializing Background Services...');
-                // Note: dbLoader already initialized Redis, so we don't need to call initRedis() here.
                 
                 await Promise.all([
                     emergencyService.initializeEmergencyContacts(),
@@ -136,7 +123,6 @@ const startServer = async () => {
                 logger.info('✨ All Background Services Ready');
             } catch (bgError: any) {
                 logger.error(`⚠️ Background Service Warning: ${bgError.message}`);
-                // Do not exit process; let the API run even if background tasks fail
             }
         })();
 
@@ -152,9 +138,7 @@ const startServer = async () => {
             server.close(async () => {
                 logger.info('Http server closed.');
                 try {
-                    // Use the centralized disconnect
                     await dbLoader.disconnect();
-                    
                     clearTimeout(forceExit);
                     logger.info('✅ Resources released. Exiting.');
                     process.exit(0);
