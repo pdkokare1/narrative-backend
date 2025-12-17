@@ -11,7 +11,7 @@ const router = express.Router();
 
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req: Request, res: Response) => {
-    const profile = await Profile.findOne({ userId: req.user.uid })
+    const profile = await Profile.findOne({ userId: req.user!.uid })
       .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled currentStreak badges') 
       .lean();
     
@@ -25,7 +25,7 @@ router.get('/me', asyncHandler(async (req: Request, res: Response) => {
 // --- 2. Create / Re-Link Profile ---
 router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Request, res: Response) => {
     const { username } = req.body;
-    const { uid, email } = req.user; 
+    const { uid, email } = req.user!; 
     const cleanUsername = username.trim();
 
     // A. Check if Username is taken by SOMEONE ELSE
@@ -60,7 +60,7 @@ router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Reque
 // --- 3. Update Profile (NEW) ---
 router.put('/me', validate(schemas.updateProfile), asyncHandler(async (req: Request, res: Response) => {
     const { username, notificationsEnabled } = req.body;
-    const userId = req.user.uid;
+    const userId = req.user!.uid;
 
     const updates: any = {};
 
@@ -97,7 +97,7 @@ router.post('/save-token', asyncHandler(async (req: Request, res: Response) => {
     if (!token) throw new Error('Token required');
 
     await Profile.findOneAndUpdate(
-        { userId: req.user.uid },
+        { userId: req.user!.uid },
         { fcmToken: token, notificationsEnabled: true }
     );
 
@@ -106,7 +106,7 @@ router.post('/save-token', asyncHandler(async (req: Request, res: Response) => {
 
 // --- 5. Get Statistics (Charts) ---
 router.get('/stats', asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.user.uid;
+    const userId = req.user!.uid;
     
     // Aggregation pipeline to fetch user stats efficiently
     const stats = await ActivityLog.aggregate([
@@ -168,7 +168,7 @@ router.get('/stats', asyncHandler(async (req: Request, res: Response) => {
 
 // --- 6. DELETE Account (Danger Zone) ---
 router.delete('/', asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.user.uid;
+    const userId = req.user!.uid;
 
     console.log(`🗑️ Deleting account for: ${userId}`);
 
