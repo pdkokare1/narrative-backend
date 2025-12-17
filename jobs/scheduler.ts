@@ -25,9 +25,13 @@ export const startScheduler = async () => {
 
   // --- 3. Startup Check ---
   // Triggers an initial fetch 5 seconds after boot.
-  // The queueManager's smart-check prevents this from duplicating if multiple workers exist.
+  // CRITICAL FIX: 'startup-init' ID ensures this only runs ONCE across all replicas.
   setTimeout(() => {
     logger.info('🚀 Startup: Triggering initial News Fetch check...');
-    queueManager.addFetchJob('fetch-feed', { reason: 'startup' });
+    queueManager.addFetchJob(
+        'fetch-feed', 
+        { reason: 'startup' }, 
+        'startup-init' 
+    );
   }, 5000);
 };
