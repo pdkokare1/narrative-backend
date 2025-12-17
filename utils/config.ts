@@ -24,6 +24,10 @@ const envSchema = z.object({
   GEMINI_API_KEY_1: z.string().optional(),
   ELEVENLABS_API_KEY: z.string().optional(),
   
+  // Admin Secret (Added to fix build error)
+  // Ensure you have ADMIN_SECRET set in your Railway variables
+  ADMIN_SECRET: z.string().default('admin-secret'),
+  
   // AI Model Configuration (Centralized Control)
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
   AI_MODEL_PRO: z.string().default('gemini-2.0-flash'),
@@ -76,6 +80,7 @@ const config = {
   redisUrl: env.REDIS_URL,
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
+  adminSecret: env.ADMIN_SECRET, // Added this line to fix the error
   
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
