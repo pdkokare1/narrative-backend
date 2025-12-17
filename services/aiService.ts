@@ -13,7 +13,6 @@ const EMBEDDING_MODEL = config.aiModels.embedding;
 const PRO_MODEL = config.aiModels.pro;
 
 // --- STRICT GEMINI SCHEMAS ---
-// This forces the AI to return data in this EXACT format, preventing parsing errors.
 const BASIC_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -73,7 +72,7 @@ class AIService {
           maxOutputTokens: 4096 
         }
       }, {
-          timeout: 60000 // 60s timeout for stability
+          timeout: 60000 
       });
 
       KeyManager.reportSuccess(apiKey);
@@ -96,6 +95,38 @@ class AIService {
     }
   }
 
+  // --- NEW: Batch Embedding for High Efficiency ---
+  async createBatchEmbeddings(texts: string[]): Promise<number[][] | null> {
+    try {
+        const apiKey = await KeyManager.getKey('GEMINI');
+        
+        // Prepare batch request (Gemini Limit: 100 per call, but we should safeguard)
+        const safeBatch = texts.slice(0, 100); 
+
+        const requests = safeBatch.map(text => ({
+            model: `models/${EMBEDDING_MODEL}`,
+            content: { parts: [{ text: cleanText(text).substring(0, 2000) }] }
+        }));
+
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
+        
+        const response = await apiClient.post(url, { requests }, {
+            timeout: 20000 
+        });
+
+        KeyManager.reportSuccess(apiKey);
+
+        if (response.data.embeddings) {
+            return response.data.embeddings.map((e: any) => e.values);
+        }
+        return null;
+
+    } catch (error: any) {
+        logger.error(`Batch Embedding Error: ${error.message}`);
+        return null;
+    }
+  }
+
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
@@ -107,7 +138,7 @@ class AIService {
             model: `models/${EMBEDDING_MODEL}`,
             content: { parts: [{ text: clean }] }
         }, {
-            timeout: 10000 // 10s timeout
+            timeout: 10000 
         });
 
         KeyManager.reportSuccess(apiKey);
@@ -123,7 +154,6 @@ class AIService {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates returned from AI');
         
-        // With Structured Outputs, the text part IS the JSON.
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new Error('Empty response from AI');
 
@@ -143,7 +173,6 @@ class AIService {
         parsed.analysisType = 'Full';
         parsed.trustScore = 0;
         
-        // Calculate Trust Score safely
         const credibility = Number(parsed.credibilityScore) || 0;
         const reliability = Number(parsed.reliabilityScore) || 0;
         
