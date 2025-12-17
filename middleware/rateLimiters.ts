@@ -11,25 +11,21 @@ const createStore = () => {
   // If no Redis URL is configured, use Memory Store
   if (!config.redisUrl) return undefined;
 
-  const client = redisClient.getClient();
-
-  // FIX: Check if Redis is actually connected and ready.
-  // If not, we fall back to MemoryStore (return undefined) to prevent the app from crashing.
-  if (!client || !redisClient.isReady()) {
-    logger.warn('Redis not ready during rate limiter init. Falling back to MemoryStore for stability.');
-    return undefined;
-  }
+  // We intentionally DO NOT check for client connection here immediately.
+  // The client connects asynchronously during server startup.
+  // We use a dynamic getter in sendCommand to find the client when it's ready.
 
   return new RedisStore({
     // @ts-ignore - Types compatibility adjustment
     sendCommand: async (...args: string[]) => {
       try {
-        // Double-check readiness before sending command
+        const client = redisClient.getClient(); // Fetch the current client instance
+        // Check readiness at runtime (when request comes in)
         if (client && redisClient.isReady()) {
            return await client.sendCommand(args);
         }
-        // If connection dropped after init, we return null.
-        // The library might handle this or throw, but we've avoided the startup crash.
+        // If Redis isn't ready yet, returning null allows express-rate-limit 
+        // to handle it (likely pass-through or fail-open depending on config)
         return null; 
       } catch (e) {
         logger.error('Redis command failed in rate limiter', e);
