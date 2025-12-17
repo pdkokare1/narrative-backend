@@ -5,34 +5,6 @@ import config from './config';
 
 let client: RedisClientType | null = null;
 
-/**
- * Helper: Parses the REDIS_URL into a config object.
- * Centralizes logic so QueueManager and RedisClient don't have to guess.
- */
-export const parseRedisConfig = () => {
-    if (!config.redisUrl) return null;
-    
-    try {
-        const url = new URL(config.redisUrl);
-        const connectionConfig: any = {
-            host: url.hostname,
-            port: Number(url.port),
-            password: url.password,
-            username: url.username,
-        };
-
-        // Handle rediss:// protocol (TLS) for production (Railway/Render/AWS)
-        if (url.protocol === 'rediss:') {
-            connectionConfig.tls = { rejectUnauthorized: false };
-        }
-
-        return connectionConfig;
-    } catch (e: any) {
-        logger.error(`❌ Error parsing Redis URL: ${e.message}`);
-        return null;
-    }
-};
-
 export const initRedis = async () => {
     // If client exists and is ready, return it immediately
     if (client && (client.isOpen || client.isReady)) {
@@ -40,26 +12,23 @@ export const initRedis = async () => {
     }
 
     // Check configuration
-    if (!config.redisUrl) {
-        logger.warn("⚠️ Redis URL not found in config. Caching and Background Jobs will be disabled.");
+    if (!config.redisOptions) {
+        logger.warn("⚠️ Redis URL not set. Caching and Background Jobs will be disabled.");
         return null;
     }
 
     try {
         client = createClient({
-            url: config.redisUrl,
+            ...config.redisOptions, // Use centralized config
             socket: {
-                // Exponential backoff for reconnects
+                ...config.redisOptions.socket, // Preserve socket settings if any
                 reconnectStrategy: (retries) => Math.min(retries * 100, 5000),
-                // FAIL FAST: Only wait 5 seconds for initial connection
                 connectTimeout: 5000,
-                // Keep-alive to prevent Railway/Cloud closing idle connections
                 keepAlive: 10000 
             }
         });
 
         client.on('error', (err) => {
-            // Log error but don't crash
             logger.warn(`Redis Client Warning: ${err.message}`);
         });
 
@@ -71,7 +40,6 @@ export const initRedis = async () => {
 
     } catch (err: any) {
         logger.error(`❌ Redis Initialization Failed: ${err.message}`);
-        // Ensure client is null so we don't try to use a broken client
         client = null;
         return null;
     }
@@ -89,13 +57,12 @@ const redisClient = {
         }
     },
 
-    // Helper: Multi Get (Batch Optimization)
+    // Helper: Multi Get
     mGet: async (keys: string[]): Promise<(string | null)[]> => {
         if (!client || !client.isReady || keys.length === 0) return [];
         try {
             return await client.mGet(keys);
         } catch (e: any) {
-            logger.warn(`Redis mGet Error: ${e.message}`);
             return new Array(keys.length).fill(null);
         }
     },
@@ -110,31 +77,21 @@ const redisClient = {
         }
     },
 
-    /**
-     * NEW: Smart Cache Wrapper
-     * Checks cache -> Returns if exists -> Else fetches -> Saves -> Returns
-     */
+    // Helper: Smart Cache Wrapper
     getOrFetch: async <T>(key: string, fetcher: () => Promise<T>, ttlSeconds: number = 900): Promise<T> => {
-        // 1. Try Cache
         if (client && client.isReady) {
             try {
                 const cachedData = await client.get(key);
                 if (cachedData) {
                     return JSON.parse(cachedData) as T;
                 }
-            } catch (err) {
-                // Warning only, proceed to fetch
-            }
+            } catch (err) { /* proceed */ }
         }
 
-        // 2. Fetch Fresh Data
         const freshData = await fetcher();
 
-        // 3. Save to Cache (Fire and forget)
         if (client && client.isReady && freshData) {
-            client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(err => {
-                logger.warn(`Failed to cache key ${key}: ${err.message}`);
-            });
+            client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(() => {});
         }
 
         return freshData;
@@ -164,7 +121,7 @@ const redisClient = {
         } catch (e) { return false; }
     },
 
-    // Helper: Set Add (Sets)
+    // Helper: Set Add
     sAdd: async (key: string, value: string): Promise<number> => {
         if (!client || !client.isReady) return 0;
         try {
@@ -180,7 +137,6 @@ const redisClient = {
         } catch (e) { return false; }
     },
 
-    // System: Graceful Quit
     quit: async (): Promise<void> => {
         if (client) {
             await client.quit();
@@ -188,12 +144,8 @@ const redisClient = {
         }
     },
 
-    // Direct Access (Important for libraries like rate-limit-redis or bulk ops)
     getClient: () => client,
     isReady: () => client?.isReady ?? false,
-    
-    // Export the parser for other files (like QueueManager)
-    parseRedisConfig
 };
 
 export default redisClient;
