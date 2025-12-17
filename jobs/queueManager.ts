@@ -17,7 +17,9 @@ if (config.redisUrl) {
             port: Number(url.port),
             password: url.password,
             username: url.username,
-            maxRetriesPerRequest: null 
+            maxRetriesPerRequest: null,
+            // Keep-alive settings for stability on cloud (Railway/Render)
+            keepAlive: 10000 
         };
         // Handle rediss:// protocol (TLS)
         if (url.protocol === 'rediss:') {
@@ -147,7 +149,7 @@ const queueManager = {
         }
     },
 
-    startWorker, // Exported function, not auto-called
+    startWorker, 
 
     shutdown: async () => {
         logger.info('🛑 Shutting down Job Queue & Workers...');
