@@ -1,9 +1,16 @@
 import { Request } from 'express';
 
+// Extend the global Express Request interface
 declare global {
   namespace Express {
     interface Request {
-      user?: any; // We will improve this type later, but for now this fixes the server.ts error
+      user?: {
+        uid: string;
+        email?: string;
+        [key: string]: any; 
+      };
     }
   }
 }
+
+export {};
