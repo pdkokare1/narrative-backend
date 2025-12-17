@@ -39,7 +39,6 @@ const app = express();
 
 // --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
-    // Exclude health check from logging to keep logs clean
     if (req.url !== '/health') {
         logger.http(`${req.method} ${req.url}`);
     }
@@ -48,9 +47,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.set('trust proxy', 1);
 
-// --- 2. Security Middleware (Hardened) ---
-// Enable standard security headers.
-// We allow cross-origin resources because your Frontend (Vercel) talks to this Backend (Railway).
+// --- 2. Security Middleware ---
 app.use(helmet({ 
   crossOriginResourcePolicy: { policy: "cross-origin" } 
 }));
@@ -79,17 +76,15 @@ app.use(cors({
   credentials: true
 }));
 
-// SECURITY: Limit body size (Cloudinary handles large media)
 app.use(express.json({ limit: '200kb' }));
 
-// --- 4. System Routes (Health Check) ---
+// --- 4. System Routes ---
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
 app.get('/health', async (req: Request, res: Response) => {
-    // Deep Health Check for Railway
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
-    // @ts-ignore
-    const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
+    // Use optional chaining for safety if redisClient is initializing
+    const redisStatus = redisClient.getClient()?.isOpen ? 'UP' : 'DOWN';
     
     if (mongoStatus === 'UP' && redisStatus === 'UP') {
         res.status(200).json({ status: 'OK', mongo: mongoStatus, redis: redisStatus });
@@ -128,7 +123,7 @@ app.use('/api/cluster', clusterRoutes);
 app.use('/api/profile', checkAppCheck, checkAuth, profileRoutes);
 app.use('/api/activity', checkAppCheck, checkAuth, activityRoutes);
 
-// Job/Admin Routes (Manual Triggers)
+// Job/Admin Routes
 app.use('/api/jobs', jobRoutes); 
 
 // Main Article Routes
@@ -161,11 +156,9 @@ const startServer = async () => {
             logger.info(`Server running on http://${HOST}:${PORT}`);
         });
 
-        // --- Graceful Shutdown Logic ---
+        // --- Graceful Shutdown ---
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
-            
-            // Force close after 10s if connections hang
             setTimeout(() => {
                 logger.error('🛑 Force Shutdown (Timeout)');
                 process.exit(1);
@@ -174,7 +167,9 @@ const startServer = async () => {
             server.close(async () => {
                 logger.info('Http server closed.');
                 try {
-                    await queueManager.shutdown(); 
+                    // Note: We do NOT shutdown queueManager here because
+                    // the Worker is running in a different process (workerEntry.ts).
+                    // We only close the Redis Client.
                     await redisClient.quit();
                     await mongoose.connection.close(false);
                     logger.info('✅ Resources released. Exiting.');
