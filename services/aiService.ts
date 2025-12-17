@@ -5,12 +5,13 @@ import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
+import config from '../utils/config'; // Import Config
 import { cleanText } from '../utils/helpers';
 import { IArticle } from '../types';
 
-// Use Environment variables for models
-const EMBEDDING_MODEL = process.env.AI_MODEL_EMBEDDING || "text-embedding-004";
-const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-2.0-flash"; // Recommended: faster & cheaper
+// Use Centralized Configuration for Models
+const EMBEDDING_MODEL = config.aiModels.embedding;
+const PRO_MODEL = config.aiModels.pro;
 
 // --- GEMINI JSON SCHEMAS ---
 
@@ -73,7 +74,7 @@ const ArticleAnalysisSchema = z.object({
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
-    logger.info(`🤖 AI Service Initialized`);
+    logger.info(`🤖 AI Service Initialized (Model: ${PRO_MODEL})`);
   }
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -104,7 +105,6 @@ class AIService {
       // HANDLE SPECIFIC ERRORS
       
       // Let BullMQ handle retries for 429/500 errors automatically.
-      // We just throw the error so the job fails and is retried later.
       if (error.response?.status === 429 || error.response?.status >= 500) {
           if (apiKey) await KeyManager.reportFailure(apiKey, true);
           logger.warn(`⚠️ AI Service Busy/Down (Status ${error.response?.status}). Job will retry automatically.`);
