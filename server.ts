@@ -6,13 +6,14 @@ import compression from 'compression';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import hpp from 'hpp';
-import * as admin from 'firebase-admin';
 
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
 import redisClient from './utils/redisClient';
 import dbLoader from './utils/dbLoader';
+import { initFirebase } from './utils/firebaseInit';
+import { registerShutdownHandler } from './utils/shutdownHandler';
 
 // Services & Middleware
 import emergencyService from './services/emergencyService';
@@ -70,19 +71,8 @@ app.get('/health', async (req: Request, res: Response) => {
     });
 });
 
-// --- 5. Firebase Init ---
-try {
-  if (config.firebase.serviceAccount) {
-    if (!admin.apps.length) {
-      admin.initializeApp({
-        credential: admin.credential.cert(config.firebase.serviceAccount)
-      });
-      logger.info('Firebase Admin SDK Initialized');
-    }
-  }
-} catch (error: any) {
-  logger.error(`Firebase Admin Init Error: ${error.message}`);
-}
+// --- 5. Initialize Firebase (Centralized) ---
+initFirebase();
 
 // --- 6. Global Rate Limiter ---
 app.use('/api/', apiLimiter); 
@@ -108,7 +98,6 @@ const startServer = async () => {
         });
 
         // 2. Unified Database & Redis Connection (Background)
-        // Note: Mongoose buffers requests until connection is ready, so this is safe.
         await dbLoader.connect();
 
         // 3. Initialize Critical Services (Lightweight)
@@ -126,31 +115,22 @@ const startServer = async () => {
             }
         })();
 
-        // --- Graceful Shutdown ---
-        const gracefulShutdown = async () => {
-            logger.info('🛑 Received Kill Signal, shutting down gracefully...');
-            
-            const forceExit = setTimeout(() => {
-                logger.error('🛑 Force Shutdown (Timeout)');
-                process.exit(1);
-            }, 10000);
-
-            server.close(async () => {
-                logger.info('Http server closed.');
-                try {
-                    await dbLoader.disconnect();
-                    clearTimeout(forceExit);
-                    logger.info('✅ Resources released. Exiting.');
-                    process.exit(0);
-                } catch (err: any) {
-                    logger.error(`⚠️ Error during shutdown: ${err.message}`);
-                    process.exit(1);
-                }
-            });
-        };
-
-        process.on('SIGTERM', gracefulShutdown);
-        process.on('SIGINT', gracefulShutdown);
+        // --- Graceful Shutdown (Centralized) ---
+        registerShutdownHandler('API Server', [
+            async () => {
+                return new Promise<void>((resolve, reject) => {
+                    server.close((err) => {
+                        if (err) {
+                            logger.error(`Error closing HTTP server: ${err.message}`);
+                            reject(err);
+                        } else {
+                            logger.info('Http server closed.');
+                            resolve();
+                        }
+                    });
+                });
+            }
+        ]);
 
     } catch (err: any) {
         logger.error(`❌ Critical Startup Error: ${err.message}`);
