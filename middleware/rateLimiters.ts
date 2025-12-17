@@ -8,29 +8,33 @@ import config from '../utils/config';
 
 // Helper to create store safely
 const createStore = () => {
-  // If no Redis URL is configured, use Memory Store (return undefined)
+  // If no Redis URL is configured, use Memory Store
   if (!config.redisUrl) return undefined;
+
+  const client = redisClient.getClient();
+
+  // FIX: Check if Redis is actually connected and ready.
+  // If not, we fall back to MemoryStore (return undefined) to prevent the app from crashing.
+  if (!client || !redisClient.isReady()) {
+    logger.warn('Redis not ready during rate limiter init. Falling back to MemoryStore for stability.');
+    return undefined;
+  }
 
   return new RedisStore({
     // @ts-ignore - Types compatibility adjustment
     sendCommand: async (...args: string[]) => {
-      const client = redisClient.getClient();
-      
-      // Only attempt command if Client is connected and ready
-      if (client && redisClient.isReady()) {
-        try {
-            return await client.sendCommand(args);
-        } catch (e) {
-            // If Redis fails mid-command, swallow error to prevent app crash
-            // Rate limiting will simply fail-open for this request
-            return null;
+      try {
+        // Double-check readiness before sending command
+        if (client && redisClient.isReady()) {
+           return await client.sendCommand(args);
         }
+        // If connection dropped after init, we return null.
+        // The library might handle this or throw, but we've avoided the startup crash.
+        return null; 
+      } catch (e) {
+        logger.error('Redis command failed in rate limiter', e);
+        return null;
       }
-      
-      // If Redis is not ready, we return null.
-      // NOTE: This might make rate limiting ineffective until Redis connects,
-      // but it prevents the "Service Unavailable" crash loop.
-      return null; 
     },
   });
 };
