@@ -7,9 +7,12 @@ import { initRedis, default as redisClient } from './redisClient';
 /**
  * Centralized Database Loader
  * Handles connections for both MongoDB and Redis.
+ * Includes Retry Logic for resilience on Railway.
  */
 class DbLoader {
     private isConnected: boolean = false;
+    private readonly MAX_RETRIES = 5;
+    private readonly RETRY_DELAY_MS = 3000; // 3 seconds
 
     public async connect(): Promise<void> {
         if (this.isConnected) {
@@ -17,36 +20,54 @@ class DbLoader {
             return;
         }
 
-        try {
-            logger.info('🚀 Initializing Infrastructure...');
+        logger.info('🚀 Initializing Infrastructure...');
 
-            // 1. Connect MongoDB
-            if (!config.mongoUri) {
-                throw new Error("❌ MongoDB URI missing in config");
-            }
-            
-            mongoose.connection.on('error', (err) => logger.error(`🔥 MongoDB Error: ${err.message}`));
-            mongoose.connection.on('disconnected', () => logger.warn('⚠️ MongoDB Disconnected'));
-
-            // SCALING IMPROVEMENT: Dynamic pool size from config
-            await mongoose.connect(config.mongoUri, {
-                maxPoolSize: config.mongoPoolSize, // Now controlled by Config
-                serverSelectionTimeoutMS: 5000, // Fail fast if DB is down
-                socketTimeoutMS: 45000, // Close idle sockets
-            });
-            
-            logger.info('✅ MongoDB Connected');
-
-            // 2. Initialize Redis
-            await initRedis();
-
-            this.isConnected = true;
-            logger.info('✨ Infrastructure Ready');
-
-        } catch (err: any) {
-            logger.error(`❌ Critical Infrastructure Failure: ${err.message}`);
-            process.exit(1);
+        // 1. Connect MongoDB with Retry Logic
+        if (!config.mongoUri) {
+            throw new Error("❌ MongoDB URI missing in config");
         }
+
+        let retries = 0;
+        while (retries < this.MAX_RETRIES) {
+            try {
+                // Remove existing listeners to prevent duplicates on retry
+                mongoose.connection.removeAllListeners('error');
+                mongoose.connection.removeAllListeners('disconnected');
+
+                // Attach Listeners
+                mongoose.connection.on('error', (err) => logger.error(`🔥 MongoDB Error: ${err.message}`));
+                mongoose.connection.on('disconnected', () => logger.warn('⚠️ MongoDB Disconnected'));
+
+                // SCALING IMPROVEMENT: Dynamic pool size + Warm connections
+                await mongoose.connect(config.mongoUri, {
+                    maxPoolSize: config.mongoPoolSize, 
+                    minPoolSize: 2, // Keep at least 2 connections warm
+                    serverSelectionTimeoutMS: 5000, 
+                    socketTimeoutMS: 45000, 
+                });
+                
+                logger.info('✅ MongoDB Connected');
+                break; // Success! Exit loop.
+
+            } catch (err: any) {
+                retries++;
+                logger.error(`⚠️ MongoDB Connection Failed (Attempt ${retries}/${this.MAX_RETRIES}): ${err.message}`);
+                
+                if (retries >= this.MAX_RETRIES) {
+                    logger.error(`❌ Critical Infrastructure Failure: Could not connect to MongoDB after ${this.MAX_RETRIES} attempts.`);
+                    process.exit(1); // Give up
+                }
+
+                // Wait before retrying
+                await new Promise(res => setTimeout(res, this.RETRY_DELAY_MS));
+            }
+        }
+
+        // 2. Initialize Redis (Non-blocking failure is handled inside initRedis, but we await it here)
+        await initRedis();
+
+        this.isConnected = true;
+        logger.info('✨ Infrastructure Ready');
     }
 
     public async disconnect(): Promise<void> {
