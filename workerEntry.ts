@@ -3,7 +3,8 @@ import config from './utils/config';
 import logger from './utils/logger';
 import { startScheduler } from './jobs/scheduler';
 import queueManager from './jobs/queueManager';
-import dbLoader from './utils/dbLoader'; // Import new centralized loader
+import { startWorker as startJobWorker, shutdownWorker } from './jobs/worker'; // Import from correct file
+import dbLoader from './utils/dbLoader';
 
 const startWorker = async () => {
   logger.info('🛠️ Starting Background Worker...');
@@ -17,8 +18,8 @@ const startWorker = async () => {
     startScheduler();
 
     // 3. Initialize Queue Consumer
-    // CRITICAL FIX: We must explicitly start the worker to process the jobs!
-    queueManager.startWorker();
+    // CRITICAL FIX: explicit call to the worker starter imported from jobs/worker
+    startJobWorker();
     
     logger.info('🚀 Background Worker Fully Operational & Listening for Jobs');
 
@@ -32,7 +33,8 @@ const startWorker = async () => {
 const shutdown = async () => {
   logger.info('🛑 Worker stopping...');
   try {
-    await queueManager.shutdown();
+    await shutdownWorker(); // Stop the consumer
+    await queueManager.shutdown(); // Stop the producer
     await dbLoader.disconnect(); // Centralized disconnect
     logger.info('✅ Worker resources released.');
     process.exit(0);
