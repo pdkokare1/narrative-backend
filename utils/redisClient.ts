@@ -5,6 +5,9 @@ import config from './config';
 
 let client: RedisClientType | null = null;
 
+// Anti-Stampede: Tracks in-flight fetch requests
+const pendingFetches = new Map<string, Promise<any>>();
+
 export const initRedis = async () => {
     // If client exists and is ready, return it immediately
     if (client && (client.isOpen || client.isReady)) {
@@ -29,7 +32,10 @@ export const initRedis = async () => {
         });
 
         client.on('error', (err) => {
-            logger.warn(`Redis Client Warning: ${err.message}`);
+            // Suppress connection refused logs during startup/shutdown to avoid noise
+            if (!err.message.includes('ECONNREFUSED')) {
+                logger.warn(`Redis Client Warning: ${err.message}`);
+            }
         });
 
         client.on('connect', () => logger.info('🔌 Redis Client Connecting...'));
@@ -77,24 +83,50 @@ const redisClient = {
         }
     },
 
-    // Helper: Smart Cache Wrapper
+    // Helper: Smart Cache Wrapper with Stampede Protection
     getOrFetch: async <T>(key: string, fetcher: () => Promise<T>, ttlSeconds: number = 900): Promise<T> => {
+        // 1. Try Cache First
         if (client && client.isReady) {
             try {
                 const cachedData = await client.get(key);
                 if (cachedData) {
                     return JSON.parse(cachedData) as T;
                 }
-            } catch (err) { /* proceed */ }
+            } catch (err) { 
+                // Proceed to fetch if cache read fails
+            }
         }
 
-        const freshData = await fetcher();
-
-        if (client && client.isReady && freshData) {
-            client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(() => {});
+        // 2. Anti-Stampede: Check if a fetch is already running locally
+        if (pendingFetches.has(key)) {
+            // If someone else is already fetching this key, wait for their result
+            return pendingFetches.get(key) as Promise<T>;
         }
 
-        return freshData;
+        // 3. Define the Fetch Task
+        const fetchPromise = (async () => {
+            try {
+                const freshData = await fetcher();
+
+                // 4. Update Cache (Fire & Forget)
+                if (client && client.isReady && freshData) {
+                    client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(() => {});
+                }
+                return freshData;
+            } catch (error) {
+                throw error;
+            }
+        })();
+
+        // 5. Store promise in map so others can join
+        pendingFetches.set(key, fetchPromise);
+
+        try {
+            return await fetchPromise;
+        } finally {
+            // 6. Cleanup map regardless of success/failure
+            pendingFetches.delete(key);
+        }
     },
     
     // Helper: Delete
