@@ -12,7 +12,7 @@ const envSchema = z.object({
   
   // Database & Cache
   MONGODB_URI: z.string().url(),
-  MONGO_POOL_SIZE: z.string().transform(Number).default('10'), // NEW: Control DB connections
+  MONGO_POOL_SIZE: z.string().transform(Number).default('10'),
   REDIS_URL: z.string().optional(),
 
   // Cloudinary
@@ -26,11 +26,10 @@ const envSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
   
   // Security
-  // You MUST set ADMIN_SECRET in your Railway Environment Variables.
   ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
-  CORS_ORIGINS: z.string().default(''), // NEW: Add extra allowed domains via commas
+  CORS_ORIGINS: z.string().default(''), 
   
-  // AI Model Configuration (Centralized Control)
+  // AI Model Configuration
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
   AI_MODEL_PRO: z.string().default('gemini-2.0-flash'),
 
@@ -61,15 +60,13 @@ const env = parseConfig();
 const getFirebaseConfig = () => {
   if (!env.FIREBASE_SERVICE_ACCOUNT) return '';
   try {
-    // Try parsing as JSON first
     return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
   } catch (e) {
     try {
-      // If that fails, try decoding from Base64
       const buff = Buffer.from(env.FIREBASE_SERVICE_ACCOUNT, 'base64');
       return JSON.parse(buff.toString('utf-8'));
     } catch (err) {
-      logger.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT. Check if it is valid JSON or Base64.');
+      logger.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT.');
       return '';
     }
   }
@@ -90,7 +87,32 @@ const getCorsOrigins = () => {
     defaults.push(...extras);
   }
   
-  return Array.from(new Set(defaults)); // Remove duplicates
+  return Array.from(new Set(defaults)); 
+};
+
+// --- CENTRALIZED REDIS CONFIG PARSING ---
+const getRedisConfig = () => {
+  if (!env.REDIS_URL) return undefined;
+  
+  try {
+      const url = new URL(env.REDIS_URL);
+      const connectionConfig: any = {
+          host: url.hostname,
+          port: Number(url.port),
+          password: url.password,
+          username: url.username,
+      };
+
+      // Handle rediss:// protocol (TLS) for production (Railway/Render/AWS)
+      if (url.protocol === 'rediss:') {
+          connectionConfig.tls = { rejectUnauthorized: false };
+      }
+
+      return connectionConfig;
+  } catch (e: any) {
+      logger.error(`❌ Error parsing Redis URL: ${e.message}`);
+      return undefined;
+  }
 };
 
 const config = {
@@ -98,6 +120,7 @@ const config = {
   mongoUri: env.MONGODB_URI,
   mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
+  redisOptions: getRedisConfig(), // Exporting the parsed object
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
