@@ -28,9 +28,9 @@ class DbLoader {
             mongoose.connection.on('error', (err) => logger.error(`🔥 MongoDB Error: ${err.message}`));
             mongoose.connection.on('disconnected', () => logger.warn('⚠️ MongoDB Disconnected'));
 
-            // SCALING IMPROVEMENT: Set maxPoolSize to prevent exhausting database connections
+            // SCALING IMPROVEMENT: Dynamic pool size from config
             await mongoose.connect(config.mongoUri, {
-                maxPoolSize: 10, // Recommended for Serverless/Containerized environments
+                maxPoolSize: config.mongoPoolSize, // Now controlled by Config
                 serverSelectionTimeoutMS: 5000, // Fail fast if DB is down
                 socketTimeoutMS: 45000, // Close idle sockets
             });
@@ -55,7 +55,7 @@ class DbLoader {
         try {
             logger.info('🛑 Closing Infrastructure connections...');
             await redisClient.quit();
-            await mongoose.disconnect(); // Updated from mongoose.connection.close(false) for cleaner shutdown
+            await mongoose.disconnect(); 
             this.isConnected = false;
             logger.info('✅ Infrastructure closed gracefully.');
         } catch (err: any) {
