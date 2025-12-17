@@ -7,6 +7,7 @@ import logger from '../utils/logger';
 import redisClient from '../utils/redisClient';
 import { IArticle } from '../types';
 
+// How old can a "parent" article be before we stop inheriting its analysis?
 const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24;
 
 class PipelineService {
@@ -42,7 +43,6 @@ class PipelineService {
             let usedFuzzyMatch = false;
 
             if (existingMatch) {
-                logger.debug(`✨ Fuzzy Match found: "${article.title}" ~= "${existingMatch.headline}"`);
                 usedFuzzyMatch = true;
             }
 
@@ -63,17 +63,23 @@ class PipelineService {
             let analysis: Partial<IArticle>;
             let isSemanticSkip = false;
 
-            // Check Freshness
+            // Check Freshness & Validity of the match
             let isMatchFresh = false;
+            let isMatchValid = false;
+
             if (existingMatch) {
+                // Freshness Check
                 const hoursDiff = (new Date().getTime() - new Date(existingMatch.createdAt!).getTime()) / (1000 * 60 * 60);
                 isMatchFresh = hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS;
+                
+                // Validity Check (Does the parent actually have a summary?)
+                isMatchValid = !!existingMatch.summary && existingMatch.summary !== "Summary Unavailable";
             }
 
-            if (existingMatch && isMatchFresh) {
+            if (existingMatch && isMatchFresh && isMatchValid) {
                 // INHERITANCE (Free)
                 const matchType = usedFuzzyMatch ? "Fuzzy" : "Semantic";
-                logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match.`);
+                logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match (ID: ${existingMatch._id})`);
                 isSemanticSkip = true;
                 
                 // Copy ALL relevant AI fields to prevent "blank" features in frontend
@@ -92,11 +98,14 @@ class PipelineService {
                     clusterId: existingMatch.clusterId,
                     primaryNoun: existingMatch.primaryNoun,
                     secondaryNoun: existingMatch.secondaryNoun,
-                    keyFindings: existingMatch.keyFindings,
-                    recommendations: existingMatch.recommendations
+                    keyFindings: existingMatch.keyFindings || [],
+                    recommendations: existingMatch.recommendations || []
                 };
             } else {
                 // FRESH GENERATION (Paid)
+                if (existingMatch) {
+                    logger.info(`🔄 Match found but stale/invalid (${existingMatch.createdAt}). Regenerating AI Analysis.`);
+                }
                 analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
             }
 
@@ -126,15 +135,19 @@ class PipelineService {
                 keyFindings: analysis.keyFindings || [],
                 recommendations: analysis.recommendations || [],
                 
-                analysisVersion: isSemanticSkip ? '3.6-Inherited' : '3.6-Full',
+                analysisVersion: isSemanticSkip ? '3.7-Inherited' : '3.7-Full',
                 embedding: embedding || [] 
             };
             
+            // Assign Cluster ID if missing
             if (!newArticleData.clusterId) {
                 newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding || undefined);
             }
             
             await Article.create(newArticleData);
+            
+            // Mark as processed in Redis (Set expiry to 48 hours to manage memory)
+            await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
             await redisClient.sAdd('processed_urls', article.url);
 
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
