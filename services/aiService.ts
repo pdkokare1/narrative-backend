@@ -10,7 +10,7 @@ import { IArticle } from '../types';
 
 // Use Environment variables for models
 const EMBEDDING_MODEL = process.env.AI_MODEL_EMBEDDING || "text-embedding-004";
-const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-2.5-pro";     
+const PRO_MODEL = process.env.AI_MODEL_PRO || "gemini-2.0-flash"; // Recommended: faster & cheaper
 
 // --- GEMINI JSON SCHEMAS ---
 
@@ -73,7 +73,7 @@ const ArticleAnalysisSchema = z.object({
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
-    logger.info(`🤖 AI Service Initialized (with Robust JSON Repair)`);
+    logger.info(`🤖 AI Service Initialized`);
   }
 
   async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -82,20 +82,18 @@ class AIService {
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
-      // 1. Prepare Prompt & Schema
       const prompt = await promptManager.getAnalysisPrompt(article, mode);
       const schema = mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA;
 
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
-      // 2. Call API
       const response = await apiClient.post(url, {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
           responseSchema: schema, 
-          temperature: 0.2,       
-          maxOutputTokens: 8192 
+          temperature: 0.1, // Lower temperature for more consistent JSON
+          maxOutputTokens: 4096 
         }
       });
 
@@ -105,20 +103,20 @@ class AIService {
     } catch (error: any) {
       // HANDLE SPECIFIC ERRORS
       
-      // A. Rate Limits or Server Errors -> Throw so BullMQ Retries later
+      // Let BullMQ handle retries for 429/500 errors automatically.
+      // We just throw the error so the job fails and is retried later.
       if (error.response?.status === 429 || error.response?.status >= 500) {
           if (apiKey) await KeyManager.reportFailure(apiKey, true);
-          logger.warn(`⚠️ AI Service Temporarily Unavailable (Status ${error.response.status}). Job will retry.`);
-          throw error; // Triggers BullMQ retry
+          logger.warn(`⚠️ AI Service Busy/Down (Status ${error.response?.status}). Job will retry automatically.`);
+          throw error; 
       }
 
-      // B. "Circuit Breaker" / No Keys -> Fail gracefully or Retry later
       if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
           logger.warn(`⚡ AI Service Paused: ${error.message}`);
-          throw error; // Triggers BullMQ retry (hoping keys recover)
+          throw error; 
       }
 
-      // C. Validation/Parsing Errors (Permanent) -> Return Fallback
+      // Non-retriable errors (Validation/Parsing)
       logger.error(`❌ AI Critical Failure (Non-Retriable): ${error.message}`);
       return this.getFallbackAnalysis(article);
     }
@@ -141,7 +139,6 @@ class AIService {
         return response.data.embedding.values;
 
     } catch (error: any) {
-        // Embeddings are optional; we log and return null so pipeline continues
         logger.error(`Embedding Error: ${error.message}`);
         return null; 
     }
@@ -156,29 +153,19 @@ class AIService {
         
         let rawObj;
         try {
-            // First try: Standard Parse
             rawObj = JSON.parse(rawText);
         } catch (e) {
-            // Second try: Robust Repair (Fixes missing commas, unclosed brackets, etc.)
-            logger.warn(`⚠️ JSON Parse Failed. Attempting repair with jsonrepair...`);
+            // Robust Repair using jsonrepair
             try {
                 const repaired = jsonrepair(rawText);
                 rawObj = JSON.parse(repaired);
-                logger.info("✅ JSON successfully repaired.");
             } catch (repairError) {
-                // Third try: Minimal Clean
                 const clean = this.cleanJsonOutput(rawText);
                 rawObj = JSON.parse(clean); 
             }
         }
 
-        // 2. Zod Validation
         const validation = ArticleAnalysisSchema.safeParse(rawObj);
-
-        if (!validation.success) {
-            logger.warn(`⚠️ JSON Validation warnings: ${validation.error.message}`);
-        }
-
         const parsed: any = validation.success ? validation.data : rawObj;
 
         if (mode === 'Basic') {
@@ -194,10 +181,10 @@ class AIService {
 
         parsed.analysisType = 'Full';
         
-        // Calculate Trust Score
+        // Calculate Trust Score safely
         parsed.trustScore = 0;
         if (parsed.credibilityScore > 0) {
-            parsed.trustScore = Math.round(Math.sqrt(parsed.credibilityScore * parsed.reliabilityScore));
+            parsed.trustScore = Math.round(Math.sqrt((parsed.credibilityScore || 0) * (parsed.reliabilityScore || 0)));
         }
 
         return parsed;
@@ -207,24 +194,14 @@ class AIService {
     }
   }
 
-  // --- HELPER: Strip Markdown & Clean JSON ---
   private cleanJsonOutput(text: string): string {
     if (!text) return "{}";
-
-    // Remove markdown code blocks
-    let clean = text.replace(/```json/g, '').replace(/```/g, '');
-
-    // Trim whitespace
-    clean = clean.trim();
-
-    // Ensure we only grab the content between the first { and last }
+    let clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
     const firstOpen = clean.indexOf('{');
     const lastClose = clean.lastIndexOf('}');
-
     if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
       clean = clean.substring(firstOpen, lastClose + 1);
     }
-
     return clean;
   }
 
