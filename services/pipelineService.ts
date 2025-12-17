@@ -54,18 +54,25 @@ class PipelineService {
 
             let embedding: number[] | null = null;
 
-            // --- STAGE 2: Semantic Search (Paid) ---
-            // Only create embedding if fuzzy match failed
+            // --- STAGE 2: Semantic Search (Paid/Batch) ---
+            // Logic: Use Batch Embedding if available -> Else create new one -> Check for semantic duplicates
             if (!existingMatch) {
-                const textToEmbed = `${article.title}. ${article.description}`;
-                embedding = await aiService.createEmbedding(textToEmbed);
+                
+                // A. Check if we already have a Batch Embedding (Zero Cost)
+                if (article.embedding && Array.isArray(article.embedding) && article.embedding.length > 0) {
+                     embedding = article.embedding;
+                     // logger.debug('⚡ Using Pre-calculated Batch Embedding');
+                } 
+                // B. Fallback: Generate on the fly (Paid Cost)
+                else {
+                    const textToEmbed = `${article.title}. ${article.description}`;
+                    embedding = await aiService.createEmbedding(textToEmbed);
+                }
 
                 if (embedding) {
                     existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
                 } else {
                     // CRITICAL FIX: If embedding fails (API Error), do NOT proceed.
-                    // If we proceed, we might create a duplicate because we couldn't check semantics.
-                    // Throwing error here forces the Job Queue to retry this article later.
                     throw new Error('Embedding generation failed (Network/API). Retrying article later.');
                 }
             }
