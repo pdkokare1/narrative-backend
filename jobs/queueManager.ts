@@ -89,6 +89,9 @@ const startWorker = () => {
 
 // --- 4. Export ---
 const queueManager = {
+    /**
+     * Adds a single, immediate job to the queue.
+     */
     addFetchJob: async (name: string = 'manual-fetch', data: any = {}) => {
         if (!newsQueue) return null;
         try {
@@ -99,15 +102,32 @@ const queueManager = {
         }
     },
     
+    /**
+     * Schedules a recurring job using Cron syntax.
+     * Ensures idempotency (removes old schedule before adding new one).
+     */
     scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
-        if (!newsQueue) return null;
+        if (!newsQueue) {
+            logger.warn('⚠️ Queue not initialized, skipping schedule.');
+            return null;
+        }
         try {
+            // 1. Clean up old schedules for this job name to prevent duplicates
             const repeatableJobs = await newsQueue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
+            
             if (existing) {
                 await newsQueue.removeRepeatableByKey(existing.key);
+                logger.debug(`🔄 Updated schedule for: ${name}`);
             }
-            return await newsQueue.add(name, data, { repeat: { pattern: cronPattern } });
+
+            // 2. Add new schedule
+            const job = await newsQueue.add(name, data, { 
+                repeat: { pattern: cronPattern } 
+            });
+            
+            logger.info(`⏰ Job Scheduled: ${name} (${cronPattern})`);
+            return job;
         } catch (err: any) {
              logger.error(`❌ Failed to schedule job ${name}: ${err.message}`);
              return null;
@@ -144,3 +164,5 @@ const queueManager = {
 };
 
 export default queueManager;
+
+}
