@@ -1,6 +1,7 @@
 // workerEntry.ts
 import mongoose from 'mongoose';
 import * as admin from 'firebase-admin';
+import http from 'http'; // Import http module
 
 // Config & Utils
 import config from './utils/config';
@@ -42,6 +43,23 @@ const startBackgroundService = async () => {
 
         logger.info('✅ Worker & Scheduler are fully operational.');
 
+        // --- NEW: Health Check Server for Railway ---
+        // This prevents Railway from killing the worker for not binding a port.
+        const port = process.env.PORT || 8080;
+        const server = http.createServer((req, res) => {
+            if (req.url === '/health' || req.url === '/') {
+                res.writeHead(200);
+                res.end('Worker Running');
+            } else {
+                res.writeHead(404);
+                res.end();
+            }
+        });
+
+        server.listen(port, () => {
+            logger.info(`🏥 Worker Health Check Server listening on port ${port}`);
+        });
+
         // --- Graceful Shutdown ---
         const gracefulShutdown = async () => {
             logger.info('🛑 Worker received Kill Signal...');
@@ -52,6 +70,8 @@ const startBackgroundService = async () => {
             }, 10000);
 
             try {
+                // Close HTTP server first
+                server.close();
                 await shutdownWorker();
                 await dbLoader.disconnect();
                 clearTimeout(forceExit);
