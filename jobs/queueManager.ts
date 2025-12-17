@@ -22,7 +22,6 @@ if (isRedisConfigured && connectionConfig) {
         newsQueue = new Queue('news-fetch-queue', { 
             connection: connectionConfig as ConnectionOptions,
             defaultJobOptions: {
-                // COST OPTIMIZATION: Keep fewer jobs in history to save Redis RAM
                 removeOnComplete: 20, 
                 removeOnFail: 50,     
                 attempts: 3,           
@@ -46,39 +45,57 @@ const startWorker = () => {
 
     try {
         newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
-            logger.info(`👷 Worker started job: ${job.name} (ID: ${job.id})`);
             
-            try {
-                if (job.name === 'update-trending') {
-                    await statsService.updateTrendingTopics();
-                    return { status: 'completed' };
-                }
-
-                // Default: News Fetch
-                const result = await newsFetcher.run();
-                if (!result) {
-                    return { status: 'skipped', reason: 'concurrent_execution' };
-                }
+            // --- A. Maintenance Jobs ---
+            if (job.name === 'update-trending') {
+                logger.info(`👷 Job: Updating Trending Topics...`);
+                await statsService.updateTrendingTopics();
                 return { status: 'completed' };
-
-            } catch (err: any) {
-                logger.error(`❌ Worker Job Failed: ${err.message}`);
-                throw err; 
             }
+
+            // --- B. Feed Fetcher (The Fan-Out) ---
+            // Handles 'fetch-feed' and legacy names for backward compatibility
+            if (job.name === 'fetch-feed' || job.name === 'scheduled-news-fetch' || job.name === 'manual-fetch') {
+                logger.info(`👷 Job: Fetching Feed...`);
+                const articles = await newsFetcher.fetchFeed();
+
+                if (articles.length > 0 && newsQueue) {
+                    // Create a sub-job for EACH article (Fan-Out)
+                    const jobs = articles.map(article => ({
+                        name: 'process-article',
+                        data: article,
+                        opts: { 
+                            removeOnComplete: true, // Don't clog Redis history
+                            attempts: 3 
+                        }
+                    }));
+
+                    await newsQueue.addBulk(jobs);
+                    logger.info(`✨ Dispatched ${articles.length} individual article jobs.`);
+                }
+                return { status: 'dispatched', count: articles.length };
+            }
+
+            // --- C. Article Processor (High Concurrency) ---
+            if (job.name === 'process-article') {
+                return await newsFetcher.processArticleJob(job.data);
+            }
+
         }, { 
             connection: connectionConfig as ConnectionOptions,
-            concurrency: 5, 
-            limiter: { max: 5, duration: 1500 } 
+            concurrency: 5, // Process 5 articles at the same time!
+            limiter: { max: 10, duration: 1000 } // Safety limit
         });
 
         newsWorker.on('completed', (job: Job) => {
-            if (job.name !== 'update-trending') {
+            // Only log high-level jobs to avoid spamming logs with 50+ lines per batch
+            if (job.name === 'fetch-feed' || job.name === 'update-trending') {
                 logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
             }
         });
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
-            logger.error(`🔥 Job ${job?.id || 'unknown'} failed: ${err.message}`);
+            logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
         });
 
         logger.info("✅ Background Worker Started & Listening...");
@@ -92,7 +109,7 @@ const queueManager = {
     /**
      * Adds a single, immediate job to the queue.
      */
-    addFetchJob: async (name: string = 'manual-fetch', data: any = {}) => {
+    addFetchJob: async (name: string = 'fetch-feed', data: any = {}) => {
         if (!newsQueue) return null;
         try {
             return await newsQueue.add(name, data);
@@ -104,7 +121,6 @@ const queueManager = {
     
     /**
      * Schedules a recurring job using Cron syntax.
-     * Ensures idempotency (removes old schedule before adding new one).
      */
     scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
         if (!newsQueue) {
@@ -112,7 +128,7 @@ const queueManager = {
             return null;
         }
         try {
-            // 1. Clean up old schedules for this job name to prevent duplicates
+            // Clean up old schedules
             const repeatableJobs = await newsQueue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
             
@@ -121,7 +137,7 @@ const queueManager = {
                 logger.debug(`🔄 Updated schedule for: ${name}`);
             }
 
-            // 2. Add new schedule
+            // Add new schedule
             const job = await newsQueue.add(name, data, { 
                 repeat: { pattern: cronPattern } 
             });
