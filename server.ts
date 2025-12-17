@@ -19,6 +19,7 @@ import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService'; 
 import { errorHandler } from './middleware/errorMiddleware';
 import { apiLimiter } from './middleware/rateLimiters';
+import { startWorker } from './jobs/worker'; // <--- NEW IMPORT
 
 // Routes
 import apiRouter from './routes/index'; 
@@ -46,7 +47,6 @@ app.use(mongoSanitize());
 app.use(hpp());
 
 // --- 3. CORS Configuration ---
-// Improved: Uses centralized list from config (includes env variables)
 app.use(cors({
   origin: config.corsOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -116,6 +116,9 @@ const startServer = async () => {
             try {
                 logger.info('⏳ Initializing Background Services...');
                 
+                // Start the Worker (Consumer)
+                startWorker(); 
+
                 await Promise.all([
                     emergencyService.initializeEmergencyContacts(),
                     gatekeeperService.initialize()
