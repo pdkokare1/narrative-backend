@@ -45,7 +45,7 @@ class NewsService {
     
     logger.info(`🔄 News Fetch Cycle: ${currentCycle.name}`);
 
-    // 1. Try GNews First
+    // 1. Try GNews First (Primary)
     try {
         const gnewsArticles = await this.fetchFromGNews(currentCycle.gnews);
         allArticles.push(...gnewsArticles);
@@ -53,14 +53,23 @@ class NewsService {
         logger.warn(`GNews fetch failed: ${err.message}`);
     }
 
-    // 2. Fallback to NewsAPI ONLY if GNews gave us very little
+    // 2. Fallback to NewsAPI (Secondary with Circuit Breaker)
     if (allArticles.length < 5) {
-      logger.info('⚠️ Low yield from GNews, triggering NewsAPI fallback...');
-      try {
-          const newsApiArticles = await this.fetchFromNewsAPI(currentCycle.newsapi);
-          allArticles.push(...newsApiArticles);
-      } catch (err: any) {
-          logger.warn(`NewsAPI fallback failed: ${err.message}`);
+      const isNewsApiOpen = await this.checkCircuitBreaker('NEWS_API');
+      
+      if (isNewsApiOpen) {
+          logger.info('⚠️ Low yield from GNews, triggering NewsAPI fallback...');
+          try {
+              const newsApiArticles = await this.fetchFromNewsAPI(currentCycle.newsapi);
+              allArticles.push(...newsApiArticles);
+              // If successful, reset any failure counts
+              await this.resetCircuitBreaker('NEWS_API');
+          } catch (err: any) {
+              logger.warn(`NewsAPI fallback failed: ${err.message}`);
+              await this.recordFailure('NEWS_API');
+          }
+      } else {
+          logger.warn('🚫 NewsAPI Circuit Breaker is OPEN. Skipping fallback to protect system.');
       }
     }
 
@@ -80,6 +89,39 @@ class NewsService {
     return finalUnique;
   }
 
+  // --- CIRCUIT BREAKER HELPERS ---
+
+  private async checkCircuitBreaker(provider: string): Promise<boolean> {
+      if (!redisClient.isReady()) return true;
+      const key = `breaker:open:${provider}`;
+      const isOpen = await redisClient.get(key);
+      return !isOpen; // If key exists, breaker is open (BLOCKED). If null, it's closed (ALLOWED).
+  }
+
+  private async recordFailure(provider: string) {
+      if (!redisClient.isReady()) return;
+      const failKey = `breaker:fail:${provider}`;
+      const openKey = `breaker:open:${provider}`;
+
+      // Increment failure count
+      const count = await redisClient.incr(failKey);
+      
+      // Set a short expiry for the failure counter (window of 10 mins)
+      if (count === 1) await redisClient.expire(failKey, 600);
+
+      // If > 3 failures in 10 mins, OPEN THE BREAKER for 30 mins
+      if (count >= 3) {
+          logger.error(`🔥 ${provider} is failing repeatedly. Opening Circuit Breaker for 30 mins.`);
+          await redisClient.set(openKey, '1', 1800); // 1800 seconds = 30 mins
+          await redisClient.del(failKey); // Reset counter
+      }
+  }
+
+  private async resetCircuitBreaker(provider: string) {
+      if (!redisClient.isReady()) return;
+      await redisClient.del(`breaker:fail:${provider}`);
+  }
+
   // --- REDIS HELPERS ---
 
   private getRedisKey(url: string): string {
@@ -87,16 +129,11 @@ class NewsService {
     return `news:seen:${hash}`;
   }
 
-  // OPTIMIZED: Uses mGet (Multi-Get) to check all articles in one round-trip
   private async filterSeenInRedis(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
     if (articles.length === 0) return [];
     
     const unseen: INewsSourceArticle[] = [];
-    
-    // Create mapping of keys to articles
     const keys = articles.map(a => this.getRedisKey(a.url));
-    
-    // Fetch all statuses at once
     const results = await redisClient.mGet(keys);
     
     let skippedCount = 0;
@@ -117,7 +154,6 @@ class NewsService {
     return unseen;
   }
 
-  // OPTIMIZED: Uses Pipeline to set all keys in one round-trip
   private async markAsSeenInRedis(articles: INewsSourceArticle[]) {
       if (articles.length === 0) return;
 
@@ -126,13 +162,10 @@ class NewsService {
       if (client && redisClient.isReady()) {
           try {
               const multi = client.multi();
-              
               for (const article of articles) {
                   const key = this.getRedisKey(article.url);
-                  // Set expiration to 48 hours (172800 seconds)
-                  multi.set(key, '1', { EX: 172800 });
+                  multi.set(key, '1', { EX: 172800 }); // 48 hours
               }
-
               await multi.exec();
           } catch (e: any) {
               logger.error(`Redis Pipeline Error: ${e.message}`);
@@ -146,6 +179,7 @@ class NewsService {
       if (articles.length === 0) return [];
       
       const urls = articles.map(a => a.url);
+      // Optimized: Only fetch the _id is enough, but we use url to compare
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
       const existingUrls = new Set(existingDocs.map((d: any) => d.url));
       
@@ -193,6 +227,7 @@ class NewsService {
     const seenUrls = new Set<string>();
     const seenTitles = new Set<string>();
     
+    // Simple heuristic scoring to prefer "better" looking articles
     const scoredArticles = articles.map(a => {
         let score = 0;
         if (a.image && a.image.startsWith('http')) score += 2;
