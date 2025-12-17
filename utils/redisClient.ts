@@ -5,6 +5,34 @@ import config from './config';
 
 let client: RedisClientType | null = null;
 
+/**
+ * Helper: Parses the REDIS_URL into a config object.
+ * Centralizes logic so QueueManager and RedisClient don't have to guess.
+ */
+export const parseRedisConfig = () => {
+    if (!config.redisUrl) return null;
+    
+    try {
+        const url = new URL(config.redisUrl);
+        const connectionConfig: any = {
+            host: url.hostname,
+            port: Number(url.port),
+            password: url.password,
+            username: url.username,
+        };
+
+        // Handle rediss:// protocol (TLS) for production (Railway/Render/AWS)
+        if (url.protocol === 'rediss:') {
+            connectionConfig.tls = { rejectUnauthorized: false };
+        }
+
+        return connectionConfig;
+    } catch (e: any) {
+        logger.error(`❌ Error parsing Redis URL: ${e.message}`);
+        return null;
+    }
+};
+
 export const initRedis = async () => {
     // If client exists and is ready, return it immediately
     if (client && (client.isOpen || client.isReady)) {
@@ -24,7 +52,9 @@ export const initRedis = async () => {
                 // Exponential backoff for reconnects
                 reconnectStrategy: (retries) => Math.min(retries * 100, 5000),
                 // FAIL FAST: Only wait 5 seconds for initial connection
-                connectTimeout: 5000 
+                connectTimeout: 5000,
+                // Keep-alive to prevent Railway/Cloud closing idle connections
+                keepAlive: 10000 
             }
         });
 
@@ -55,7 +85,6 @@ const redisClient = {
             const data = await client.get(key);
             return data ? JSON.parse(data) : null;
         } catch (e: any) {
-            // logger.warn(`Redis Get Error [${key}]: ${e.message}`);
             return null;
         }
     },
@@ -77,7 +106,7 @@ const redisClient = {
         try {
             await client.set(key, JSON.stringify(data), { EX: ttlSeconds });
         } catch (e: any) {
-            // logger.warn(`Redis Set Error [${key}]: ${e.message}`);
+            // Ignore set errors
         }
     },
     
@@ -131,7 +160,10 @@ const redisClient = {
 
     // Direct Access (Important for libraries like rate-limit-redis or bulk ops)
     getClient: () => client,
-    isReady: () => client?.isReady ?? false
+    isReady: () => client?.isReady ?? false,
+    
+    // Export the parser for other files (like QueueManager)
+    parseRedisConfig
 };
 
 export default redisClient;
