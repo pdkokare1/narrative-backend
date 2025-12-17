@@ -21,17 +21,19 @@ export const initRedis = async () => {
         client = createClient({
             url: config.redisUrl,
             socket: {
-                // Exponential backoff: Start at 100ms, cap at 5000ms
-                reconnectStrategy: (retries) => Math.min(retries * 100, 5000)
+                // Exponential backoff for reconnects
+                reconnectStrategy: (retries) => Math.min(retries * 100, 5000),
+                // FAIL FAST: Only wait 5 seconds for initial connection
+                connectTimeout: 5000 
             }
         });
 
         client.on('error', (err) => {
-            logger.error(`❌ Redis Client Error: ${err.message}`);
+            // Log error but don't crash
+            logger.warn(`Redis Client Warning: ${err.message}`);
         });
 
         client.on('connect', () => logger.info('🔌 Redis Client Connecting...'));
-        client.on('reconnecting', () => logger.info('🔄 Redis Reconnecting...'));
         client.on('ready', () => logger.info('✅ Redis Client Ready & Connected'));
 
         await client.connect();
@@ -39,6 +41,7 @@ export const initRedis = async () => {
 
     } catch (err: any) {
         logger.error(`❌ Redis Initialization Failed: ${err.message}`);
+        // Ensure client is null so we don't try to use a broken client
         client = null;
         return null;
     }
@@ -52,7 +55,7 @@ const redisClient = {
             const data = await client.get(key);
             return data ? JSON.parse(data) : null;
         } catch (e: any) {
-            logger.warn(`Redis Get Error [${key}]: ${e.message}`);
+            // logger.warn(`Redis Get Error [${key}]: ${e.message}`);
             return null;
         }
     },
@@ -63,7 +66,7 @@ const redisClient = {
         try {
             await client.set(key, JSON.stringify(data), { EX: ttlSeconds });
         } catch (e: any) {
-            logger.warn(`Redis Set Error [${key}]: ${e.message}`);
+            // logger.warn(`Redis Set Error [${key}]: ${e.message}`);
         }
     },
     
