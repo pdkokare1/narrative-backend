@@ -1,4 +1,4 @@
-// src/routes/articleRoutes.ts
+// routes/articleRoutes.ts
 import express from 'express';
 import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
@@ -19,14 +19,26 @@ import {
 
 const router = express.Router();
 
-// Public / Semi-Public Routes
+// --- Public / Semi-Public Routes ---
+
+// 1. Trending Topics (Cached via Service)
 router.get('/trending', getTrendingTopics);
+
+// 2. Search (Atlas Search -> Text Fallback)
 router.get('/search', validate(schemas.search, 'query'), searchArticles);
+
+// 3. Main Feed (Filterable & Cached)
 router.get('/articles', validate(schemas.feedFilters, 'query'), getMainFeed);
+
+// 4. For You (Challenger Feed - Personalized for Guests & Users)
 router.get('/articles/for-you', optionalAuth, getForYouFeed);
 
-// Protected Routes (Require Login)
+// --- Protected Routes (Require Login) ---
+
+// 5. Personalized Feed (Vector AI Match)
 router.get('/articles/personalized', checkAuth, getPersonalizedFeed);
+
+// 6. Saved Articles
 router.get('/saved', checkAuth, getSavedArticles);
 router.post('/:id/save', checkAuth, validate(schemas.saveArticle, 'params'), toggleSaveArticle);
 
