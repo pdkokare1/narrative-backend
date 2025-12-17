@@ -13,27 +13,15 @@ import config from './utils/config';
 import logger from './utils/logger';
 import redisClient, { initRedis } from './utils/redisClient';
 
-// Services
-import queueManager from './jobs/queueManager'; 
-import { errorHandler } from './middleware/errorMiddleware';
+// Services & Middleware
 import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService'; 
-
-// Middleware
-import { checkAuth, checkAppCheck } from './middleware/authMiddleware';
-import { apiLimiter, ttsLimiter } from './middleware/rateLimiters';
+import { errorHandler } from './middleware/errorMiddleware';
+import { apiLimiter } from './middleware/rateLimiters';
 
 // Routes
-import profileRoutes from './routes/profileRoutes';
-import activityRoutes from './routes/activityRoutes';
-import articleRoutes from './routes/articleRoutes';
-import emergencyRoutes from './routes/emergencyRoutes';
-import ttsRoutes from './routes/ttsRoutes';
-import migrationRoutes from './routes/migrationRoutes';
-import assetGenRoutes from './routes/assetGenRoutes';
-import shareRoutes from './routes/shareRoutes';
-import clusterRoutes from './routes/clusterRoutes'; 
-import jobRoutes from './routes/jobRoutes';
+import apiRouter from './routes/index'; // The new centralized router
+import shareRoutes from './routes/shareRoutes'; // Kept separate for root access
 
 const app = express();
 
@@ -72,7 +60,7 @@ if (process.env.CORS_ORIGINS) {
 app.use(cors({
   origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck', 'x-admin-secret'],
   credentials: true
 }));
 
@@ -83,8 +71,7 @@ app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative 
 
 app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
-    // Use optional chaining for safety if redisClient is initializing
-    const redisStatus = redisClient.getClient()?.isOpen ? 'UP' : 'DOWN';
+    const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
     if (mongoStatus === 'UP' && redisStatus === 'UP') {
         res.status(200).json({ status: 'OK', mongo: mongoStatus, redis: redisStatus });
@@ -95,11 +82,11 @@ app.get('/health', async (req: Request, res: Response) => {
 
 // --- 5. Firebase Init ---
 try {
+  // Use the safely parsed serviceAccount from config
   if (config.firebase.serviceAccount) {
-    const serviceAccount = JSON.parse(config.firebase.serviceAccount);
     if (!admin.apps.length) {
       admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
+        credential: admin.credential.cert(config.firebase.serviceAccount)
       });
       logger.info('Firebase Admin SDK Initialized');
     }
@@ -112,22 +99,12 @@ try {
 app.use('/api/', apiLimiter); 
 
 // --- 7. Mount Routes ---
+
+// Share Routes (Hosted at root /share/...)
 app.use('/share', shareRoutes); 
-app.use('/api/assets', assetGenRoutes); 
-app.use('/api/emergency-resources', emergencyRoutes);
-app.use('/api/tts', ttsLimiter, ttsRoutes); 
-app.use('/api/migration', migrationRoutes); 
-app.use('/api/cluster', clusterRoutes);
 
-// Protected Routes
-app.use('/api/profile', checkAppCheck, checkAuth, profileRoutes);
-app.use('/api/activity', checkAppCheck, checkAuth, activityRoutes);
-
-// Job/Admin Routes
-app.use('/api/jobs', jobRoutes); 
-
-// Main Article Routes
-app.use('/api', articleRoutes); 
+// API Routes (Hosted at /api/...)
+app.use('/api', apiRouter);
 
 // --- 8. Error Handling ---
 app.use(errorHandler);
@@ -159,6 +136,8 @@ const startServer = async () => {
         // --- Graceful Shutdown ---
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
+            
+            // Force shutdown after timeout
             setTimeout(() => {
                 logger.error('🛑 Force Shutdown (Timeout)');
                 process.exit(1);
@@ -167,9 +146,6 @@ const startServer = async () => {
             server.close(async () => {
                 logger.info('Http server closed.');
                 try {
-                    // Note: We do NOT shutdown queueManager here because
-                    // the Worker is running in a different process (workerEntry.ts).
-                    // We only close the Redis Client.
                     await redisClient.quit();
                     await mongoose.connection.close(false);
                     logger.info('✅ Resources released. Exiting.');
