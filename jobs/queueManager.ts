@@ -32,7 +32,6 @@ if (config.redisUrl) {
 }
 
 // --- 2. Initialize Queue (Producer) ---
-// This is always needed so the API can ADD jobs to the list.
 let newsQueue: Queue | null = null;
 let newsWorker: Worker | null = null;
 
@@ -55,22 +54,25 @@ if (isRedisConfigured && connectionConfig) {
 }
 
 // --- 3. Worker Starter (Consumer) ---
-// This is now a function. We only call it in the Worker Process.
+// Only call this from a dedicated worker process!
 const startWorker = () => {
-    if (!isRedisConfigured || !connectionConfig || newsWorker) return;
+    if (!isRedisConfigured || !connectionConfig) {
+        logger.error("❌ Cannot start worker: Redis not configured.");
+        return;
+    }
+    if (newsWorker) return; // Already running
 
     try {
         newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
             logger.info(`👷 Worker started job: ${job.name} (ID: ${job.id})`);
             
             try {
-                // Case A: Update Trending Topics
                 if (job.name === 'update-trending') {
                     await statsService.updateTrendingTopics();
                     return { status: 'completed' };
                 }
 
-                // Case B: News Fetcher (Default)
+                // Default: News Fetch
                 const result = await newsFetcher.run();
                 if (!result) {
                     return { status: 'skipped', reason: 'concurrent_execution' };
@@ -103,14 +105,10 @@ const startWorker = () => {
     }
 };
 
-// --- 4. Safe Export ---
+// --- 4. Export ---
 const queueManager = {
-    // Basic Add
     addFetchJob: async (name: string = 'manual-fetch', data: any = {}) => {
-        if (!newsQueue) {
-            logger.warn("⚠️ Cannot add job: Redis unavailable.");
-            return null;
-        }
+        if (!newsQueue) return null;
         try {
             return await newsQueue.add(name, data);
         } catch (err: any) {
@@ -119,21 +117,15 @@ const queueManager = {
         }
     },
     
-    // Smart Schedule Handler
     scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
         if (!newsQueue) return null;
         try {
             const repeatableJobs = await newsQueue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
-            
             if (existing) {
                 await newsQueue.removeRepeatableByKey(existing.key);
             }
-
-            const job = await newsQueue.add(name, data, {
-                repeat: { pattern: cronPattern }
-            });
-            return job;
+            return await newsQueue.add(name, data, { repeat: { pattern: cronPattern } });
         } catch (err: any) {
              logger.error(`❌ Failed to schedule job ${name}: ${err.message}`);
              return null;
@@ -155,10 +147,8 @@ const queueManager = {
         }
     },
 
-    // Initialize the Worker Consumer (Call this only in worker process)
-    startWorker,
+    startWorker, // Exported function, not auto-called
 
-    // NEW: Graceful Shutdown
     shutdown: async () => {
         logger.info('🛑 Shutting down Job Queue & Workers...');
         try {
