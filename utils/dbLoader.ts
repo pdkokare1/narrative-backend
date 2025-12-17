@@ -7,7 +7,6 @@ import { initRedis, default as redisClient } from './redisClient';
 /**
  * Centralized Database Loader
  * Handles connections for both MongoDB and Redis.
- * Used by both the API Server and the Background Worker.
  */
 class DbLoader {
     private isConnected: boolean = false;
@@ -26,11 +25,16 @@ class DbLoader {
                 throw new Error("❌ MongoDB URI missing in config");
             }
             
-            // Handle connection events for better debugging
             mongoose.connection.on('error', (err) => logger.error(`🔥 MongoDB Error: ${err.message}`));
             mongoose.connection.on('disconnected', () => logger.warn('⚠️ MongoDB Disconnected'));
 
-            await mongoose.connect(config.mongoUri);
+            // SCALING IMPROVEMENT: Set maxPoolSize to prevent exhausting database connections
+            await mongoose.connect(config.mongoUri, {
+                maxPoolSize: 10, // Recommended for Serverless/Containerized environments
+                serverSelectionTimeoutMS: 5000, // Fail fast if DB is down
+                socketTimeoutMS: 45000, // Close idle sockets
+            });
+            
             logger.info('✅ MongoDB Connected');
 
             // 2. Initialize Redis
@@ -41,7 +45,6 @@ class DbLoader {
 
         } catch (err: any) {
             logger.error(`❌ Critical Infrastructure Failure: ${err.message}`);
-            // If the DB fails to start, the app is useless. Crash and let Railway restart it.
             process.exit(1);
         }
     }
@@ -52,7 +55,7 @@ class DbLoader {
         try {
             logger.info('🛑 Closing Infrastructure connections...');
             await redisClient.quit();
-            await mongoose.connection.close(false);
+            await mongoose.disconnect(); // Updated from mongoose.connection.close(false) for cleaner shutdown
             this.isConnected = false;
             logger.info('✅ Infrastructure closed gracefully.');
         } catch (err: any) {
