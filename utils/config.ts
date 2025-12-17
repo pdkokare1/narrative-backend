@@ -12,6 +12,7 @@ const envSchema = z.object({
   
   // Database & Cache
   MONGODB_URI: z.string().url(),
+  MONGO_POOL_SIZE: z.string().transform(Number).default('10'), // NEW: Control DB connections
   REDIS_URL: z.string().optional(),
 
   // Cloudinary
@@ -24,9 +25,10 @@ const envSchema = z.object({
   GEMINI_API_KEY_1: z.string().optional(),
   ELEVENLABS_API_KEY: z.string().optional(),
   
-  // SECURITY UPDATE: Removed default value. 
+  // Security
   // You MUST set ADMIN_SECRET in your Railway Environment Variables.
   ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
+  CORS_ORIGINS: z.string().default(''), // NEW: Add extra allowed domains via commas
   
   // AI Model Configuration (Centralized Control)
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
@@ -73,13 +75,33 @@ const getFirebaseConfig = () => {
   }
 };
 
+// Combine hardcoded trusted origins with dynamic ones
+const getCorsOrigins = () => {
+  const defaults = [
+    env.FRONTEND_URL,
+    'https://thegamut.in',
+    'https://www.thegamut.in',
+    'https://api.thegamut.in',
+    'http://localhost:3000'
+  ];
+  
+  if (env.CORS_ORIGINS) {
+    const extras = env.CORS_ORIGINS.split(',').map(s => s.trim()).filter(Boolean);
+    defaults.push(...extras);
+  }
+  
+  return Array.from(new Set(defaults)); // Remove duplicates
+};
+
 const config = {
   port: env.PORT,
   mongoUri: env.MONGODB_URI,
+  mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
-  adminSecret: env.ADMIN_SECRET, 
+  adminSecret: env.ADMIN_SECRET,
+  corsOrigins: getCorsOrigins(),
   
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
