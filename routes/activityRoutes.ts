@@ -62,7 +62,8 @@ async function updateUserVector(userId: string) {
 // --- 1. Log View (Analysis) ---
 router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body; 
-    const userId = req.user.uid;
+    // FIX: Added ! to assert user exists (protected route)
+    const userId = req.user!.uid;
 
     // Log Action
     await ActivityLog.create({ userId, articleId, action: 'view_analysis' });
@@ -103,10 +104,11 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
 // --- 2. Log Comparison ---
 router.post('/log-compare', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
-    await ActivityLog.create({ userId: req.user.uid, articleId, action: 'view_comparison' });
-    await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { comparisonsViewedCount: 1 } });
+    // FIX: Added ! to assert user exists
+    await ActivityLog.create({ userId: req.user!.uid, articleId, action: 'view_comparison' });
+    await Profile.findOneAndUpdate({ userId: req.user!.uid }, { $inc: { comparisonsViewedCount: 1 } });
     
-    const newBadge = await gamificationService.updateStreak(req.user.uid);
+    const newBadge = await gamificationService.updateStreak(req.user!.uid);
 
     res.status(200).json({ message: 'Logged comparison', newBadge });
 }));
@@ -114,10 +116,11 @@ router.post('/log-compare', validate(schemas.logActivity), asyncHandler(async (r
 // --- 3. Log Share ---
 router.post('/log-share', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
-    await ActivityLog.create({ userId: req.user.uid, articleId, action: 'share_article' });
-    await Profile.findOneAndUpdate({ userId: req.user.uid }, { $inc: { articlesSharedCount: 1 } });
+    // FIX: Added ! to assert user exists
+    await ActivityLog.create({ userId: req.user!.uid, articleId, action: 'share_article' });
+    await Profile.findOneAndUpdate({ userId: req.user!.uid }, { $inc: { articlesSharedCount: 1 } });
     
-    const newBadge = await gamificationService.updateStreak(req.user.uid);
+    const newBadge = await gamificationService.updateStreak(req.user!.uid);
 
     res.status(200).json({ message: 'Logged share', newBadge });
 }));
@@ -125,7 +128,8 @@ router.post('/log-share', validate(schemas.logActivity), asyncHandler(async (req
 // --- 4. Log Read (External Link) ---
 router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
-    const userId = req.user.uid;
+    // FIX: Added ! to assert user exists
+    const userId = req.user!.uid;
 
     await ActivityLog.create({ userId, articleId, action: 'read_external' });
     
