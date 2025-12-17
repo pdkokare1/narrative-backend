@@ -95,20 +95,22 @@ const getRedisConfig = () => {
   if (!env.REDIS_URL) return undefined;
   
   try {
-      const url = new URL(env.REDIS_URL);
-      const connectionConfig: any = {
-          host: url.hostname,
-          port: Number(url.port),
-          password: url.password,
-          username: url.username,
+      // For redis v4+, the simplest way is to pass the URL directly.
+      // This automatically handles username, password, host, and port.
+      const config: any = {
+          url: env.REDIS_URL
       };
 
       // Handle rediss:// protocol (TLS) for production (Railway/Render/AWS)
-      if (url.protocol === 'rediss:') {
-          connectionConfig.tls = { rejectUnauthorized: false };
+      // We insert these into the 'socket' object which redisClient.ts will merge.
+      if (env.REDIS_URL.startsWith('rediss:')) {
+          config.socket = {
+              tls: true,
+              rejectUnauthorized: false 
+          };
       }
 
-      return connectionConfig;
+      return config;
   } catch (e: any) {
       logger.error(`❌ Error parsing Redis URL: ${e.message}`);
       return undefined;
