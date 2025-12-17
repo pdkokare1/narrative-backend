@@ -13,7 +13,10 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
 // --- 2. Intelligent Search ---
 export const searchArticles = asyncHandler(async (req: Request, res: Response) => {
     const query = (req.query.q as string)?.trim() || '';
-    const limit = parseInt(req.query.limit as string) || 12;
+    
+    // SAFETY: Cap limit at 100 to prevent database overload
+    const requestedLimit = parseInt(req.query.limit as string) || 12;
+    const limit = Math.min(requestedLimit, 100);
 
     const result = await articleService.searchArticles(query, limit);
     res.status(200).json({ articles: result.articles, pagination: { total: result.total } });
@@ -30,7 +33,7 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
 
 // --- 4. "For You" Feed ---
 export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
-    // @ts-ignore - 'user' is populated by auth middleware
+    // req.user is now typed correctly via types/express.d.ts
     const userId = req.user?.uid;
     const result = await articleService.getForYouFeed(userId);
     res.status(200).json(result);
@@ -38,7 +41,6 @@ export const getForYouFeed = asyncHandler(async (req: Request, res: Response) =>
 
 // --- 5. Personalized "My Mix" Feed ---
 export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Response) => {
-    // @ts-ignore
     const userId = req.user!.uid; 
     const result = await articleService.getPersonalizedFeed(userId);
     res.status(200).json(result);
@@ -46,7 +48,6 @@ export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Respon
 
 // --- 6. Saved Articles ---
 export const getSavedArticles = asyncHandler(async (req: Request, res: Response) => {
-    // @ts-ignore
     const userId = req.user!.uid;
     const articles = await articleService.getSavedArticles(userId);
     res.status(200).json({ articles });
@@ -55,7 +56,6 @@ export const getSavedArticles = asyncHandler(async (req: Request, res: Response)
 // --- 7. Toggle Save ---
 export const toggleSaveArticle = asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
-    // @ts-ignore
     const userId = req.user!.uid;
     
     const result = await articleService.toggleSaveArticle(userId, id);
