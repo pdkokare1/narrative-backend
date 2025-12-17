@@ -7,7 +7,8 @@ import logger from '../utils/logger';
 import config from '../utils/config';
 
 // Redis Config
-const connectionConfig = config.redisOptions;
+// CRITICAL FIX: Use the BullMQ-specific config
+const connectionConfig = config.bullMQConnection;
 const isRedisConfigured = !!connectionConfig;
 
 let newsWorker: Worker | null = null;
