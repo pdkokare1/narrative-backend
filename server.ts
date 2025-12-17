@@ -19,7 +19,6 @@ import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService'; 
 import { errorHandler } from './middleware/errorMiddleware';
 import { apiLimiter } from './middleware/rateLimiters';
-import { startWorker } from './jobs/worker'; // <--- NEW IMPORT
 
 // Routes
 import apiRouter from './routes/index'; 
@@ -111,21 +110,18 @@ const startServer = async () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 3. Initialize Background Services (Non-blocking)
+        // 3. Initialize Critical Services (Lightweight)
         (async () => {
             try {
-                logger.info('⏳ Initializing Background Services...');
+                logger.info('⏳ Initializing API Services...');
                 
-                // Start the Worker (Consumer)
-                startWorker(); 
-
                 await Promise.all([
                     emergencyService.initializeEmergencyContacts(),
                     gatekeeperService.initialize()
                 ]);
-                logger.info('✨ All Background Services Ready');
+                logger.info('✨ API Services Ready');
             } catch (bgError: any) {
-                logger.error(`⚠️ Background Service Warning: ${bgError.message}`);
+                logger.error(`⚠️ Service Init Warning: ${bgError.message}`);
             }
         })();
 
