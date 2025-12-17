@@ -73,13 +73,13 @@ app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
-    const statusCode = (mongoStatus === 'UP' && redisStatus === 'UP') ? 200 : 503;
-    
-    res.status(statusCode).json({ 
-        status: statusCode === 200 ? 'OK' : 'ERROR', 
-        mongo: mongoStatus, 
-        redis: redisStatus 
-    });
+    // RELAXED HEALTH CHECK: Only fail if Database is down. 
+    // Redis down is critical for cache but shouldn't kill the whole server deployment.
+    if (mongoStatus === 'UP') {
+        res.status(200).json({ status: 'OK', mongo: mongoStatus, redis: redisStatus });
+    } else {
+        res.status(503).json({ status: 'ERROR', mongo: mongoStatus, redis: redisStatus });
+    }
 });
 
 // --- 5. Firebase Init ---
@@ -97,7 +97,6 @@ try {
 }
 
 // --- 6. Global Rate Limiter ---
-// Note: apiLimiter uses Redis dynamically now, so it's safe to mount here
 app.use('/api/', apiLimiter); 
 
 // --- 7. Mount Routes ---
@@ -110,13 +109,15 @@ app.use(errorHandler);
 // --- 9. Database & Server Start ---
 const startServer = async () => {
     try {
-        // Init Redis FIRST
+        logger.info('🚀 Starting Server Initialization...');
+
+        // Init Redis (Non-blocking failure)
         await initRedis();
 
-        // Init Mongo
+        // Init Mongo (Blocking failure)
         if (config.mongoUri) {
             await mongoose.connect(config.mongoUri);
-            logger.info('MongoDB Connected');
+            logger.info('✅ MongoDB Connected');
         } else {
             throw new Error("MongoDB URI missing in config");
         }
@@ -131,14 +132,13 @@ const startServer = async () => {
         const HOST = '0.0.0.0'; 
 
         const server = app.listen(Number(PORT), HOST, () => {
-            logger.info(`Server running on http://${HOST}:${PORT}`);
+            logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
         // --- Graceful Shutdown ---
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
             
-            // Force shutdown after timeout (failsafe)
             const forceExit = setTimeout(() => {
                 logger.error('🛑 Force Shutdown (Timeout)');
                 process.exit(1);
