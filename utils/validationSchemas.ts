@@ -10,6 +10,14 @@ const schemas = {
       .regex(/^[a-zA-Z0-9_ ]+$/, 'Username can only contain letters, numbers, underscores, and spaces'),
   }),
 
+  // --- NEW: Added Missing Schema ---
+  updateProfile: z.object({
+    username: z.string().min(3).max(30).trim()
+      .regex(/^[a-zA-Z0-9_ ]+$/, 'Username can only contain letters, numbers, underscores, and spaces')
+      .optional(),
+    notificationsEnabled: z.boolean().optional()
+  }),
+
   logActivity: z.object({
     articleId: objectId,
   }),
