@@ -109,6 +109,36 @@ const redisClient = {
             // Ignore set errors
         }
     },
+
+    /**
+     * NEW: Smart Cache Wrapper
+     * Checks cache -> Returns if exists -> Else fetches -> Saves -> Returns
+     */
+    getOrFetch: async <T>(key: string, fetcher: () => Promise<T>, ttlSeconds: number = 900): Promise<T> => {
+        // 1. Try Cache
+        if (client && client.isReady) {
+            try {
+                const cachedData = await client.get(key);
+                if (cachedData) {
+                    return JSON.parse(cachedData) as T;
+                }
+            } catch (err) {
+                // Warning only, proceed to fetch
+            }
+        }
+
+        // 2. Fetch Fresh Data
+        const freshData = await fetcher();
+
+        // 3. Save to Cache (Fire and forget)
+        if (client && client.isReady && freshData) {
+            client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(err => {
+                logger.warn(`Failed to cache key ${key}: ${err.message}`);
+            });
+        }
+
+        return freshData;
+    },
     
     // Helper: Delete
     del: async (key: string): Promise<void> => {
