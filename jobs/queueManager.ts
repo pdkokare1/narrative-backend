@@ -164,5 +164,3 @@ const queueManager = {
 };
 
 export default queueManager;
-
-}
