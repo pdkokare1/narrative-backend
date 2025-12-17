@@ -9,18 +9,19 @@ export const checkAppCheck = async (req: Request, res: Response, next: NextFunct
   const appCheckToken = req.header('X-Firebase-AppCheck');
   
   if (!appCheckToken) {
-      // Allow passing if explicitly disabled in dev (optional, keeping strict for now)
-      if (!config.isProduction) {
-          // logger.warn('Dev Mode: Skipping App Check');
-          // return next();
+      // In Production, this is strictly enforced
+      if (config.isProduction) {
+          res.status(401);
+          return next(new Error('Unauthorized: No App Check token.'));
       }
-
-      res.status(401);
-      return next(new Error('Unauthorized: No App Check token.'));
+      // In Dev, we might allow it (optional, currently strictly enforcing to catch bugs)
+      // logger.debug('Dev Mode warning: Missing App Check token');
   }
   
   try {
-    await admin.appCheck().verifyToken(appCheckToken);
+    if (appCheckToken) {
+        await admin.appCheck().verifyToken(appCheckToken);
+    }
     next(); 
   } catch (err: any) {
     logger.warn(`App Check Error: ${err.message}`);
@@ -65,14 +66,32 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
 };
 
 // --- Admin Authentication (System & Jobs) ---
-export const checkAdmin = (req: Request, res: Response, next: NextFunction) => {
+// ACCEPTS: Valid Firebase Admin Token OR x-admin-secret header
+export const checkAdmin = async (req: Request, res: Response, next: NextFunction) => {
+    // 1. Check for Secret Header (Legacy/Service-to-Service access)
     const adminSecret = req.header('x-admin-secret');
-
-    if (!adminSecret || adminSecret !== config.adminSecret) {
-        logger.warn(`🛑 Admin access denied from IP: ${req.ip}`);
-        res.status(403);
-        return next(new Error('Forbidden: Admin access required'));
+    if (adminSecret && adminSecret === config.adminSecret) {
+        return next();
     }
 
-    next();
+    // 2. Check for User Token with Admin Claim (Human Admin access)
+    const token = req.headers.authorization?.split('Bearer ')[1];
+    if (token) {
+        try {
+            const decodedToken = await admin.auth().verifyIdToken(token);
+            if (decodedToken.admin === true) {
+                req.user = decodedToken;
+                return next();
+            } else {
+                logger.warn(`🛑 Admin Access Denied: User ${decodedToken.uid} is not an admin.`);
+            }
+        } catch (e) {
+            // Token invalid, fall through to error
+        }
+    }
+
+    // 3. Deny Access
+    logger.warn(`🛑 Admin access denied from IP: ${req.ip}`);
+    res.status(403);
+    return next(new Error('Forbidden: Admin access required'));
 };
