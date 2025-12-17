@@ -5,16 +5,15 @@ import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
-import config from '../utils/config'; // Import Config
+import config from '../utils/config'; 
 import { cleanText } from '../utils/helpers';
 import { IArticle } from '../types';
 
-// Use Centralized Configuration for Models
+// Centralized Config
 const EMBEDDING_MODEL = config.aiModels.embedding;
 const PRO_MODEL = config.aiModels.pro;
 
-// --- GEMINI JSON SCHEMAS ---
-
+// --- SCHEMAS ---
 const BASIC_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -32,16 +31,12 @@ const FULL_SCHEMA = {
     category: { type: "STRING" },
     politicalLean: { type: "STRING" },
     sentiment: { type: "STRING", enum: ["Positive", "Negative", "Neutral"] },
-    
-    // Scores must be numbers
     biasScore: { type: "NUMBER" },
     credibilityScore: { type: "NUMBER" },
     reliabilityScore: { type: "NUMBER" },
-    
     clusterTopic: { type: "STRING" },
     primaryNoun: { type: "STRING" },
     secondaryNoun: { type: "STRING" },
-    
     keyFindings: { type: "ARRAY", items: { type: "STRING" } },
     recommendations: { type: "ARRAY", items: { type: "STRING" } }
   },
@@ -58,15 +53,12 @@ const ArticleAnalysisSchema = z.object({
     category: z.string().default("General"),
     politicalLean: z.string().default("Not Applicable"),
     sentiment: z.enum(['Positive', 'Negative', 'Neutral']).default('Neutral'),
-    
     biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
     credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
     reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-    
     clusterTopic: z.string().optional(),
     primaryNoun: z.string().optional(),
     secondaryNoun: z.string().optional(),
-    
     keyFindings: z.array(z.string()).optional().default([]),
     recommendations: z.array(z.string()).optional().default([])
 });
@@ -93,21 +85,20 @@ class AIService {
         generationConfig: {
           responseMimeType: "application/json",
           responseSchema: schema, 
-          temperature: 0.1, // Lower temperature for more consistent JSON
+          temperature: 0.1, 
           maxOutputTokens: 4096 
         }
+      }, {
+          timeout: 60000 // STABILITY FIX: 60s timeout to prevent hanging workers
       });
 
       KeyManager.reportSuccess(apiKey);
       return this.parseGeminiResponse(response.data, mode);
 
     } catch (error: any) {
-      // HANDLE SPECIFIC ERRORS
-      
-      // Let BullMQ handle retries for 429/500 errors automatically.
-      if (error.response?.status === 429 || error.response?.status >= 500) {
+      if (error.response?.status === 429 || error.response?.status >= 500 || error.code === 'ECONNABORTED') {
           if (apiKey) await KeyManager.reportFailure(apiKey, true);
-          logger.warn(`⚠️ AI Service Busy/Down (Status ${error.response?.status}). Job will retry automatically.`);
+          logger.warn(`⚠️ AI Service Busy/Timeout/Down (Status ${error.response?.status || error.code}). Job will retry.`);
           throw error; 
       }
 
@@ -116,13 +107,11 @@ class AIService {
           throw error; 
       }
 
-      // Non-retriable errors (Validation/Parsing)
       logger.error(`❌ AI Critical Failure (Non-Retriable): ${error.message}`);
       return this.getFallbackAnalysis(article);
     }
   }
 
-  // --- EMBEDDING (Vector) ---
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
@@ -133,6 +122,8 @@ class AIService {
         const response = await apiClient.post(url, {
             model: `models/${EMBEDDING_MODEL}`,
             content: { parts: [{ text: clean }] }
+        }, {
+            timeout: 10000 // 10s timeout for embeddings (should be fast)
         });
 
         KeyManager.reportSuccess(apiKey);
@@ -144,7 +135,6 @@ class AIService {
     }
   }
 
-  // --- HELPER: Schema Parser & Sanitizer ---
   private parseGeminiResponse(data: any, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates returned from AI');
@@ -155,7 +145,6 @@ class AIService {
         try {
             rawObj = JSON.parse(rawText);
         } catch (e) {
-            // Robust Repair using jsonrepair
             try {
                 const repaired = jsonrepair(rawText);
                 rawObj = JSON.parse(repaired);
@@ -180,8 +169,6 @@ class AIService {
         }
 
         parsed.analysisType = 'Full';
-        
-        // Calculate Trust Score safely
         parsed.trustScore = 0;
         if (parsed.credibilityScore > 0) {
             parsed.trustScore = Math.round(Math.sqrt((parsed.credibilityScore || 0) * (parsed.reliabilityScore || 0)));
@@ -196,13 +183,18 @@ class AIService {
 
   private cleanJsonOutput(text: string): string {
     if (!text) return "{}";
-    let clean = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    // Remove Markdown code blocks
+    let clean = text.replace(/```json/g, '').replace(/```/g, '');
+    
+    // Find the first '{' and last '}'
     const firstOpen = clean.indexOf('{');
     const lastClose = clean.lastIndexOf('}');
+    
     if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
       clean = clean.substring(firstOpen, lastClose + 1);
     }
-    return clean;
+    
+    return clean.trim();
   }
 
   private getFallbackAnalysis(article: any): Partial<IArticle> {
