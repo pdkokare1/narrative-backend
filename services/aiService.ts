@@ -1,6 +1,5 @@
 // services/aiService.ts
 import { z } from 'zod';
-import { jsonrepair } from 'jsonrepair';
 import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
@@ -13,7 +12,8 @@ import { IArticle } from '../types';
 const EMBEDDING_MODEL = config.aiModels.embedding;
 const PRO_MODEL = config.aiModels.pro;
 
-// --- SCHEMAS ---
+// --- STRICT GEMINI SCHEMAS ---
+// This forces the AI to return data in this EXACT format, preventing parsing errors.
 const BASIC_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -47,22 +47,6 @@ const FULL_SCHEMA = {
   ]
 };
 
-// --- ZOD VALIDATION ---
-const ArticleAnalysisSchema = z.object({
-    summary: z.string().default("Summary unavailable"),
-    category: z.string().default("General"),
-    politicalLean: z.string().default("Not Applicable"),
-    sentiment: z.enum(['Positive', 'Negative', 'Neutral']).default('Neutral'),
-    biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-    credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-    reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-    clusterTopic: z.string().optional(),
-    primaryNoun: z.string().optional(),
-    secondaryNoun: z.string().optional(),
-    keyFindings: z.array(z.string()).optional().default([]),
-    recommendations: z.array(z.string()).optional().default([])
-});
-
 class AIService {
   constructor() {
     KeyManager.loadKeys('GEMINI', 'GEMINI');
@@ -89,7 +73,7 @@ class AIService {
           maxOutputTokens: 4096 
         }
       }, {
-          timeout: 60000 // STABILITY FIX: 60s timeout to prevent hanging workers
+          timeout: 60000 // 60s timeout for stability
       });
 
       KeyManager.reportSuccess(apiKey);
@@ -123,7 +107,7 @@ class AIService {
             model: `models/${EMBEDDING_MODEL}`,
             content: { parts: [{ text: clean }] }
         }, {
-            timeout: 10000 // 10s timeout for embeddings (should be fast)
+            timeout: 10000 // 10s timeout
         });
 
         KeyManager.reportSuccess(apiKey);
@@ -139,23 +123,11 @@ class AIService {
     try {
         if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates returned from AI');
         
-        const rawText = data.candidates[0].content.parts[0].text || "";
-        
-        let rawObj;
-        try {
-            rawObj = JSON.parse(rawText);
-        } catch (e) {
-            try {
-                const repaired = jsonrepair(rawText);
-                rawObj = JSON.parse(repaired);
-            } catch (repairError) {
-                const clean = this.cleanJsonOutput(rawText);
-                rawObj = JSON.parse(clean); 
-            }
-        }
+        // With Structured Outputs, the text part IS the JSON.
+        const rawText = data.candidates[0].content.parts[0].text;
+        if (!rawText) throw new Error('Empty response from AI');
 
-        const validation = ArticleAnalysisSchema.safeParse(rawObj);
-        const parsed: any = validation.success ? validation.data : rawObj;
+        const parsed = JSON.parse(rawText);
 
         if (mode === 'Basic') {
             return {
@@ -170,8 +142,13 @@ class AIService {
 
         parsed.analysisType = 'Full';
         parsed.trustScore = 0;
-        if (parsed.credibilityScore > 0) {
-            parsed.trustScore = Math.round(Math.sqrt((parsed.credibilityScore || 0) * (parsed.reliabilityScore || 0)));
+        
+        // Calculate Trust Score safely
+        const credibility = Number(parsed.credibilityScore) || 0;
+        const reliability = Number(parsed.reliabilityScore) || 0;
+        
+        if (credibility > 0) {
+            parsed.trustScore = Math.round(Math.sqrt(credibility * reliability));
         }
 
         return parsed;
@@ -179,22 +156,6 @@ class AIService {
     } catch (error: any) {
         throw new Error(`Parsing failed: ${error.message}`);
     }
-  }
-
-  private cleanJsonOutput(text: string): string {
-    if (!text) return "{}";
-    // Remove Markdown code blocks
-    let clean = text.replace(/```json/g, '').replace(/```/g, '');
-    
-    // Find the first '{' and last '}'
-    const firstOpen = clean.indexOf('{');
-    const lastClose = clean.lastIndexOf('}');
-    
-    if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
-      clean = clean.substring(firstOpen, lastClose + 1);
-    }
-    
-    return clean.trim();
   }
 
   private getFallbackAnalysis(article: any): Partial<IArticle> {
