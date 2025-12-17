@@ -3,11 +3,9 @@ import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
 import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import logger from '../utils/logger';
-import config from '../utils/config';
-import redisClient from '../utils/redisClient'; // Imported helper
+import redisClient from '../utils/redisClient';
 
 // --- 1. Redis Connection Config ---
-// Centralized: Get config from our shared utility instead of re-parsing it here
 const connectionConfig = redisClient.parseRedisConfig();
 const isRedisConfigured = !!connectionConfig;
 
@@ -24,8 +22,9 @@ if (isRedisConfigured && connectionConfig) {
         newsQueue = new Queue('news-fetch-queue', { 
             connection: connectionConfig as ConnectionOptions,
             defaultJobOptions: {
-                removeOnComplete: 100, 
-                removeOnFail: 500,     
+                // COST OPTIMIZATION: Keep fewer jobs in history to save Redis RAM
+                removeOnComplete: 20, 
+                removeOnFail: 50,     
                 attempts: 3,           
                 backoff: { type: 'exponential', delay: 5000 }
             }
@@ -38,13 +37,12 @@ if (isRedisConfigured && connectionConfig) {
 }
 
 // --- 3. Worker Starter (Consumer) ---
-// Only call this from a dedicated worker process!
 const startWorker = () => {
     if (!isRedisConfigured || !connectionConfig) {
         logger.error("❌ Cannot start worker: Redis not configured.");
         return;
     }
-    if (newsWorker) return; // Already running
+    if (newsWorker) return; 
 
     try {
         newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
@@ -69,8 +67,8 @@ const startWorker = () => {
             }
         }, { 
             connection: connectionConfig as ConnectionOptions,
-            concurrency: 5, // SCALED UP: Process 5 jobs at once for faster news ingestion
-            limiter: { max: 5, duration: 1500 } // Adjusted rate limiter to match
+            concurrency: 5, 
+            limiter: { max: 5, duration: 1500 } 
         });
 
         newsWorker.on('completed', (job: Job) => {
