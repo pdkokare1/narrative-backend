@@ -20,8 +20,8 @@ import { errorHandler } from './middleware/errorMiddleware';
 import { apiLimiter } from './middleware/rateLimiters';
 
 // Routes
-import apiRouter from './routes/index'; // The new centralized router
-import shareRoutes from './routes/shareRoutes'; // Kept separate for root access
+import apiRouter from './routes/index'; 
+import shareRoutes from './routes/shareRoutes'; 
 
 const app = express();
 
@@ -73,16 +73,17 @@ app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
-    if (mongoStatus === 'UP' && redisStatus === 'UP') {
-        res.status(200).json({ status: 'OK', mongo: mongoStatus, redis: redisStatus });
-    } else {
-        res.status(503).json({ status: 'ERROR', mongo: mongoStatus, redis: redisStatus });
-    }
+    const statusCode = (mongoStatus === 'UP' && redisStatus === 'UP') ? 200 : 503;
+    
+    res.status(statusCode).json({ 
+        status: statusCode === 200 ? 'OK' : 'ERROR', 
+        mongo: mongoStatus, 
+        redis: redisStatus 
+    });
 });
 
 // --- 5. Firebase Init ---
 try {
-  // Use the safely parsed serviceAccount from config
   if (config.firebase.serviceAccount) {
     if (!admin.apps.length) {
       admin.initializeApp({
@@ -96,14 +97,11 @@ try {
 }
 
 // --- 6. Global Rate Limiter ---
+// Note: apiLimiter uses Redis dynamically now, so it's safe to mount here
 app.use('/api/', apiLimiter); 
 
 // --- 7. Mount Routes ---
-
-// Share Routes (Hosted at root /share/...)
 app.use('/share', shareRoutes); 
-
-// API Routes (Hosted at /api/...)
 app.use('/api', apiRouter);
 
 // --- 8. Error Handling ---
@@ -112,8 +110,10 @@ app.use(errorHandler);
 // --- 9. Database & Server Start ---
 const startServer = async () => {
     try {
+        // Init Redis FIRST
         await initRedis();
 
+        // Init Mongo
         if (config.mongoUri) {
             await mongoose.connect(config.mongoUri);
             logger.info('MongoDB Connected');
@@ -121,6 +121,7 @@ const startServer = async () => {
             throw new Error("MongoDB URI missing in config");
         }
 
+        // Init Background Services
         await Promise.all([
             emergencyService.initializeEmergencyContacts(),
             gatekeeperService.initialize()
@@ -137,8 +138,8 @@ const startServer = async () => {
         const gracefulShutdown = async () => {
             logger.info('🛑 Received Kill Signal, shutting down gracefully...');
             
-            // Force shutdown after timeout
-            setTimeout(() => {
+            // Force shutdown after timeout (failsafe)
+            const forceExit = setTimeout(() => {
                 logger.error('🛑 Force Shutdown (Timeout)');
                 process.exit(1);
             }, 10000);
@@ -148,6 +149,7 @@ const startServer = async () => {
                 try {
                     await redisClient.quit();
                     await mongoose.connection.close(false);
+                    clearTimeout(forceExit);
                     logger.info('✅ Resources released. Exiting.');
                     process.exit(0);
                 } catch (err: any) {
