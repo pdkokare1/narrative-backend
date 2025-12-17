@@ -3,10 +3,10 @@ import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
 import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import logger from '../utils/logger';
-import redisClient from '../utils/redisClient';
+import config from '../utils/config';
 
 // --- 1. Redis Connection Config ---
-const connectionConfig = redisClient.parseRedisConfig();
+const connectionConfig = config.redisOptions; 
 const isRedisConfigured = !!connectionConfig;
 
 if (!isRedisConfigured) {
@@ -54,18 +54,16 @@ const startWorker = () => {
             }
 
             // --- B. Feed Fetcher (The Fan-Out) ---
-            // Handles 'fetch-feed' and legacy names for backward compatibility
             if (job.name === 'fetch-feed' || job.name === 'scheduled-news-fetch' || job.name === 'manual-fetch') {
                 logger.info(`👷 Job: Fetching Feed...`);
                 const articles = await newsFetcher.fetchFeed();
 
                 if (articles.length > 0 && newsQueue) {
-                    // Create a sub-job for EACH article (Fan-Out)
                     const jobs = articles.map(article => ({
                         name: 'process-article',
                         data: article,
                         opts: { 
-                            removeOnComplete: true, // Don't clog Redis history
+                            removeOnComplete: true, 
                             attempts: 3 
                         }
                     }));
@@ -76,19 +74,18 @@ const startWorker = () => {
                 return { status: 'dispatched', count: articles.length };
             }
 
-            // --- C. Article Processor (High Concurrency) ---
+            // --- C. Article Processor ---
             if (job.name === 'process-article') {
                 return await newsFetcher.processArticleJob(job.data);
             }
 
         }, { 
             connection: connectionConfig as ConnectionOptions,
-            concurrency: 5, // Process 5 articles at the same time!
-            limiter: { max: 10, duration: 1000 } // Safety limit
+            concurrency: Number(process.env.WORKER_CONCURRENCY) || 5, // Extracted to Env
+            limiter: { max: 10, duration: 1000 } 
         });
 
         newsWorker.on('completed', (job: Job) => {
-            // Only log high-level jobs to avoid spamming logs with 50+ lines per batch
             if (job.name === 'fetch-feed' || job.name === 'update-trending') {
                 logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
             }
@@ -104,14 +101,25 @@ const startWorker = () => {
     }
 };
 
-// --- 4. Export ---
 const queueManager = {
     /**
-     * Adds a single, immediate job to the queue.
+     * SMART ADD: Checks if a job is already waiting/active before adding.
+     * Prevents "Startup Storms" where 3 replicas add 3 identical jobs.
      */
     addFetchJob: async (name: string = 'fetch-feed', data: any = {}) => {
         if (!newsQueue) return null;
         try {
+            // Check concurrency: Is this job already running?
+            const counts = await newsQueue.getJobCounts('active', 'waiting', 'delayed');
+            
+            // If the queue is busy with feed fetching (assuming it's the main task), 
+            // skip adding another immediate fetch to prevent duplicates.
+            // Note: This is a simple heuristic. For stricter locking, we'd check specific Job IDs.
+            if (counts.active > 5 || counts.waiting > 10) {
+                 logger.warn(`⚠️ Queue busy (Active: ${counts.active}, Waiting: ${counts.waiting}). Skipping ${name} request.`);
+                 return null;
+            }
+
             return await newsQueue.add(name, data);
         } catch (err: any) {
             logger.error(`❌ Failed to add job: ${err.message}`);
@@ -133,13 +141,20 @@ const queueManager = {
             const existing = repeatableJobs.find(j => j.name === name);
             
             if (existing) {
-                await newsQueue.removeRepeatableByKey(existing.key);
-                logger.debug(`🔄 Updated schedule for: ${name}`);
+                // If the Cron pattern changed, we remove the old one.
+                if (existing.pattern !== cronPattern) {
+                    await newsQueue.removeRepeatableByKey(existing.key);
+                    logger.info(`🔄 Updating schedule for: ${name}`);
+                } else {
+                    // Schedule exists and is correct. Do nothing.
+                    return existing;
+                }
             }
 
             // Add new schedule
             const job = await newsQueue.add(name, data, { 
-                repeat: { pattern: cronPattern } 
+                repeat: { pattern: cronPattern },
+                jobId: `cron-${name}` // Enforce consistent ID
             });
             
             logger.info(`⏰ Job Scheduled: ${name} (${cronPattern})`);
