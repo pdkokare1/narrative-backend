@@ -87,20 +87,26 @@ class NewsService {
     return `news:seen:${hash}`;
   }
 
+  // OPTIMIZED: Uses mGet (Multi-Get) to check all articles in one round-trip
   private async filterSeenInRedis(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
     if (articles.length === 0) return [];
     
     const unseen: INewsSourceArticle[] = [];
+    
+    // Create mapping of keys to articles
+    const keys = articles.map(a => this.getRedisKey(a.url));
+    
+    // Fetch all statuses at once
+    const results = await redisClient.mGet(keys);
+    
     let skippedCount = 0;
 
-    for (const article of articles) {
-        const key = this.getRedisKey(article.url);
-        const isSeen = await redisClient.get(key);
-        
-        if (isSeen) {
-            skippedCount++;
+    for (let i = 0; i < articles.length; i++) {
+        // If result is null/undefined, it's not in Redis (Unseen)
+        if (!results[i]) {
+            unseen.push(articles[i]);
         } else {
-            unseen.push(article);
+            skippedCount++;
         }
     }
 
@@ -111,10 +117,26 @@ class NewsService {
     return unseen;
   }
 
+  // OPTIMIZED: Uses Pipeline to set all keys in one round-trip
   private async markAsSeenInRedis(articles: INewsSourceArticle[]) {
-      for (const article of articles) {
-          const key = this.getRedisKey(article.url);
-          await redisClient.set(key, '1', 172800); // 48 hours
+      if (articles.length === 0) return;
+
+      const client = redisClient.getClient();
+      
+      if (client && redisClient.isReady()) {
+          try {
+              const multi = client.multi();
+              
+              for (const article of articles) {
+                  const key = this.getRedisKey(article.url);
+                  // Set expiration to 48 hours (172800 seconds)
+                  multi.set(key, '1', { EX: 172800 });
+              }
+
+              await multi.exec();
+          } catch (e: any) {
+              logger.error(`Redis Pipeline Error: ${e.message}`);
+          }
       }
   }
 
