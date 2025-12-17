@@ -4,7 +4,8 @@ import logger from '../utils/logger';
 import config from '../utils/config';
 
 // --- 1. Redis Connection Config ---
-const connectionConfig = config.redisOptions;
+// CRITICAL FIX: Use the BullMQ-specific config, not the generic one
+const connectionConfig = config.bullMQConnection;
 const isRedisConfigured = !!connectionConfig;
 
 if (!isRedisConfigured) {
@@ -39,26 +40,23 @@ const queueManager = {
      * @param data - Data to pass to the worker
      * @param jobId - (Optional) A unique ID. If a job with this ID already exists, this add will be ignored.
      */
-    addFetchJob: async (name: string = 'fetch-feed', data: any = {}, jobId?: string) => {
+    addFetchJob: async (name: string = 'manual-fetch', data: any = {}, jobId?: string) => {
         if (!newsQueue) return null;
         try {
-            const options: any = {};
-            if (jobId) {
-                options.jobId = jobId; // deduplication key
-            }
-
-            return await newsQueue.add(name, data, options);
+            const opts: any = {};
+            if (jobId) opts.jobId = jobId;
+            
+            return await newsQueue.add(name, data, opts);
         } catch (err: any) {
-            logger.error(`❌ Failed to add job: ${err.message}`);
+            logger.error(`❌ Failed to add job ${name}: ${err.message}`);
             return null;
         }
     },
-    
+
     /**
-     * Adds multiple jobs at once (Fan-Out).
-     * Used by the worker to split 1 feed into 10 article processing jobs.
+     * Adds multiple jobs in bulk (Efficient)
      */
-    addBulk: async (jobs: { name: string; data: any; opts?: any }[]) => {
+    addBulk: async (jobs: { name: string; data: any }[]) => {
         if (!newsQueue) return null;
         try {
             return await newsQueue.addBulk(jobs);
@@ -69,20 +67,16 @@ const queueManager = {
     },
 
     /**
-     * Schedules a recurring job using Cron syntax.
+     * Schedules a repeatable job (Cron-like)
      */
-    scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
-        if (!newsQueue) {
-            logger.warn('⚠️ Queue not initialized, skipping schedule.');
-            return null;
-        }
+    scheduleRepeatableJob: async (name: string, cronPattern: string, data: any = {}) => {
+        if (!newsQueue) return null;
         try {
-            // Clean up old schedules
+            // Remove existing repeatable jobs with the same key to update schedule
             const repeatableJobs = await newsQueue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
             
             if (existing) {
-                // If the Cron pattern changed, we remove the old one.
                 if (existing.pattern !== cronPattern) {
                     await newsQueue.removeRepeatableByKey(existing.key);
                     logger.info(`🔄 Updating schedule for: ${name}`);
