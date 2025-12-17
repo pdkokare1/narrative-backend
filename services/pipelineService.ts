@@ -7,7 +7,6 @@ import logger from '../utils/logger';
 import redisClient from '../utils/redisClient';
 import { IArticle } from '../types';
 
-// How old can a "parent" article be before we stop inheriting its analysis?
 const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24;
 
 class PipelineService {
@@ -19,7 +18,7 @@ class PipelineService {
         if (await redisClient.sIsMember('processed_urls', url)) return true;
         // 2. DB Check (Reliable)
         if (await Article.exists({ url })) {
-            await redisClient.sAdd('processed_urls', url); // Sync back to cache
+            await redisClient.sAdd('processed_urls', url); 
             return true;
         }
         return false;
@@ -33,12 +32,19 @@ class PipelineService {
             // 1. Exact Duplicate Check (URL)
             if (await this.isDuplicate(article.url)) return 'DUPLICATE_URL';
 
+            // --- COST SAVER: Pre-Flight Checks ---
+            // Don't waste AI tokens on empty/short content
+            const contentLen = (article.description || "").length + (article.content || "").length;
+            if (contentLen < 50) {
+                logger.warn(`Skipping short content: ${article.title}`);
+                return 'JUNK_CONTENT';
+            }
+
             // 2. Gatekeeper (Junk Filter)
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
             if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
-            // --- OPTIMIZATION: Fuzzy Match (Stage 1) ---
-            // Try to find a match using math (Levenshtein) BEFORE calling expensive AI
+            // --- STAGE 1: Fuzzy Match (Free & Fast) ---
             let existingMatch = await clusteringService.findSimilarHeadline(article.title);
             let usedFuzzyMatch = false;
 
@@ -48,14 +54,19 @@ class PipelineService {
 
             let embedding: number[] | null = null;
 
-            // 3. Create Embedding (ONLY if no fuzzy match found)
+            // --- STAGE 2: Semantic Search (Paid) ---
+            // Only create embedding if fuzzy match failed
             if (!existingMatch) {
                 const textToEmbed = `${article.title}. ${article.description}`;
                 embedding = await aiService.createEmbedding(textToEmbed);
 
-                // 4. Semantic Search (Stage 2)
                 if (embedding) {
                     existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
+                } else {
+                    // CRITICAL FIX: If embedding fails (API Error), do NOT proceed.
+                    // If we proceed, we might create a duplicate because we couldn't check semantics.
+                    // Throwing error here forces the Job Queue to retry this article later.
+                    throw new Error('Embedding generation failed (Network/API). Retrying article later.');
                 }
             }
 
@@ -68,11 +79,8 @@ class PipelineService {
             let isMatchValid = false;
 
             if (existingMatch) {
-                // Freshness Check
                 const hoursDiff = (new Date().getTime() - new Date(existingMatch.createdAt!).getTime()) / (1000 * 60 * 60);
                 isMatchFresh = hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS;
-                
-                // Validity Check (Does the parent actually have a summary?)
                 isMatchValid = !!existingMatch.summary && existingMatch.summary !== "Summary Unavailable";
             }
 
@@ -82,7 +90,6 @@ class PipelineService {
                 logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match (ID: ${existingMatch._id})`);
                 isSemanticSkip = true;
                 
-                // Copy ALL relevant AI fields to prevent "blank" features in frontend
                 analysis = {
                     summary: existingMatch.summary, 
                     category: existingMatch.category,
@@ -118,7 +125,8 @@ class PipelineService {
                 politicalLean: analysis.politicalLean || "Not Applicable",
                 url: article.url,
                 imageUrl: article.image, 
-                publishedAt: new Date(article.publishedAt),
+                // SAFETY FIX: Ensure date is valid, default to now if missing
+                publishedAt: article.publishedAt ? new Date(article.publishedAt) : new Date(),
                 analysisType: analysis.analysisType || 'Full',
                 sentiment: analysis.sentiment || 'Neutral',
                 
@@ -139,21 +147,27 @@ class PipelineService {
                 embedding: embedding || [] 
             };
             
-            // Assign Cluster ID if missing
             if (!newArticleData.clusterId) {
                 newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding || undefined);
             }
             
             await Article.create(newArticleData);
             
-            // Mark as processed in Redis (Set expiry to 48 hours to manage memory)
+            // Mark processed for 48h
             await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
             await redisClient.sAdd('processed_urls', article.url);
 
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
         } catch (error: any) {
+            // Log full error for debugging
             logger.error(`❌ Pipeline Error for "${article.title}": ${error.message}`);
+            
+            // Re-throw if it's a critical infrastructure error so the Job Queue knows to retry
+            if (error.message.includes('Embedding') || error.message.includes('Connection')) {
+                throw error;
+            }
+            
             return 'ERROR_PIPELINE';
         }
     }
