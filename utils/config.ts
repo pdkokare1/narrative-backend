@@ -24,16 +24,15 @@ const envSchema = z.object({
   GEMINI_API_KEY_1: z.string().optional(),
   ELEVENLABS_API_KEY: z.string().optional(),
   
-  // Admin Secret (Added to fix build error)
-  // Ensure you have ADMIN_SECRET set in your Railway variables
-  ADMIN_SECRET: z.string().default('admin-secret'),
+  // SECURITY UPDATE: Removed default value. 
+  // You MUST set ADMIN_SECRET in your Railway Environment Variables.
+  ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
   
   // AI Model Configuration (Centralized Control)
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
   AI_MODEL_PRO: z.string().default('gemini-2.0-flash'),
 
   // Firebase
-  // Accepts JSON string OR Base64 encoded JSON (better for some env vars)
   FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
   
   // URLs
@@ -80,7 +79,7 @@ const config = {
   redisUrl: env.REDIS_URL,
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
-  adminSecret: env.ADMIN_SECRET, // Added this line to fix the error
+  adminSecret: env.ADMIN_SECRET, 
   
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
@@ -93,7 +92,6 @@ const config = {
     elevenLabs: env.ELEVENLABS_API_KEY || '',
   },
   
-  // New Centralized AI Config
   aiModels: {
     embedding: env.AI_MODEL_EMBEDDING,
     pro: env.AI_MODEL_PRO,
