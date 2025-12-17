@@ -99,16 +99,17 @@ const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
-        // 1. Unified Database & Redis Connection
-        await dbLoader.connect();
-        
-        // 2. Start HTTP Server
+        // 1. Start HTTP Server IMMEDIATELY (Fixes Deployment Timeouts)
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
         const server = app.listen(Number(PORT), HOST, () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
+
+        // 2. Unified Database & Redis Connection (Background)
+        // Note: Mongoose buffers requests until connection is ready, so this is safe.
+        await dbLoader.connect();
 
         // 3. Initialize Critical Services (Lightweight)
         (async () => {
