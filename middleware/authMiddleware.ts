@@ -15,7 +15,6 @@ export const checkAppCheck = async (req: Request, res: Response, next: NextFunct
           return next(new Error('Unauthorized: No App Check token.'));
       }
       // In Dev, we might allow it (optional, currently strictly enforcing to catch bugs)
-      // logger.debug('Dev Mode warning: Missing App Check token');
   }
   
   try {
@@ -65,16 +64,11 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
   next();
 };
 
-// --- Admin Authentication (System & Jobs) ---
-// ACCEPTS: Valid Firebase Admin Token OR x-admin-secret header
+// --- Admin Authentication (Strict System) ---
+// ACCEPTS: ONLY Valid Firebase Admin Token (No more insecure secret headers)
 export const checkAdmin = async (req: Request, res: Response, next: NextFunction) => {
-    // 1. Check for Secret Header (Legacy/Service-to-Service access)
-    const adminSecret = req.header('x-admin-secret');
-    if (adminSecret && adminSecret === config.adminSecret) {
-        return next();
-    }
-
-    // 2. Check for User Token with Admin Claim (Human Admin access)
+    
+    // 1. Check for User Token with Admin Claim
     const token = req.headers.authorization?.split('Bearer ')[1];
     if (token) {
         try {
@@ -90,7 +84,7 @@ export const checkAdmin = async (req: Request, res: Response, next: NextFunction
         }
     }
 
-    // 3. Deny Access
+    // 2. Deny Access
     logger.warn(`🛑 Admin access denied from IP: ${req.ip}`);
     res.status(403);
     return next(new Error('Forbidden: Admin access required'));
