@@ -4,33 +4,15 @@ import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import logger from '../utils/logger';
 import config from '../utils/config';
+import redisClient from '../utils/redisClient'; // Imported helper
 
 // --- 1. Redis Connection Config ---
-let connectionConfig: ConnectionOptions | undefined;
-let isRedisConfigured = false;
+// Centralized: Get config from our shared utility instead of re-parsing it here
+const connectionConfig = redisClient.parseRedisConfig();
+const isRedisConfigured = !!connectionConfig;
 
-if (config.redisUrl) {
-    try {
-        const url = new URL(config.redisUrl);
-        connectionConfig = {
-            host: url.hostname,
-            port: Number(url.port),
-            password: url.password,
-            username: url.username,
-            maxRetriesPerRequest: null,
-            // Keep-alive settings for stability on cloud (Railway/Render)
-            keepAlive: 10000 
-        };
-        // Handle rediss:// protocol (TLS)
-        if (url.protocol === 'rediss:') {
-            connectionConfig.tls = { rejectUnauthorized: false };
-        }
-        isRedisConfigured = true;
-    } catch (e: any) {
-        logger.error(`❌ Invalid REDIS_URL in QueueManager: ${e.message}`);
-    }
-} else {
-    logger.warn("⚠️ REDIS_URL not set. Background jobs will be disabled.");
+if (!isRedisConfigured) {
+    logger.warn("⚠️ REDIS_URL not set or invalid. Background jobs will be disabled.");
 }
 
 // --- 2. Initialize Queue (Producer) ---
@@ -40,7 +22,7 @@ let newsWorker: Worker | null = null;
 if (isRedisConfigured && connectionConfig) {
     try {
         newsQueue = new Queue('news-fetch-queue', { 
-            connection: connectionConfig,
+            connection: connectionConfig as ConnectionOptions,
             defaultJobOptions: {
                 removeOnComplete: 100, 
                 removeOnFail: 500,     
@@ -86,7 +68,7 @@ const startWorker = () => {
                 throw err; 
             }
         }, { 
-            connection: connectionConfig,
+            connection: connectionConfig as ConnectionOptions,
             concurrency: 5, // SCALED UP: Process 5 jobs at once for faster news ingestion
             limiter: { max: 5, duration: 1500 } // Adjusted rate limiter to match
         });
