@@ -87,8 +87,8 @@ const startWorker = () => {
             }
         }, { 
             connection: connectionConfig,
-            concurrency: 1, 
-            limiter: { max: 1, duration: 1500 }
+            concurrency: 5, // SCALED UP: Process 5 jobs at once for faster news ingestion
+            limiter: { max: 5, duration: 1500 } // Adjusted rate limiter to match
         });
 
         newsWorker.on('completed', (job: Job) => {
