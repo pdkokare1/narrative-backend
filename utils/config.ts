@@ -25,11 +25,13 @@ const envSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
 
   // Firebase
+  // Accepts JSON string OR Base64 encoded JSON (better for some env vars)
   FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
   
   // URLs & Secrets
   FRONTEND_URL: z.string().url().default('https://thegamut.in'),
-  ADMIN_SECRET: z.string().optional(), // For protecting manual jobs
+  // Force a strong secret in production
+  ADMIN_SECRET: z.string().default('change_this_secret_locally'), 
 });
 
 // Parse and validate
@@ -48,12 +50,31 @@ const parseConfig = () => {
 
 const env = parseConfig();
 
+// Helper to parse Firebase Config safely
+const getFirebaseConfig = () => {
+  if (!env.FIREBASE_SERVICE_ACCOUNT) return '';
+  try {
+    // Try parsing as JSON first
+    return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
+  } catch (e) {
+    try {
+      // If that fails, try decoding from Base64
+      const buff = Buffer.from(env.FIREBASE_SERVICE_ACCOUNT, 'base64');
+      return JSON.parse(buff.toString('utf-8'));
+    } catch (err) {
+      logger.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT. Check if it is valid JSON or Base64.');
+      return '';
+    }
+  }
+};
+
 const config = {
   port: env.PORT,
   mongoUri: env.MONGODB_URI,
   redisUrl: env.REDIS_URL,
   frontendUrl: env.FRONTEND_URL,
-  adminSecret: env.ADMIN_SECRET || 'change_this_secret_locally', 
+  adminSecret: env.ADMIN_SECRET, 
+  isProduction: env.NODE_ENV === 'production',
   
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
@@ -67,9 +88,14 @@ const config = {
   },
 
   firebase: {
-    serviceAccount: env.FIREBASE_SERVICE_ACCOUNT || '',
+    serviceAccount: getFirebaseConfig(),
   }
 };
+
+// Security Check for Production
+if (config.isProduction && config.adminSecret === 'change_this_secret_locally') {
+    logger.warn('⚠️  SECURITY WARNING: Using default ADMIN_SECRET in production! Please update your environment variables.');
+}
 
 logger.info('✅ Configuration Validated & Loaded');
 
