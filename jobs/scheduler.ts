@@ -33,5 +33,3 @@ export const startScheduler = async () => {
     queueManager.addFetchJob('manual-fetch', { reason: 'startup' });
   }, 5000);
 };
-
-}
