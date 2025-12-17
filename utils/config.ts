@@ -2,6 +2,7 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import logger from './logger';
+import { URL } from 'url'; // Import URL for parsing
 
 dotenv.config();
 
@@ -90,31 +91,39 @@ const getCorsOrigins = () => {
   return Array.from(new Set(defaults)); 
 };
 
-// --- CENTRALIZED REDIS CONFIG PARSING ---
+// --- REDIS CONFIG (For 'redis' package) ---
 const getRedisConfig = () => {
   if (!env.REDIS_URL) return undefined;
   
   try {
-      // For redis v4+, the simplest way is to pass the URL directly.
-      // This automatically handles username, password, host, and port.
-      const config: any = {
-          url: env.REDIS_URL
-      };
-
-      // Handle rediss:// protocol (TLS) for production (Railway/Render/AWS)
-      // We insert these into the 'socket' object which redisClient.ts will merge.
+      const config: any = { url: env.REDIS_URL };
       if (env.REDIS_URL.startsWith('rediss:')) {
-          config.socket = {
-              tls: true,
-              rejectUnauthorized: false 
-          };
+          config.socket = { tls: true, rejectUnauthorized: false };
       }
-
       return config;
   } catch (e: any) {
-      logger.error(`❌ Error parsing Redis URL: ${e.message}`);
       return undefined;
   }
+};
+
+// --- NEW: BULLMQ CONFIG (For 'ioredis' package) ---
+// This parses the URL into strict host/port/password for BullMQ
+const getBullMQConfig = () => {
+    if (!env.REDIS_URL) return undefined;
+    try {
+        const parsed = new URL(env.REDIS_URL);
+        return {
+            host: parsed.hostname,
+            port: Number(parsed.port),
+            username: parsed.username || undefined,
+            password: parsed.password || undefined,
+            // BullMQ expects TLS options at the root level for ioredis
+            tls: env.REDIS_URL.startsWith('rediss:') ? { rejectUnauthorized: false } : undefined
+        };
+    } catch (e) {
+        logger.error("❌ Failed to parse Redis URL for BullMQ");
+        return undefined;
+    }
 };
 
 const config = {
@@ -122,7 +131,8 @@ const config = {
   mongoUri: env.MONGODB_URI,
   mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
-  redisOptions: getRedisConfig(), // Exporting the parsed object
+  redisOptions: getRedisConfig(), // Standard Client
+  bullMQConnection: getBullMQConfig(), // NEW: BullMQ Specific Config
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
