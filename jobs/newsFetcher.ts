@@ -8,6 +8,16 @@ const BATCH_SIZE = 5;
 // --- HELPERS ---
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+// Safe wrapper to prevent one failure from crashing the whole batch
+const processSafe = async (article: any) => {
+    try {
+        return await pipelineService.processSingleArticle(article);
+    } catch (error: any) {
+        logger.error(`⚠️ Pipeline Error for "${article.title}": ${error.message}`);
+        return 'ERROR';
+    }
+};
+
 // --- MAIN JOB ---
 async function fetchAndAnalyzeNews() {
   logger.info('🔄 Job Started: Fetching news...');
@@ -32,9 +42,9 @@ async function fetchAndAnalyzeNews() {
     for (let i = 0; i < rawArticles.length; i += BATCH_SIZE) {
         const batch = rawArticles.slice(i, i + BATCH_SIZE);
         
-        // Use the new Pipeline Service here
+        // STABILITY FIX: Use processSafe so one crash doesn't kill the batch
         const batchResults = await Promise.all(
-            batch.map(article => pipelineService.processSingleArticle(article))
+            batch.map(article => processSafe(article))
         );
         
         // Accumulate Stats
