@@ -1,11 +1,12 @@
 // jobs/queueManager.ts
-import { Queue, ConnectionOptions } from 'bullmq';
+import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
+import newsFetcher from './newsFetcher';
+import statsService from '../services/statsService';
 import logger from '../utils/logger';
-import config from '../utils/config';
+import redisClient from '../utils/redisClient';
 
 // --- 1. Redis Connection Config ---
-// CRITICAL FIX: Use the BullMQ-specific config, not the generic one
-const connectionConfig = config.bullMQConnection;
+const connectionConfig = redisClient.parseRedisConfig();
 const isRedisConfigured = !!connectionConfig;
 
 if (!isRedisConfigured) {
@@ -14,6 +15,7 @@ if (!isRedisConfigured) {
 
 // --- 2. Initialize Queue (Producer) ---
 let newsQueue: Queue | null = null;
+let newsWorker: Worker | null = null;
 
 if (isRedisConfigured && connectionConfig) {
     try {
@@ -33,62 +35,111 @@ if (isRedisConfigured && connectionConfig) {
     }
 }
 
+// --- 3. Worker Starter (Consumer) ---
+const startWorker = () => {
+    if (!isRedisConfigured || !connectionConfig) {
+        logger.error("❌ Cannot start worker: Redis not configured.");
+        return;
+    }
+    if (newsWorker) return; 
+
+    try {
+        newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
+            
+            // --- A. Maintenance Jobs ---
+            if (job.name === 'update-trending') {
+                logger.info(`👷 Job: Updating Trending Topics...`);
+                await statsService.updateTrendingTopics();
+                return { status: 'completed' };
+            }
+
+            // --- B. Feed Fetcher (The Fan-Out) ---
+            // Handles 'fetch-feed' and legacy names for backward compatibility
+            if (job.name === 'fetch-feed' || job.name === 'scheduled-news-fetch' || job.name === 'manual-fetch') {
+                logger.info(`👷 Job: Fetching Feed...`);
+                const articles = await newsFetcher.fetchFeed();
+
+                if (articles.length > 0 && newsQueue) {
+                    // Create a sub-job for EACH article (Fan-Out)
+                    const jobs = articles.map(article => ({
+                        name: 'process-article',
+                        data: article,
+                        opts: { 
+                            removeOnComplete: true, // Don't clog Redis history
+                            attempts: 3 
+                        }
+                    }));
+
+                    await newsQueue.addBulk(jobs);
+                    logger.info(`✨ Dispatched ${articles.length} individual article jobs.`);
+                }
+                return { status: 'dispatched', count: articles.length };
+            }
+
+            // --- C. Article Processor (High Concurrency) ---
+            if (job.name === 'process-article') {
+                return await newsFetcher.processArticleJob(job.data);
+            }
+
+        }, { 
+            connection: connectionConfig as ConnectionOptions,
+            concurrency: 5, // Process 5 articles at the same time!
+            limiter: { max: 10, duration: 1000 } // Safety limit
+        });
+
+        newsWorker.on('completed', (job: Job) => {
+            // Only log high-level jobs to avoid spamming logs with 50+ lines per batch
+            if (job.name === 'fetch-feed' || job.name === 'update-trending') {
+                logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
+            }
+        });
+
+        newsWorker.on('failed', (job: Job | undefined, err: Error) => {
+            logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
+        });
+
+        logger.info("✅ Background Worker Started & Listening...");
+    } catch (err: any) {
+        logger.error(`❌ Failed to start Worker: ${err.message}`);
+    }
+};
+
+// --- 4. Export ---
 const queueManager = {
     /**
-     * Adds a single job to the queue.
-     * @param name - The name of the job (e.g., 'fetch-feed')
-     * @param data - Data to pass to the worker
-     * @param jobId - (Optional) A unique ID. If a job with this ID already exists, this add will be ignored.
+     * Adds a single, immediate job to the queue.
      */
-    addFetchJob: async (name: string = 'manual-fetch', data: any = {}, jobId?: string) => {
+    addFetchJob: async (name: string = 'fetch-feed', data: any = {}) => {
         if (!newsQueue) return null;
         try {
-            const opts: any = {};
-            if (jobId) opts.jobId = jobId;
-            
-            return await newsQueue.add(name, data, opts);
+            return await newsQueue.add(name, data);
         } catch (err: any) {
-            logger.error(`❌ Failed to add job ${name}: ${err.message}`);
+            logger.error(`❌ Failed to add job: ${err.message}`);
             return null;
         }
     },
-
+    
     /**
-     * Adds multiple jobs in bulk (Efficient)
+     * Schedules a recurring job using Cron syntax.
      */
-    addBulk: async (jobs: { name: string; data: any }[]) => {
-        if (!newsQueue) return null;
-        try {
-            return await newsQueue.addBulk(jobs);
-        } catch (err: any) {
-            logger.error(`❌ Failed to add bulk jobs: ${err.message}`);
+    scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
+        if (!newsQueue) {
+            logger.warn('⚠️ Queue not initialized, skipping schedule.');
             return null;
         }
-    },
-
-    /**
-     * Schedules a repeatable job (Cron-like)
-     */
-    scheduleRepeatableJob: async (name: string, cronPattern: string, data: any = {}) => {
-        if (!newsQueue) return null;
         try {
-            // Remove existing repeatable jobs with the same key to update schedule
+            // Clean up old schedules
             const repeatableJobs = await newsQueue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
             
             if (existing) {
-                if (existing.pattern !== cronPattern) {
-                    await newsQueue.removeRepeatableByKey(existing.key);
-                    logger.info(`🔄 Updating schedule for: ${name}`);
-                } else {
-                    return existing;
-                }
+                await newsQueue.removeRepeatableByKey(existing.key);
+                logger.debug(`🔄 Updated schedule for: ${name}`);
             }
 
             // Add new schedule
             const job = await newsQueue.add(name, data, { 
-                repeat: { pattern: cronPattern },
-                jobId: `cron-${name}` // Enforce consistent ID
+                repeat: { pattern: cronPattern } 
             });
             
             logger.info(`⏰ Job Scheduled: ${name} (${cronPattern})`);
@@ -114,9 +165,18 @@ const queueManager = {
         }
     },
 
+    // This was missing in the previous build, causing the error
+    startWorker, 
+
     shutdown: async () => {
-        if (newsQueue) await newsQueue.close();
-        logger.info('✅ Job Queue Producer shutdown complete.');
+        logger.info('🛑 Shutting down Job Queue & Workers...');
+        try {
+            if (newsWorker) await newsWorker.close();
+            if (newsQueue) await newsQueue.close();
+            logger.info('✅ Job Queue shutdown complete.');
+        } catch (err: any) {
+            logger.error(`⚠️ Error during Queue shutdown: ${err.message}`);
+        }
     }
 };
 
