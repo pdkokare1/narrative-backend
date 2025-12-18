@@ -2,7 +2,7 @@
 import dotenv from 'dotenv';
 import { z } from 'zod';
 import logger from './logger';
-import { URL } from 'url'; // Import URL for parsing
+import { URL } from 'url';
 
 dotenv.config();
 
@@ -16,6 +16,9 @@ const envSchema = z.object({
   MONGO_POOL_SIZE: z.string().transform(Number).default('10'),
   REDIS_URL: z.string().optional(),
 
+  // Worker Configuration
+  WORKER_CONCURRENCY: z.string().transform(Number).default('5'),
+
   // Cloudinary
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
   CLOUDINARY_API_KEY: z.string().min(1),
@@ -27,7 +30,6 @@ const envSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
   
   // Security
-  // RESTORED: Required for Cron Jobs and internal scripts
   ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
   CORS_ORIGINS: z.string().default(''), 
   
@@ -57,6 +59,24 @@ const parseConfig = () => {
 };
 
 const env = parseConfig();
+
+// Helper: Scan environment for numbered API keys (e.g., GNEWS_API_KEY_1, _2...)
+const extractApiKeys = (prefix: string): string[] => {
+    const keys: string[] = [];
+    
+    // 1. Check default key
+    const defaultKey = process.env[`${prefix}_API_KEY`]?.trim();
+    if (defaultKey) keys.push(defaultKey);
+
+    // 2. Scan numbered keys (1 to 20)
+    for (let i = 1; i <= 20; i++) {
+        const key = process.env[`${prefix}_API_KEY_${i}`]?.trim();
+        if (key && !keys.includes(key)) {
+            keys.push(key);
+        }
+    }
+    return keys;
+};
 
 // Helper to parse Firebase Config safely
 const getFirebaseConfig = () => {
@@ -92,7 +112,7 @@ const getCorsOrigins = () => {
   return Array.from(new Set(defaults)); 
 };
 
-// --- REDIS CONFIG (For 'redis' package) ---
+// --- REDIS CONFIG ---
 const getRedisConfig = () => {
   if (!env.REDIS_URL) return undefined;
   
@@ -107,8 +127,7 @@ const getRedisConfig = () => {
   }
 };
 
-// --- NEW: BULLMQ CONFIG (For 'ioredis' package) ---
-// This parses the URL into strict host/port/password for BullMQ
+// --- BULLMQ CONFIG ---
 const getBullMQConfig = () => {
     if (!env.REDIS_URL) return undefined;
     try {
@@ -118,7 +137,6 @@ const getBullMQConfig = () => {
             port: Number(parsed.port),
             username: parsed.username || undefined,
             password: parsed.password || undefined,
-            // BullMQ expects TLS options at the root level for ioredis
             tls: env.REDIS_URL.startsWith('rediss:') ? { rejectUnauthorized: false } : undefined
         };
     } catch (e) {
@@ -132,13 +150,17 @@ const config = {
   mongoUri: env.MONGODB_URI,
   mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
-  redisOptions: getRedisConfig(), // Standard Client
-  bullMQConnection: getBullMQConfig(), // NEW: BullMQ Specific Config
+  redisOptions: getRedisConfig(),
+  bullMQConnection: getBullMQConfig(),
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
-  adminSecret: env.ADMIN_SECRET, // RESTORED
+  adminSecret: env.ADMIN_SECRET,
   corsOrigins: getCorsOrigins(),
   
+  worker: {
+      concurrency: env.WORKER_CONCURRENCY
+  },
+
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
     apiKey: env.CLOUDINARY_API_KEY,
@@ -148,6 +170,9 @@ const config = {
   keys: {
     gemini: env.GEMINI_API_KEY || env.GEMINI_API_KEY_1 || '',
     elevenLabs: env.ELEVENLABS_API_KEY || '',
+    // Arrays of keys extracted from env
+    gnews: extractApiKeys('GNEWS'),
+    newsApi: extractApiKeys('NEWS_API')
   },
   
   aiModels: {
