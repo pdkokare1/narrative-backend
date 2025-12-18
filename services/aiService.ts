@@ -109,30 +109,44 @@ class AIService {
 
   /**
    * BATCH: Generates Embeddings
+   * ENHANCED: Chunks requests to respect API limits (max 100 per call)
    */
   async createBatchEmbeddings(texts: string[]): Promise<number[][] | null> {
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
     if (!isSystemHealthy) return null;
 
+    if (!texts.length) return [];
+
     try {
         const apiKey = await KeyManager.getKey('GEMINI');
-        const safeBatch = texts.slice(0, 100); 
+        const BATCH_SIZE = 100;
+        const allEmbeddings: number[][] = [];
 
-        const requests = safeBatch.map(text => ({
-            model: `models/${EMBEDDING_MODEL}`,
-            content: { parts: [{ text: cleanText(text).substring(0, 2000) }] }
-        }));
+        // Loop through data in chunks
+        for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+            const chunk = texts.slice(i, i + BATCH_SIZE);
+            
+            const requests = chunk.map(text => ({
+                model: `models/${EMBEDDING_MODEL}`,
+                content: { parts: [{ text: cleanText(text).substring(0, 2000) }] }
+            }));
 
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
-        const response = await apiClient.post(url, { requests }, { timeout: 20000 });
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
+            
+            // Wait for each batch (sequential to avoid rate limits)
+            const response = await apiClient.post(url, { requests }, { timeout: 30000 });
+
+            if (response.data.embeddings) {
+                const batchValues = response.data.embeddings.map((e: any) => e.values);
+                allEmbeddings.push(...batchValues);
+            }
+        }
 
         KeyManager.reportSuccess(apiKey);
         await CircuitBreaker.recordSuccess('GEMINI');
 
-        if (response.data.embeddings) {
-            return response.data.embeddings.map((e: any) => e.values);
-        }
-        return null;
+        return allEmbeddings;
+
     } catch (error: any) {
         logger.error(`Batch Embedding Error: ${error.message}`);
         await CircuitBreaker.recordFailure('GEMINI');
