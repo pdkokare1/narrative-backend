@@ -25,9 +25,10 @@ export const startWorker = () => {
     }
 
     try {
-        // CHANGED: Use config directly. Do NOT force high concurrency (prevents OOM crashes)
-        const concurrency = config.worker.concurrency;
+        // Safe Concurrency Default
+        const concurrency = config.worker.concurrency || 1;
 
+        // @ts-ignore - ConnectionOptions typing
         newsWorker = new Worker(CONSTANTS.QUEUE.NAME, async (job: Job) => {
             
             switch (job.name) {
@@ -50,17 +51,27 @@ export const startWorker = () => {
         }, { 
             connection: connectionConfig as ConnectionOptions,
             concurrency: concurrency,
+            // CRITICAL: Prevent job from timing out if AI is slow
+            lockDuration: 60000, // 60 seconds
+            // CRITICAL: Limit how many jobs one worker grabs at once
+            maxStalledCount: 1, 
         });
 
         // --- Event Listeners ---
         newsWorker.on('completed', (job: Job) => {
-            if (job.name !== 'process-article') { // Reduce noise for bulk jobs
+            // Only log high-level jobs to avoid spamming logs with 100s of "process-article"
+            if (job.name !== 'process-article') { 
                 logger.info(`✅ Job ${job.id} (${job.name}) completed.`);
             }
         });
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
+        });
+        
+        newsWorker.on('error', (err) => {
+             // Worker connection errors
+             logger.error(`⚠️ Worker Connection Error: ${err.message}`);
         });
 
         logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency})`);
@@ -73,7 +84,11 @@ export const startWorker = () => {
 export const shutdownWorker = async () => {
     if (newsWorker) {
         logger.info('🛑 Shutting down Worker...');
-        await newsWorker.close();
-        logger.info('✅ Worker shutdown complete.');
+        try {
+            await newsWorker.close();
+            logger.info('✅ Worker shutdown complete.');
+        } catch (err: any) {
+            logger.error(`⚠️ Error shutting down worker: ${err.message}`);
+        }
     }
 };
