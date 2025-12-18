@@ -59,6 +59,14 @@ export const FETCH_CYCLES = [
     { name: 'World-Focus', gnews: { topic: 'world' }, newsapi: { q: 'international', language: 'en' } }
 ];
 
+// --- TRUSTED SOURCES (Boost Score) ---
+export const TRUSTED_SOURCES = [
+    'reuters', 'associated press', 'bloomberg', 'bbc', 'npr', 'pbs', 
+    'the wall street journal', 'financial times', 'deutsche welle', 
+    'al jazeera english', 'the economist', 'nature', 'science',
+    'the indian express', 'the hindu', 'livemint'
+];
+
 // --- GLOBAL BLOCKLISTS ---
 export const DEFAULT_BANNED_DOMAINS = [
     // Tabloids & Gossip
