@@ -51,4 +51,7 @@ const initWorkerService = async () => {
   }
 };
 
-initWorkerService();
+// Check if this module is being run directly
+if (require.main === module) {
+    initWorkerService();
+}
