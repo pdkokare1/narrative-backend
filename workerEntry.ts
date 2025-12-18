@@ -4,7 +4,7 @@ import logger from './utils/logger';
 import { startScheduler } from './jobs/scheduler';
 import queueManager from './jobs/queueManager';
 import dbLoader from './utils/dbLoader';
-import { startWorker } from './jobs/worker'; // FIX: Import from actual worker file
+import { startWorker } from './jobs/worker';
 
 // Imported Background Services
 import emergencyService from './services/emergencyService';
@@ -18,17 +18,25 @@ const initWorkerService = async () => {
     await dbLoader.connect();
 
     // 2. Initialize Background Logic 
-    await Promise.all([
+    // We use Promise.allSettled to ensure one failure doesn't stop the whole worker
+    const results = await Promise.allSettled([
         emergencyService.initializeEmergencyContacts(),
         gatekeeperService.initialize()
     ]);
+
+    results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+            logger.error(`⚠️ Background Service ${index} failed to init: ${result.reason}`);
+        }
+    });
+
     logger.info('✨ Background Services Initialized');
 
     // 3. Start the Scheduler (Cron Jobs)
     startScheduler();
 
     // 4. Initialize Queue Consumer
-    startWorker(); // FIX: Call the imported function directly
+    startWorker();
     
     logger.info('🚀 Background Worker Fully Operational & Listening for Jobs');
 
