@@ -5,7 +5,6 @@ import logger from './logger';
 interface IKey {
     key: string;
     provider: string;
-    // We remove 'status' from here because the true status now lives in Redis
     errorCount: number;
 }
 
@@ -29,38 +28,28 @@ class KeyManager {
     }
 
     /**
-     * Loads keys from Environment Variables into memory.
+     * Registers a list of API keys for a specific provider.
+     * Keys are now passed in explicitly from config.
      */
-    public loadKeys(providerName: string, envPrefix: string): void {
-        const foundKeys: string[] = [];
-        
-        // Scan for keys numbered 1 to 20
-        for (let i = 1; i <= 20; i++) {
-            const key = process.env[`${envPrefix}_API_KEY_${i}`]?.trim();
-            if (key) foundKeys.push(key);
-        }
-        
-        // Scan for default single key
-        const defaultKey = process.env[`${envPrefix}_API_KEY`]?.trim();
-        if (defaultKey && !foundKeys.includes(defaultKey)) foundKeys.push(defaultKey);
-
-        if (foundKeys.length === 0) {
-            logger.warn(`⚠️ No API Keys found for ${providerName} (Prefix: ${envPrefix})`);
+    public registerProviderKeys(providerName: string, keys: string[]): void {
+        if (!keys || keys.length === 0) {
+            logger.warn(`⚠️ No API Keys provided for ${providerName}`);
             return;
         }
 
-        // Store them in memory
-        foundKeys.forEach(k => {
+        let addedCount = 0;
+        keys.forEach(k => {
             if (!this.keys.has(k)) {
                 this.keys.set(k, {
                     key: k,
                     provider: providerName,
                     errorCount: 0
                 });
+                addedCount++;
             }
         });
 
-        logger.info(`✅ Loaded ${foundKeys.length} keys for ${providerName}`);
+        logger.info(`✅ Registered ${addedCount} keys for ${providerName}`);
     }
 
     /**
