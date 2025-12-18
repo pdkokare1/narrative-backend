@@ -14,6 +14,17 @@ import { registerShutdownHandler } from './utils/shutdownHandler';
 import { startWorker, shutdownWorker } from './jobs/worker';
 import { startScheduler } from './jobs/scheduler';
 
+// --- 0. Global Safety Nets ---
+process.on('uncaughtException', (err) => {
+    logger.error(`🔥 WORKER CRASH! Uncaught Exception: ${err.name}: ${err.message}`);
+    logger.error(err.stack);
+    process.exit(1);
+});
+
+process.on('unhandledRejection', (reason: any) => {
+    logger.error(`🔥 WORKER WARNING! Unhandled Rejection: ${reason}`);
+});
+
 // --- 1. Start Health Check Server IMMEDIATELY ---
 // This ensures Railway deployment passes even if DB takes time to connect
 const port = process.env.PORT || 8080;
