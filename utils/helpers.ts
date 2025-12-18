@@ -70,3 +70,22 @@ export const normalizeUrl = (url: string): string => {
         return url; 
     }
 };
+
+// 5. Robust JSON Extractor (New: Prevents AI Parsing Crashes)
+export const extractJSON = (text: string): string => {
+    if (!text) return "{}";
+    try {
+        // If it's already clean JSON, return it
+        JSON.parse(text);
+        return text;
+    } catch (e) {
+        // Fallback: Find the first '{' and the last '}'
+        const firstOpen = text.indexOf('{');
+        const lastClose = text.lastIndexOf('}');
+        
+        if (firstOpen !== -1 && lastClose !== -1 && lastClose > firstOpen) {
+            return text.substring(firstOpen, lastClose + 1);
+        }
+        return "{}"; // Failed to find JSON object
+    }
+};
