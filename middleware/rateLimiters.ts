@@ -31,20 +31,19 @@ const createMemoryLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
 };
 
 const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
-    // We do NOT capture the client here anymore. 
-    // We capture it dynamically inside sendCommand to handle reconnections.
-
     try {
-        // @ts-ignore - Explicitly cast sendCommand to satisfy RedisStore
         const store = new RedisStore({
-            // @ts-ignore
+            // @ts-expect-error - RedisStore expects a slightly different signature but this is valid for Redis v4
             sendCommand: async (...args: string[]) => {
                try {
                    const client = redisClient.getClient();
-                   // Ensure client exists and is open
+                   // Ensure client exists and is open to avoid crashes
                    if(!client || !client.isOpen) return null;
+                   
+                   // Redis v4 sendCommand returns a Promise<unknown>
                    return await client.sendCommand(args);
                } catch(e) {
+                   // If Redis fails, fall back silently so API doesn't crash
                    return null;
                }
             },
