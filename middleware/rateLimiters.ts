@@ -8,7 +8,7 @@ import logger from '../utils/logger';
 
 const keyGenerator = (req: Request | any): string => {
     if (req.user && req.user.uid) {
-        return `limiter:${req.user.uid}`;
+        return \`limiter:\${req.user.uid}\`;
     }
     return req.ip || 'unknown-ip';
 };
@@ -31,8 +31,8 @@ const createMemoryLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
 };
 
 const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
-    const client = redisClient.getClient();
-    if (!client) return null;
+    // We do NOT capture the client here anymore. 
+    // We capture it dynamically inside sendCommand to handle reconnections.
 
     try {
         // @ts-ignore - Explicitly cast sendCommand to satisfy RedisStore
@@ -40,8 +40,9 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
             // @ts-ignore
             sendCommand: async (...args: string[]) => {
                try {
-                   // Ensure client is still open
-                   if(!client.isOpen) return null;
+                   const client = redisClient.getClient();
+                   // Ensure client exists and is open
+                   if(!client || !client.isOpen) return null;
                    return await client.sendCommand(args);
                } catch(e) {
                    return null;
@@ -64,12 +65,12 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
             },
             skipFailedRequests: true,
             handler: (req: Request, res: Response, next: NextFunction, options) => {
-                logger.warn(`Rate Limit Exceeded (${type}): ${keyGenerator(req)}`);
+                logger.warn(\`Rate Limit Exceeded (\${type}): \${keyGenerator(req)}\`);
                 res.status(options.statusCode).send(options.message);
             },
         });
     } catch (e) {
-        logger.warn(`Failed to create Redis limiter: ${e}`);
+        logger.warn(\`Failed to create Redis limiter: \${e}\`);
         return null;
     }
 };
@@ -105,3 +106,4 @@ export const ttsLimiter = (req: Request, res: Response, next: NextFunction) => {
     }
     return ttsLimiterMemory(req, res, next);
 };
+}
