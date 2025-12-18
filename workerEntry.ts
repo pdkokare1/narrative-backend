@@ -18,7 +18,7 @@ const initWorkerService = async () => {
     await dbLoader.connect();
 
     // 2. Initialize Background Logic (Fail Fast)
-    // ✅ CHANGED: We use Promise.all to ensure that if Gatekeeper/Emergency fails, 
+    // We use Promise.all to ensure that if Gatekeeper/Emergency fails, 
     // the worker restarts immediately rather than running in a broken state.
     await Promise.all([
         emergencyService.initializeEmergencyContacts(),
@@ -41,8 +41,12 @@ const initWorkerService = async () => {
         async () => { await shutdownWorker(); }
     ]);
 
-  } catch (err: any) {
-    logger.error(`❌ Worker Startup Failed: ${err.message}`);
+  } catch (err) {
+    if (err instanceof Error) {
+        logger.error(`❌ Worker Startup Failed: ${err.message}`);
+    } else {
+        logger.error('❌ Worker Startup Failed: Unknown error');
+    }
     process.exit(1); // Exit so Railway/Docker can restart it
   }
 };
