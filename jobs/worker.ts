@@ -6,7 +6,6 @@ import queueManager from './queueManager';
 import logger from '../utils/logger';
 import config from '../utils/config';
 
-// Redis Config
 const connectionConfig = config.bullMQConnection;
 const isRedisConfigured = !!connectionConfig;
 
@@ -23,52 +22,50 @@ export const startWorker = () => {
     }
 
     try {
+        // We increase concurrency to take advantage of Pipeline Batching
+        const concurrency = Math.max(config.worker.concurrency, 10);
+
         newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
             
-            // --- A. Maintenance Jobs ---
             if (job.name === 'update-trending') {
                 logger.info(`👷 Job: Updating Trending Topics...`);
                 await statsService.updateTrendingTopics();
                 return { status: 'completed' };
             }
 
-            // --- B. Feed Fetcher (The Fan-Out) ---
-            // Handles both 'fetch-feed' and scheduled/manual variations
             if (job.name === 'fetch-feed' || job.name === 'scheduled-news-fetch' || job.name === 'manual-fetch') {
                 logger.info(`👷 Job: Fetching Feed...`);
                 const articles = await newsFetcher.fetchFeed();
 
                 if (articles.length > 0) {
-                    // Create sub-jobs for EACH article (Fan-Out) using the Producer
                     const jobs = articles.map(article => ({
                         name: 'process-article',
                         data: article,
                         opts: { 
-                            removeOnComplete: true, // Don't clog Redis history
+                            removeOnComplete: true,
                             attempts: 3 
                         }
                     }));
 
                     await queueManager.addBulk(jobs);
-                    logger.info(`✨ Dispatched ${articles.length} individual article jobs.`);
+                    logger.info(`✨ Dispatched ${articles.length} individual article jobs to Batch Engine.`);
                 }
                 return { status: 'dispatched', count: articles.length };
             }
 
-            // --- C. Article Processor (High Concurrency) ---
             if (job.name === 'process-article') {
+                // This calls pipelineService which now handles batching automatically
                 return await newsFetcher.processArticleJob(job.data);
             }
 
         }, { 
             connection: connectionConfig as ConnectionOptions,
-            concurrency: config.worker.concurrency, // Use centralized config
-            limiter: { max: 10, duration: 1000 } // Safety throttle
+            concurrency: concurrency,
+            // Limiter removed to allow batching engine to saturate
+            // We now rely on the Pipeline internal timer for safety
         });
 
-        // Event Listeners for Logging
         newsWorker.on('completed', (job: Job) => {
-            // Only log high-level jobs to keep logs clean
             if (job.name === 'fetch-feed' || job.name === 'update-trending') {
                 logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
             }
@@ -78,7 +75,7 @@ export const startWorker = () => {
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
         });
 
-        logger.info(`✅ Background Worker Started (Concurrency: ${config.worker.concurrency})`);
+        logger.info(`✅ Background Worker Started (Batch Mode: Active, Concurrency: ${concurrency})`);
 
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
