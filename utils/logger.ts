@@ -19,11 +19,13 @@ const colors = {
 
 winston.addColors(colors);
 
-const format = winston.format.combine(
+// In production, we want pure JSON without the custom printf timestamp prefix
+// because structured logging tools handle timestamps automatically.
+const productionFormat = winston.format.json();
+
+const developmentFormat = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
-  process.env.NODE_ENV === 'production' 
-    ? winston.format.json()
-    : winston.format.colorize({ all: true }),
+  winston.format.colorize({ all: true }),
   winston.format.printf(
     (info) => `${info.timestamp} ${info.level}: ${info.message}`
   )
@@ -32,9 +34,10 @@ const format = winston.format.combine(
 const logger = winston.createLogger({
   level: process.env.NODE_ENV === 'development' ? 'debug' : 'info',
   levels,
-  format,
   transports: [
-    new winston.transports.Console(),
+    new winston.transports.Console({
+      format: process.env.NODE_ENV === 'production' ? productionFormat : developmentFormat,
+    }),
   ],
 });
 
