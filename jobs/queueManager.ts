@@ -17,7 +17,8 @@ const queueManager = {
     initialize: async () => {
         if (queues[NEWS_QUEUE_NAME]) return;
 
-        const connectionConfig = config.bullMQConnection;
+        // SAFE ACCESS: Check if bullMQConnection exists, otherwise fallback or skip
+        const connectionConfig = (config as any).bullMQConnection || (config as any).redisOptions;
         const isRedisConfigured = !!connectionConfig;
 
         if (!isRedisConfigured) {
@@ -38,7 +39,6 @@ const queueManager = {
                 });
                 
                 q.on('error', (err) => {
-                    // Log but don't crash - BullMQ auto-reconnects
                     logger.error(`❌ Queue [${name}] Connection Error: ${err.message}`);
                 });
                 return q;
@@ -57,12 +57,8 @@ const queueManager = {
      * Generic wrapper to add a job to any registered queue
      */
     addJobToQueue: async (queueName: string, jobName: string, data: any, opts: any = {}) => {
-        // OPTIMIZATION: Removed auto-init check. 
-        // We assume initialize() was called at startup.
-        
         const queue = queues[queueName];
         if (!queue) {
-            // Only log debug to avoid spamming logs if Redis is intentionally disabled
             logger.debug(`⚠️ Queue [${queueName}] not available. Job dropped.`);
             return null;
         }
@@ -92,7 +88,6 @@ const queueManager = {
     },
 
     scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
-        // For scheduling, we allow a lazy init because this happens rarely (once at boot)
         if (!queues[NEWS_QUEUE_NAME]) await queueManager.initialize();
         const queue = queues[NEWS_QUEUE_NAME];
 
