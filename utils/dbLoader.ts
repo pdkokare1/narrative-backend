@@ -12,7 +12,7 @@ import { initRedis, default as redisClient } from './redisClient';
 class DbLoader {
     private isConnected: boolean = false;
     private readonly MAX_RETRIES = 5;
-    private readonly RETRY_DELAY_MS = 3000; // 3 seconds
+    private readonly RETRY_DELAY_MS = 3000;
 
     public async connect(): Promise<void> {
         if (this.isConnected) {
@@ -30,24 +30,21 @@ class DbLoader {
         let retries = 0;
         while (retries < this.MAX_RETRIES) {
             try {
-                // Remove existing listeners to prevent duplicates on retry
                 mongoose.connection.removeAllListeners('error');
                 mongoose.connection.removeAllListeners('disconnected');
 
-                // Attach Listeners
                 mongoose.connection.on('error', (err) => logger.error(`🔥 MongoDB Error: ${err.message}`));
                 mongoose.connection.on('disconnected', () => logger.warn('⚠️ MongoDB Disconnected'));
 
-                // SCALING IMPROVEMENT: Dynamic pool size + Warm connections
                 await mongoose.connect(config.mongoUri, {
                     maxPoolSize: config.mongoPoolSize, 
-                    minPoolSize: 2, // Keep at least 2 connections warm
+                    minPoolSize: 2, 
                     serverSelectionTimeoutMS: 5000, 
                     socketTimeoutMS: 45000, 
                 });
                 
                 logger.info('✅ MongoDB Connected');
-                break; // Success! Exit loop.
+                break;
 
             } catch (err: any) {
                 retries++;
@@ -55,16 +52,20 @@ class DbLoader {
                 
                 if (retries >= this.MAX_RETRIES) {
                     logger.error(`❌ Critical Infrastructure Failure: Could not connect to MongoDB after ${this.MAX_RETRIES} attempts.`);
-                    process.exit(1); // Give up
+                    process.exit(1); 
                 }
 
-                // Wait before retrying
                 await new Promise(res => setTimeout(res, this.RETRY_DELAY_MS));
             }
         }
 
-        // 2. Initialize Redis (Non-blocking failure is handled inside initRedis, but we await it here)
-        await initRedis();
+        // 2. Initialize Redis (via Helper)
+        // We do NOT fail hard here if Redis is missing, to allow the app to boot in "Limited Mode"
+        try {
+            await initRedis();
+        } catch (err: any) {
+            logger.warn(`⚠️ Redis Initialization failed: ${err.message}. App will run with limited caching.`);
+        }
 
         this.isConnected = true;
         logger.info('✨ Infrastructure Ready');
