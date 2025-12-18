@@ -3,10 +3,11 @@ import { Queue, Worker, Job, ConnectionOptions } from 'bullmq';
 import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import logger from '../utils/logger';
-import redisClient from '../utils/redisClient';
+import config from '../utils/config'; 
 
 // --- 1. Redis Connection Config ---
-const connectionConfig = redisClient.parseRedisConfig();
+// FIX: Use the centralized config instead of trying to parse it from redisClient
+const connectionConfig = config.bullMQConnection;
 const isRedisConfigured = !!connectionConfig;
 
 if (!isRedisConfigured) {
@@ -108,13 +109,28 @@ const startWorker = () => {
 const queueManager = {
     /**
      * Adds a single, immediate job to the queue.
+     * FIX: Added optional jobId parameter to support the scheduler
      */
-    addFetchJob: async (name: string = 'fetch-feed', data: any = {}) => {
+    addFetchJob: async (name: string = 'fetch-feed', data: any = {}, jobId?: string) => {
         if (!newsQueue) return null;
         try {
-            return await newsQueue.add(name, data);
+            const opts = jobId ? { jobId } : {};
+            return await newsQueue.add(name, data, opts);
         } catch (err: any) {
             logger.error(`❌ Failed to add job: ${err.message}`);
+            return null;
+        }
+    },
+
+    /**
+     * FIX: Added addBulk method needed by worker.ts
+     */
+    addBulk: async (jobs: { name: string; data: any; opts?: any }[]) => {
+        if (!newsQueue) return null;
+        try {
+            return await newsQueue.addBulk(jobs);
+        } catch (err: any) {
+            logger.error(`❌ Failed to add bulk jobs: ${err.message}`);
             return null;
         }
     },
@@ -165,7 +181,6 @@ const queueManager = {
         }
     },
 
-    // This was missing in the previous build, causing the error
     startWorker, 
 
     shutdown: async () => {
