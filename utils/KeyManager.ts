@@ -10,7 +10,6 @@ interface IKey {
 
 class KeyManager {
     private keys: Map<string, IKey>;
-    private providerIndices: Map<string, number>;
     
     // Config: How long to ban a key if it fails?
     private readonly COOLDOWN_TIME_SECONDS = 600; // 10 minutes
@@ -24,12 +23,10 @@ class KeyManager {
 
     constructor() {
         this.keys = new Map();
-        this.providerIndices = new Map();
     }
 
     /**
      * Registers a list of API keys for a specific provider.
-     * Keys are now passed in explicitly from config.
      */
     public registerProviderKeys(providerName: string, keys: string[]): void {
         if (!keys || keys.length === 0) {
@@ -53,8 +50,10 @@ class KeyManager {
     }
 
     /**
-     * Gets the next available active key.
-     * Checks REDIS to ensure the key isn't in cooldown across any server instance.
+     * Gets the best available key.
+     * Strategy: PRIORITY (Failover).
+     * Always tries keys in order [0, 1, 2...]. Returns the first one that is NOT in cooldown.
+     * This preserves backup keys until they are actually needed.
      */
     public async getKey(providerName: string): Promise<string> {
         // 1. Check Global Circuit Breaker (Stop everything if API is down)
@@ -73,29 +72,18 @@ class KeyManager {
         const allKeys = Array.from(this.keys.values()).filter(k => k.provider === providerName);
         if (allKeys.length === 0) throw new Error(`NO_KEYS_CONFIGURED: No keys for ${providerName}`);
 
-        // 3. Round Robin Search
-        let currentIndex = this.providerIndices.get(providerName) || 0;
-        let attempts = 0;
-
-        // Try every key in the list once
-        while (attempts < allKeys.length) {
-            const candidate = allKeys[currentIndex % allKeys.length];
-            currentIndex++; 
-            attempts++;
-
-            // Update index for next caller
-            this.providerIndices.set(providerName, currentIndex % allKeys.length);
-
-            // 4. CHECK REDIS: Is this key cooling down?
-            // We use the wrapper's safe 'get' method.
+        // 3. Priority Search
+        // Loop through all configured keys for this provider
+        for (const candidate of allKeys) {
+            // Check REDIS: Is this key cooling down?
             const isCoolingDown = await redisClient.get(`key_cooldown:${candidate.key}`);
             
             if (isCoolingDown) {
-                // Skip this key, it's bad
+                // If this key is burnt, skip to the next backup key
                 continue; 
             }
 
-            // If we are here, Redis says the key is clean!
+            // Found a working key!
             return candidate.key;
         }
 
@@ -123,12 +111,12 @@ class KeyManager {
         let shouldBan = false;
 
         if (isRateLimit) {
-            logger.warn(`⏳ Rate Limit hit on ...${key.slice(-4)}. Banning for 10 mins.`);
+            logger.warn(`⏳ Rate Limit hit on ...${key.slice(-4)}. Switching to backup key.`);
             shouldBan = true;
         } else {
             keyObj.errorCount++;
             if (keyObj.errorCount >= this.MAX_ERRORS_BEFORE_COOLDOWN) {
-                logger.warn(`⚠️ Key ...${key.slice(-4)} unstable (${keyObj.errorCount} errors). Banning for 10 mins.`);
+                logger.warn(`⚠️ Key ...${key.slice(-4)} unstable (${keyObj.errorCount} errors). Cooling down.`);
                 shouldBan = true;
             }
         }
