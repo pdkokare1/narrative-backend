@@ -3,7 +3,6 @@ import { Request, Response } from 'express';
 import asyncHandler from '../utils/asyncHandler';
 import articleService from '../services/articleService';
 import schemas from '../utils/validationSchemas';
-import { AppError } from '../utils/AppError'; // Ensure AppError is available
 
 // --- 1. Smart Trending Topics ---
 export const getTrendingTopics = asyncHandler(async (req: Request, res: Response) => {
@@ -42,7 +41,7 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
 // --- 4. "For You" Feed ---
 export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user?.uid;
-    // We don't validate query here as it's purely user-based, but we could add limit
+    // We don't validate query here as it's purely user-based
     
     const result = await articleService.getForYouFeed(userId);
     res.status(200).json(result);
