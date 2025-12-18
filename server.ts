@@ -35,7 +35,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     next();
 });
 
-app.set('trust proxy', 1);
+// CHANGED: Use Configurable Trust Proxy Level
+app.set('trust proxy', config.trustProxyLevel);
 
 // --- 2. Security Middleware ---
 app.use(helmet({ 
