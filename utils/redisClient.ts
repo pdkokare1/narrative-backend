@@ -11,19 +11,15 @@ let isHealthy = false;
 const pendingFetches = new Map<string, Promise<any>>();
 
 export const initRedis = async (): Promise<RedisClientType | null> => {
-    // 1. If client is already ready, return it.
     if (client && (client.isOpen || client.isReady)) {
         return client;
     }
 
-    // 2. If a connection is currently being attempted, wait for it (Promise Lock)
     if (connectionPromise) {
         return connectionPromise;
     }
 
-    // 3. Start a new connection attempt
     connectionPromise = (async () => {
-        // Check configuration
         if (!config.redisOptions) {
             logger.warn("⚠️ Redis URL not set. Caching and Background Jobs will be disabled.");
             return null;
@@ -35,26 +31,22 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
                 socket: {
                     ...config.redisOptions.socket,
                     reconnectStrategy: (retries) => {
-                        // Exponential backoff: max 5 seconds
                         const delay = Math.min(retries * 100, 5000);
-                        logger.debug(`🔌 Redis reconnecting in ${delay}ms...`);
                         return delay;
                     },
-                    connectTimeout: 10000, // Increased for Railway
+                    connectTimeout: 10000, 
                     keepAlive: 10000 
                 }
             });
 
             newClient.on('error', (err) => {
                 isHealthy = false;
-                // Only log critical connection errors, ignore minor network blips
                 if (!err.message.includes('ECONNREFUSED') && !err.message.includes('Socket closed')) {
                     logger.warn(`Redis Client Warning: ${err.message}`);
                 }
             });
 
             newClient.on('connect', () => {
-                logger.info('🔌 Redis Client Connecting...');
                 isHealthy = true;
             });
             
@@ -64,7 +56,6 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
             });
 
             newClient.on('end', () => {
-                logger.warn('🔌 Redis Client Disconnected');
                 isHealthy = false;
             });
 
@@ -78,7 +69,7 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
             isHealthy = false;
             return null;
         } finally {
-            connectionPromise = null; // Release lock
+            connectionPromise = null;
         }
     })();
 
@@ -86,63 +77,51 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
 };
 
 const redisClient = {
-    // Helper: Safe Get (Fail-Safe)
     get: async (key: string): Promise<any | null> => {
         if (!client || !isHealthy) return null;
         try {
             const data = await client.get(key);
             return data ? JSON.parse(data) : null;
-        } catch (e: any) {
-            return null; // Fail silently, treat as cache miss
-        }
+        } catch (e: any) { return null; }
     },
 
-    // Helper: Multi Get
     mGet: async (keys: string[]): Promise<(string | null)[]> => {
         if (!client || !isHealthy || keys.length === 0) return [];
         try {
             return await client.mGet(keys);
-        } catch (e: any) {
-            return new Array(keys.length).fill(null);
-        }
+        } catch (e: any) { return new Array(keys.length).fill(null); }
     },
 
-    // Helper: Safe Set
     set: async (key: string, data: any, ttlSeconds: number = 900): Promise<void> => {
         if (!client || !isHealthy) return;
         try {
-            // Use 'EX' for seconds
             await client.set(key, JSON.stringify(data), { EX: ttlSeconds });
-        } catch (e: any) {
-            // Ignore set errors (caching is optional)
-        }
+        } catch (e: any) { }
     },
 
-    // Helper: Smart Cache Wrapper with Stampede Protection
+    // --- ENHANCED: getOrFetch with robustness ---
     getOrFetch: async <T>(key: string, fetcher: () => Promise<T>, ttlSeconds: number = 900): Promise<T> => {
-        // 1. Try Cache First
+        // 1. Try Cache
         if (client && isHealthy) {
             try {
                 const cachedData = await client.get(key);
                 if (cachedData) {
                     return JSON.parse(cachedData) as T;
                 }
-            } catch (err) { 
-                // Proceed to fetch if cache read fails
-            }
+            } catch (err) { /* proceed */ }
         }
 
-        // 2. Anti-Stampede: Check if a fetch is already running locally
+        // 2. Anti-Stampede (Local Memory)
         if (pendingFetches.has(key)) {
             return pendingFetches.get(key) as Promise<T>;
         }
 
-        // 3. Define the Fetch Task
+        // 3. Execute Fetch
         const fetchPromise = (async () => {
             try {
                 const freshData = await fetcher();
-                // Only cache if we have data and Redis is up
                 if (client && isHealthy && freshData) {
+                    // Fire and forget cache update
                     client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(() => {});
                 }
                 return freshData;
@@ -151,7 +130,6 @@ const redisClient = {
             }
         })();
 
-        // 4. Store promise in map
         pendingFetches.set(key, fetchPromise);
 
         try {
@@ -160,45 +138,45 @@ const redisClient = {
             pendingFetches.delete(key);
         }
     },
+
+    // --- NEW: Distributed Lock (Simple Redlock) ---
+    // Prevents multiple servers from running the same heavy job simultaneously
+    acquireLock: async (key: string, ttlSeconds: number = 60): Promise<boolean> => {
+        if (!client || !isHealthy) return true; // If redis is down, proceed anyway (fail open)
+        try {
+            const result = await client.set(key, 'LOCKED', {
+                NX: true, // Only set if not exists
+                EX: ttlSeconds
+            });
+            return result === 'OK';
+        } catch (e) {
+            return true; // Fail open
+        }
+    },
     
-    // Helper: Delete
     del: async (key: string): Promise<void> => {
         if (!client || !isHealthy) return;
-        try {
-            await client.del(key);
-        } catch (e) { /* ignore */ }
+        try { await client.del(key); } catch (e) { }
     },
 
-    // Helper: Increment
     incr: async (key: string): Promise<number> => {
         if (!client || !isHealthy) return 0;
-        try {
-            return await client.incr(key);
-        } catch (e) { return 0; }
+        try { return await client.incr(key); } catch (e) { return 0; }
     },
 
-    // Helper: Expire
     expire: async (key: string, seconds: number): Promise<boolean> => {
         if (!client || !isHealthy) return false;
-        try {
-            return await client.expire(key, seconds);
-        } catch (e) { return false; }
+        try { return await client.expire(key, seconds); } catch (e) { return false; }
     },
 
-    // Helper: Set Add
     sAdd: async (key: string, value: string): Promise<number> => {
         if (!client || !isHealthy) return 0;
-        try {
-            return await client.sAdd(key, value);
-        } catch (e) { return 0; }
+        try { return await client.sAdd(key, value); } catch (e) { return 0; }
     },
 
-    // Helper: Set Is Member
     sIsMember: async (key: string, value: string): Promise<boolean> => {
         if (!client || !isHealthy) return false;
-        try {
-            return await client.sIsMember(key, value);
-        } catch (e) { return false; }
+        try { return await client.sIsMember(key, value); } catch (e) { return false; }
     },
 
     quit: async (): Promise<void> => {
@@ -210,7 +188,7 @@ const redisClient = {
     },
 
     getClient: () => client,
-    isReady: () => isHealthy, // Simplified health check
+    isReady: () => isHealthy,
 };
 
 export default redisClient;
