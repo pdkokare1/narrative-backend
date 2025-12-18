@@ -11,7 +11,7 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import redisClient, { initRedis } from './utils/redisClient'; // ✅ Added initRedis import
+import redisClient from './utils/redisClient'; 
 import dbLoader from './utils/dbLoader';
 import queueManager from './jobs/queueManager';
 import { registerShutdownHandler } from './utils/shutdownHandler';
@@ -34,9 +34,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     next();
 });
 
-// CHANGED: Use Configurable Trust Proxy Level (Recommended for Railway)
-// '1' indicates the app is behind 1 reverse proxy (Railway's load balancer)
-app.set('trust proxy', 1);
+// CHANGED: Use Configurable Trust Proxy Level
+// This prevents Rate Limit bugs when using Cloudflare + Railway
+app.set('trust proxy', config.trustProxyLevel);
 
 // --- 2. Security Middleware ---
 app.use(helmet({ 
@@ -109,9 +109,9 @@ const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
-        // 1. Initialize Redis FIRST (Before accepting traffic)
-        // This ensures rate limiters work immediately upon startup
-        await initRedis();
+        // 1. Connect to Infrastructure (DB & Redis)
+        // Using dbLoader as the single source of truth for connections
+        await dbLoader.connect();
 
         // 2. Start HTTP Server
         const PORT = config.port || 3001;
@@ -121,7 +121,11 @@ const startServer = async () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 3. Register Graceful Shutdown
+        // 3. Initialize Queue (After Redis is definitely ready)
+        await queueManager.initialize();
+        logger.info('✨ Infrastructure Fully Initialized');
+
+        // 4. Register Graceful Shutdown
         registerShutdownHandler('API Server', [
             // Stop HTTP
             () => new Promise<void>((resolve, reject) => {
@@ -133,22 +137,11 @@ const startServer = async () => {
                     }
                 });
             }),
-            // Stop DB, Queue, Redis
-            async () => { await dbLoader.disconnect(); },
+            // Stop Queues
             async () => { await queueManager.shutdown(); },
-            async () => { await redisClient.disconnect(); } // ✅ Close Redis last
+            // Stop DB & Redis
+            async () => { await dbLoader.disconnect(); }
         ]);
-
-        // 4. Connect to DB (Non-blocking)
-        logger.info('⏳ Connecting to Database...');
-        dbLoader.connect()
-            .then(async () => {
-                 await queueManager.initialize();
-                 logger.info('✨ Infrastructure Fully Initialized');
-            })
-            .catch((err) => {
-                logger.error(`❌ Infrastructure Connection Failed: ${err.message}`);
-            });
 
     } catch (err) {
         logger.error(`❌ Critical Startup Error: ${err instanceof Error ? err.message : 'Unknown'}`);
