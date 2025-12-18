@@ -27,7 +27,8 @@ const envSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
   
   // Security
-  // REMOVED: ADMIN_SECRET (Deprecated in favor of Firebase Admin Claims)
+  // RESTORED: Required for Cron Jobs and internal scripts
+  ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
   CORS_ORIGINS: z.string().default(''), 
   
   // AI Model Configuration
@@ -135,6 +136,7 @@ const config = {
   bullMQConnection: getBullMQConfig(), // NEW: BullMQ Specific Config
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
+  adminSecret: env.ADMIN_SECRET, // RESTORED
   corsOrigins: getCorsOrigins(),
   
   cloudinary: {
