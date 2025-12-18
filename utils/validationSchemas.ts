@@ -22,6 +22,32 @@ const rules = {
 };
 
 /**
+ * AI & Analysis Schemas (Moved from aiService.ts)
+ */
+export const SentimentSchema = z.enum(["Positive", "Negative", "Neutral"]);
+
+export const BasicAnalysisSchema = z.object({
+  summary: z.string(),
+  category: z.string(),
+  sentiment: SentimentSchema.optional().default("Neutral")
+});
+
+export const FullAnalysisSchema = z.object({
+  summary: z.string(),
+  category: z.string(),
+  politicalLean: z.string().optional().default("Center"),
+  sentiment: SentimentSchema.optional().default("Neutral"),
+  biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  clusterTopic: z.string().optional(),
+  primaryNoun: z.string().optional(),
+  secondaryNoun: z.string().optional(),
+  keyFindings: z.array(z.string()).optional().default([]),
+  recommendations: z.array(z.string()).optional().default([])
+});
+
+/**
  * Route Schemas
  */
 const schemas = {
@@ -90,7 +116,7 @@ const schemas = {
         })
     }),
 
-    // --- Legacy / Passthrough (For backwards compatibility) ---
+    // --- Legacy / Passthrough ---
     shareParams: z.object({
         params: z.object({ id: rules.objectId })
     }),
