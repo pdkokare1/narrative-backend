@@ -7,7 +7,7 @@ import { initRedis, default as redisClient } from './redisClient';
 /**
  * Centralized Database Loader
  * Handles connections for both MongoDB and Redis.
- * Includes Retry Logic for resilience on Railway.
+ * IMPROVED: Uses Parallel Loading for faster startup.
  */
 class DbLoader {
     private isConnected: boolean = false;
@@ -22,14 +22,34 @@ class DbLoader {
 
         logger.info('🚀 Initializing Infrastructure...');
 
-        // 1. Connect MongoDB with Retry Logic
         if (!config.mongoUri) {
             throw new Error("❌ MongoDB URI missing in config");
         }
 
+        // --- PARALLEL LOADING START ---
+        // We trigger both connections at the same time instead of waiting for one to finish.
+        
+        const mongoPromise = this.connectMongo();
+        
+        // Redis is optional but recommended. We catch errors here so they don't block MongoDB.
+        const redisPromise = initRedis().catch(err => {
+            logger.warn(`⚠️ Redis Initialization failed: ${err.message}. App will run with limited caching.`);
+            return null;
+        });
+
+        // Wait for both to settle
+        await Promise.all([mongoPromise, redisPromise]);
+        // --- PARALLEL LOADING END ---
+
+        this.isConnected = true;
+        logger.info('✨ Infrastructure Ready (Parallel Boot Complete)');
+    }
+
+    private async connectMongo(): Promise<void> {
         let retries = 0;
         while (retries < this.MAX_RETRIES) {
             try {
+                // Clear previous listeners to avoid duplicates on reconnect
                 mongoose.connection.removeAllListeners('error');
                 mongoose.connection.removeAllListeners('disconnected');
 
@@ -44,7 +64,7 @@ class DbLoader {
                 });
                 
                 logger.info('✅ MongoDB Connected');
-                break;
+                return; // Success
 
             } catch (err: any) {
                 retries++;
@@ -58,17 +78,6 @@ class DbLoader {
                 await new Promise(res => setTimeout(res, this.RETRY_DELAY_MS));
             }
         }
-
-        // 2. Initialize Redis (via Helper)
-        // We do NOT fail hard here if Redis is missing, to allow the app to boot in "Limited Mode"
-        try {
-            await initRedis();
-        } catch (err: any) {
-            logger.warn(`⚠️ Redis Initialization failed: ${err.message}. App will run with limited caching.`);
-        }
-
-        this.isConnected = true;
-        logger.info('✨ Infrastructure Ready');
     }
 
     public async disconnect(): Promise<void> {
@@ -76,8 +85,11 @@ class DbLoader {
         
         try {
             logger.info('🛑 Closing Infrastructure connections...');
-            await redisClient.quit();
-            await mongoose.disconnect(); 
+            // Close in parallel for faster shutdown
+            await Promise.all([
+                redisClient.quit(),
+                mongoose.disconnect()
+            ]);
             this.isConnected = false;
             logger.info('✅ Infrastructure closed gracefully.');
         } catch (err: any) {
