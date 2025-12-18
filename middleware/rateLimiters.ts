@@ -1,5 +1,5 @@
 // middleware/rateLimiters.ts
-import rateLimit, { RateLimitRequestHandler } from 'express-rate-limit';
+import rateLimit from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { Request, Response, NextFunction } from 'express';
 import { CONSTANTS } from '../utils/constants';
@@ -53,18 +53,18 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
                 // CRITICAL FIX: If client isn't ready, THROW error instead of returning null.
                 // Returning null causes rate-limit-redis to crash with TypeError.
                 // Throwing an error allows skipFailedRequests to handle it gracefully.
-                if (client && client.isReady) {
+                if (client && client.isReady()) {
                     return await client.sendCommand(args);
                 }
                 throw new Error('Redis client not ready');
             } catch (e) {
                 // Determine if we should log this as an error or just a warning
-                // During startup, "not ready" is expected.
                 const msg = e instanceof Error ? e.message : String(e);
+                // Silence the "not ready" errors during startup to keep logs clean
                 if (msg !== 'Redis client not ready') {
                     logger.error(`Redis Limit Error (${type}):`, e);
                 }
-                throw e; // Propagate to express-rate-limit
+                throw e; // Propagate to express-rate-limit to trigger skipFailedRequests
             }
         },
     });
@@ -83,7 +83,7 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
                 : 'Audio generation limit reached.' 
         },
         // If Redis fails (or is not ready), we allow the request to proceed (Fail Open)
-        // This prevents the "Unexpected reply" crash.
+        // This prevents the "Unexpected reply" crash during startup.
         skipFailedRequests: true, 
         handler: (req: Request, res: Response, next: NextFunction, options) => {
             logger.warn(`Rate Limit Exceeded (${type}): ${keyGenerator(req)}`);
@@ -114,7 +114,6 @@ export const apiLimiter = (req: Request, res: Response, next: NextFunction) => {
     if (apiLimiterRedis && redisClient.isReady()) {
         return apiLimiterRedis(req, res, next);
     }
-    // Log once per startup/outage if needed, or keep silent to avoid log spam
     return apiLimiterMemory(req, res, next);
 };
 
