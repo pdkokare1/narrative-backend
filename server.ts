@@ -98,10 +98,12 @@ const startServer = async () => {
         logger.info('🚀 Starting Server Initialization...');
 
         // 1. Unified Database & Redis Connection
-        // (Redis is now handled internally by dbLoader, removing the duplicate call)
         await dbLoader.connect(); 
         
-        // 2. Start HTTP Server
+        // 2. Initialize Job Queue (Safe Startup)
+        await queueManager.initialize();
+
+        // 3. Start HTTP Server
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
