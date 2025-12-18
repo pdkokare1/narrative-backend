@@ -87,7 +87,7 @@ class DbLoader {
             logger.info('🛑 Closing Infrastructure connections...');
             // Close in parallel for faster shutdown
             await Promise.all([
-                redisClient.quit(),
+                redisClient.disconnect(),
                 mongoose.disconnect()
             ]);
             this.isConnected = false;
