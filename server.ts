@@ -1,6 +1,4 @@
 // server.ts
-console.log('SYSTEM: Loading server.ts...'); // Debug log to prove file execution
-
 import express, { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
@@ -9,7 +7,6 @@ import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import hpp from 'hpp';
 import * as admin from 'firebase-admin';
-import { randomUUID } from 'crypto';
 
 // Config & Utils
 import config from './utils/config';
@@ -29,25 +26,16 @@ import shareRoutes from './routes/shareRoutes';
 
 const app = express();
 
-// --- 1. Request ID & Logging ---
-// Assigns a unique ID to every request for debugging
-app.use((req: Request, res: Response, next: NextFunction) => {
-    const requestId = randomUUID();
-    (req as any).requestId = requestId;
-    res.setHeader('X-Request-Id', requestId);
-    next();
-});
-
+// --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
     // Don't log spammy health checks
     if (req.url !== '/health' && req.url !== '/ping') {
-        const id = (req as any).requestId || '-';
-        logger.http(`[${id}] ${req.method} ${req.url}`);
+        logger.http(`${req.method} ${req.url}`);
     }
     next();
 });
 
-// CHANGED: Use Configurable Trust Proxy Level (Safe for Railway/Heroku)
+// CHANGED: Use Configurable Trust Proxy Level
 app.set('trust proxy', config.trustProxyLevel);
 
 // --- 2. Security Middleware ---
@@ -73,7 +61,7 @@ app.use(express.json({ limit: '200kb' }));
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
 // LIGHTWEIGHT Health Check (For Load Balancers/Railway)
-// This must respond 200 OK even if DB is connecting
+// Does not check DB/Redis connections to prevent cascading failures
 app.get('/ping', (req: Request, res: Response) => { 
     res.status(200).send('OK'); 
 });
@@ -130,17 +118,23 @@ const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
+        // 1. Unified Database & Redis Connection
+        await dbLoader.connect(); 
+        
+        // 2. Initialize Job Queue (Safe Startup)
+        await queueManager.initialize();
+
+        // 3. Start HTTP Server
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
-        // 1. START HTTP SERVER FIRST (Optimistic Startup)
-        // This ensures Health Checks pass immediately, preventing Deployment Timeouts.
         const server = app.listen(Number(PORT), HOST, () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 2. Register Graceful Shutdown
+        // 4. Register Graceful Shutdown
         registerShutdownHandler('API Server', [
+            // Stop accepting new HTTP connections
             () => new Promise<void>((resolve, reject) => {
                 server.close((err) => {
                     if (err) reject(err);
@@ -150,16 +144,9 @@ const startServer = async () => {
                     }
                 });
             }),
+            // Stop Queue Producer
             async () => { await queueManager.shutdown(); }
         ]);
-
-        // 3. CONNECT SERVICES IN BACKGROUND
-        // We do this AFTER listening so the app assumes "Ready" state quickly.
-        logger.info('⏳ Connecting to Database & Queue...');
-        
-        // These can take time without failing the deployment
-        await dbLoader.connect(); 
-        await queueManager.initialize();
 
     } catch (err) {
         if (err instanceof Error) {
@@ -171,7 +158,6 @@ const startServer = async () => {
     }
 };
 
-// Start immediately (Reverted safety check to ensure execution)
 startServer();
 
 export default app;
