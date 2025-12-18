@@ -4,13 +4,19 @@ import { RedisStore } from 'rate-limit-redis';
 import { CONSTANTS } from '../utils/constants';
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
+import { Request } from 'express';
 
 /**
- * LAZY RATE LIMITER WRAPPER
- * * Problem: initializing RedisStore immediately crashes the app if Redis isn't connected yet.
- * Solution: We start with a MemoryStore (safe). We only instantiate RedisStore when 
- * redisClient.isReady() returns true.
+ * Custom Key Generator:
+ * Uses User ID if authenticated, otherwise falls back to IP.
+ * This prevents shared IPs (offices, schools) from being blocked by one bad actor.
  */
+const keyGenerator = (req: Request | any): string => {
+    if (req.user && req.user.uid) {
+        return `limiter:${req.user.uid}`;
+    }
+    return req.ip || 'unknown-ip';
+};
 
 // --- 1. Define Fallback (Memory) Limiters ---
 const memoryApiLimiter = rateLimit({
@@ -18,9 +24,10 @@ const memoryApiLimiter = rateLimit({
   max: CONSTANTS.RATE_LIMIT.API_MAX_REQUESTS,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: keyGenerator,
   message: { error: 'Too many requests, please try again later. (Mem)' },
   handler: (req, res, next, options) => {
-    logger.warn(`Rate Limit Exceeded (Mem-API): ${req.ip}`);
+    logger.warn(`Rate Limit Exceeded (Mem-API): ${keyGenerator(req)}`);
     res.status(options.statusCode).send(options.message);
   }
 });
@@ -30,9 +37,10 @@ const memoryTtsLimiter = rateLimit({
   max: CONSTANTS.RATE_LIMIT.TTS_MAX_REQUESTS,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: keyGenerator,
   message: { error: 'Audio generation limit reached. Please wait a while. (Mem)' },
   handler: (req, res, next, options) => {
-    logger.warn(`Rate Limit Exceeded (Mem-TTS): ${req.ip}`);
+    logger.warn(`Rate Limit Exceeded (Mem-TTS): ${keyGenerator(req)}`);
     res.status(options.statusCode).send(options.message);
   }
 });
@@ -48,6 +56,7 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
     max: maxRequests,
     standardHeaders: true,
     legacyHeaders: false,
+    keyGenerator: keyGenerator,
     store: new RedisStore({
       // @ts-ignore
       sendCommand: async (...args: string[]) => {
@@ -65,16 +74,15 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
     }),
     message: { error: type === 'API' ? 'Too many requests, please try again later.' : 'Audio generation limit reached.' },
     handler: (req, res, next, options) => {
-      logger.warn(`Rate Limit Exceeded (${type}): ${req.ip}`);
+      logger.warn(`Rate Limit Exceeded (${type}): ${keyGenerator(req)}`);
       res.status(options.statusCode).send(options.message);
     }
   });
 };
 
-// --- 3. Exported Middlewares (The Switch Logic) ---
+// --- 3. Exported Middlewares ---
 
 export const apiLimiter = (req: any, res: any, next: any) => {
-  // If Redis is ready, use (or create) the Redis limiter
   if (redisClient.isReady()) {
     if (!redisApiLimiter) {
       logger.info('⚡ Upgrading API Rate Limiter to Redis Store');
@@ -82,13 +90,10 @@ export const apiLimiter = (req: any, res: any, next: any) => {
     }
     return redisApiLimiter(req, res, next);
   }
-
-  // Otherwise, use Memory fallback
   return memoryApiLimiter(req, res, next);
 };
 
 export const ttsLimiter = (req: any, res: any, next: any) => {
-  // If Redis is ready, use (or create) the Redis limiter
   if (redisClient.isReady()) {
     if (!redisTtsLimiter) {
       logger.info('⚡ Upgrading TTS Rate Limiter to Redis Store');
@@ -96,7 +101,5 @@ export const ttsLimiter = (req: any, res: any, next: any) => {
     }
     return redisTtsLimiter(req, res, next);
   }
-
-  // Otherwise, use Memory fallback
   return memoryTtsLimiter(req, res, next);
 };
