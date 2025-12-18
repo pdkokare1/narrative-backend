@@ -5,11 +5,11 @@ import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
 import redisClient from '../utils/redisClient';
 import config from '../utils/config';
-import CircuitBreaker from '../utils/CircuitBreaker'; // ✅ Unified Circuit Breaker
+import CircuitBreaker from '../utils/CircuitBreaker'; 
 import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle, INewsAPIResponse } from '../types';
 import Article from '../models/articleModel';
-import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
+import { FETCH_CYCLES, CONSTANTS, TRUSTED_SOURCES, JUNK_KEYWORDS } from '../utils/constants';
 
 class NewsService {
   constructor() {
@@ -27,7 +27,6 @@ class NewsService {
       const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
       let index = 0;
 
-      // @ts-ignore
       if (redisClient.isReady()) {
           try {
               const stored = await redisClient.get(redisKey);
@@ -58,7 +57,6 @@ class NewsService {
 
     // 2. Fallback to NewsAPI (Secondary with Circuit Breaker)
     if (allArticles.length < 5) {
-      // ✅ Use Centralized Circuit Breaker
       const isNewsApiOpen = await CircuitBreaker.isOpen('NEWS_API');
       
       if (isNewsApiOpen) {
@@ -66,7 +64,6 @@ class NewsService {
           try {
               const newsApiArticles = await this.fetchFromNewsAPI(currentCycle.newsapi);
               allArticles.push(...newsApiArticles);
-              // If successful, reset failures
               await CircuitBreaker.recordSuccess('NEWS_API');
           } catch (err: any) {
               logger.warn(`NewsAPI fallback failed: ${err.message}`);
@@ -80,7 +77,7 @@ class NewsService {
     // 3. Early Redis "Bouncer" Check (Cheap & Fast)
     const potentialNewArticles = await this.filterSeenInRedis(allArticles);
 
-    // 4. Clean and Deduplicate (CPU Intensive)
+    // 4. Clean, Score, and Deduplicate (CPU Intensive)
     const cleaned = this.removeDuplicatesAndClean(potentialNewArticles);
     
     // 5. Database Deduplication (Disk I/O)
@@ -158,14 +155,14 @@ class NewsService {
 
   private async fetchFromGNews(params: any): Promise<INewsSourceArticle[]> {
     const apiKey = await KeyManager.getKey('GNEWS');
-    const queryParams = { lang: 'en', sortby: 'publishedAt', max: 10, ...params, apikey: apiKey };
+    const queryParams = { lang: 'en', sortby: 'publishedAt', max: CONSTANTS.NEWS.FETCH_LIMIT, ...params, apikey: apiKey };
     return this.fetchExternal('https://gnews.io/api/v4/top-headlines', queryParams, apiKey, 'GNews');
   }
 
   private async fetchFromNewsAPI(params: any): Promise<INewsSourceArticle[]> {
     const apiKey = await KeyManager.getKey('NEWS_API');
     const endpoint = params.q ? 'everything' : 'top-headlines'; 
-    const queryParams = { pageSize: 10, ...params, apiKey: apiKey };
+    const queryParams = { pageSize: CONSTANTS.NEWS.FETCH_LIMIT, ...params, apiKey: apiKey };
     return this.fetchExternal(`https://newsapi.org/v2/${endpoint}`, queryParams, apiKey, 'NewsAPI');
   }
 
@@ -193,21 +190,48 @@ class NewsService {
       }));
   }
 
+  /**
+   * ENHANCED SCORING & DEDUPLICATION
+   * 1. Assigns score based on quality signals
+   * 2. Penalizes clickbait
+   * 3. Deduplicates based on normalized title
+   */
   private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
     const seenUrls = new Set<string>();
     const seenTitles = new Set<string>();
     
     const scoredArticles = articles.map(a => {
         let score = 0;
+        const titleLower = (a.title || "").toLowerCase();
+        const sourceLower = (a.source.name || "").toLowerCase();
+
+        // 1. Image Signal (+2)
         if (a.image && a.image.startsWith('http')) score += 2;
+
+        // 2. Length Signal (+1)
         if (a.title && a.title.length > 40) score += 1;
+
+        // 3. Trusted Source Signal (+3)
+        // Checks if the source name is inside our trusted list
+        if (TRUSTED_SOURCES.some(src => sourceLower.includes(src))) {
+            score += 3;
+        }
+
+        // 4. Junk/Clickbait Penalty (-5)
+        if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) {
+            score -= 5;
+        }
+
         return { article: a, score };
-    }).sort((a, b) => b.score - a.score);
+    }).sort((a, b) => b.score - a.score); // Sort highest score first
 
     const uniqueArticles: INewsSourceArticle[] = [];
 
     for (const item of scoredArticles) {
         const article = item.article;
+
+        // Skip low quality trash (Score < 0)
+        if (item.score < 0) continue;
 
         article.title = formatHeadline(article.title);
         article.description = cleanText(article.description || "");
@@ -219,6 +243,7 @@ class NewsService {
         const url = article.url;
         if (seenUrls.has(url)) continue;
 
+        // Aggressive Title Normalization for Dupes
         const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
         if (seenTitles.has(cleanTitle)) continue;
         
@@ -227,6 +252,7 @@ class NewsService {
         uniqueArticles.push(article);
     }
 
+    // Return sorted by date (newest first)
     return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
