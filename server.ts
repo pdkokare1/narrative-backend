@@ -11,7 +11,7 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import redisClient from './utils/redisClient';
+import redisClient, { initRedis } from './utils/redisClient'; // FIX: Named import
 import dbLoader from './utils/dbLoader';
 import queueManager from './jobs/queueManager';
 
@@ -100,7 +100,7 @@ const startServer = async () => {
 
         // 1. Unified Database & Redis Connection
         await dbLoader.connect();
-        await redisClient.initRedis(); // Ensure Redis starts safely
+        await initRedis(); // FIX: Call standalone function
         
         // 2. Start HTTP Server
         const PORT = config.port || 3001;
