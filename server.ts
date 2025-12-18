@@ -145,6 +145,7 @@ const startServer = async () => {
         // We do this AFTER listening so the app assumes "Ready" state quickly.
         logger.info('⏳ Connecting to Database & Queue...');
         
+        // These can take time without failing the deployment
         await dbLoader.connect(); 
         await queueManager.initialize();
 
