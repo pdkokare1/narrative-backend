@@ -1,5 +1,5 @@
 // services/pipelineService.ts
-import sanitizeHtml from 'sanitize-html'; // NEW: Security Import
+import sanitizeHtml from 'sanitize-html';
 import gatekeeper from './gatekeeperService'; 
 import aiService from './aiService'; 
 import clusteringService from './clusteringService';
@@ -9,15 +9,16 @@ import redisClient from '../utils/redisClient';
 import { IArticle } from '../types';
 
 const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24;
+const BATCH_SIZE = 10;
+const BATCH_TIMEOUT_MS = 2000;
 
 class PipelineService {
+    private batchQueue: any[] = [];
+    private batchTimer: NodeJS.Timeout | null = null;
 
-    // Helper: Check for duplicates
     private async isDuplicate(url: string): Promise<boolean> {
         if (!url) return true;
-        // 1. Redis Cache Check (Fast)
         if (await redisClient.sIsMember('processed_urls', url)) return true;
-        // 2. DB Check (Reliable)
         if (await Article.exists({ url })) {
             await redisClient.sAdd('processed_urls', url); 
             return true;
@@ -25,112 +26,122 @@ class PipelineService {
         return false;
     }
 
-    // Helper: Sanitize Text to prevent XSS or HTML injection
     private sanitizeContent(text: string): string {
         if (!text) return "";
         return sanitizeHtml(text, {
-            allowedTags: [], // Remove ALL HTML tags (<a>, <script>, etc.)
-            allowedAttributes: {} // No attributes allowed
+            allowedTags: [],
+            allowedAttributes: {}
         }).trim();
     }
 
-    // Main Logic: Process one article completely
+    // New: Batch Embedding Processor
+    private async processEmbeddingsBatch() {
+        if (this.batchQueue.length === 0) return;
+
+        const currentBatch = [...this.batchQueue];
+        this.batchQueue = [];
+        if (this.batchTimer) {
+            clearTimeout(this.batchTimer);
+            this.batchTimer = null;
+        }
+
+        try {
+            const textsToEmbed = currentBatch.map(item => `${item.article.title}. ${item.article.description}`);
+            const embeddings = await aiService.createBatchEmbeddings(textsToEmbed);
+
+            if (embeddings && embeddings.length === currentBatch.length) {
+                for (let i = 0; i < currentBatch.length; i++) {
+                    currentBatch[i].resolve(embeddings[i]);
+                }
+            } else {
+                throw new Error('Batch embedding response mismatch or failure');
+            }
+        } catch (error: any) {
+            logger.error(`❌ Batch Embedding Failure: ${error.message}`);
+            currentBatch.forEach(item => item.reject(error));
+        }
+    }
+
+    private async getEmbeddingWithBatching(article: any): Promise<number[]> {
+        return new Promise((resolve, reject) => {
+            this.batchQueue.push({ article, resolve, reject });
+
+            if (this.batchQueue.length >= BATCH_SIZE) {
+                this.processEmbeddingsBatch();
+            } else if (!this.batchTimer) {
+                this.batchTimer = setTimeout(() => this.processEmbeddingsBatch(), BATCH_TIMEOUT_MS);
+            }
+        });
+    }
+
     async processSingleArticle(article: any): Promise<string> {
         try {
             if (!article?.url || !article?.title) return 'ERROR_INVALID';
             
-            // 1. Exact Duplicate Check (URL)
             if (await this.isDuplicate(article.url)) return 'DUPLICATE_URL';
 
-            // --- SECURITY & CLEANING ---
-            // Sanitize input BEFORE any processing.
             article.title = this.sanitizeContent(article.title);
             article.description = this.sanitizeContent(article.description);
-            // ---------------------------
 
-            // --- COST SAVER: Pre-Flight Checks ---
-            // Don't waste AI tokens on empty/short content
             const contentLen = (article.description || "").length + (article.content || "").length;
             if (contentLen < 50) {
                 logger.warn(`Skipping short content: ${article.title}`);
                 return 'JUNK_CONTENT';
             }
 
-            // 2. Gatekeeper (Junk Filter)
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
             if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
-            // --- STAGE 1: Fuzzy Match (Free & Fast) ---
             let existingMatch = await clusteringService.findSimilarHeadline(article.title);
-            let usedFuzzyMatch = false;
-
-            if (existingMatch) {
-                usedFuzzyMatch = true;
-            }
-
+            let usedFuzzyMatch = !!existingMatch;
             let embedding: number[] | null = null;
 
-            // --- STAGE 2: Semantic Search (Paid) ---
-            // OPTIMIZATION: Only create embedding if fuzzy match failed.
+            // --- OPTIMIZED: Using the new Batching Engine ---
             if (!existingMatch) {
-                const textToEmbed = `${article.title}. ${article.description}`;
-                embedding = await aiService.createEmbedding(textToEmbed);
-
+                embedding = await this.getEmbeddingWithBatching(article);
                 if (embedding) {
                     existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
-                } else {
-                    // CRITICAL: If embedding fails, retry later.
-                    throw new Error('Embedding generation failed (Network/API). Retrying article later.');
                 }
             }
 
-            // --- Analysis Logic ---
             let analysis: Partial<IArticle>;
             let isSemanticSkip = false;
 
-            // Check Freshness & Validity of the match
-            let isMatchFresh = false;
-            let isMatchValid = false;
-
             if (existingMatch) {
                 const hoursDiff = (new Date().getTime() - new Date(existingMatch.createdAt!).getTime()) / (1000 * 60 * 60);
-                isMatchFresh = hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS;
-                isMatchValid = !!existingMatch.summary && existingMatch.summary !== "Summary Unavailable";
-            }
+                const isMatchFresh = hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS;
+                const isMatchValid = !!existingMatch.summary && existingMatch.summary !== "Summary Unavailable";
 
-            if (existingMatch && isMatchFresh && isMatchValid) {
-                // INHERITANCE (Free)
-                const matchType = usedFuzzyMatch ? "Fuzzy" : "Semantic";
-                logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match (ID: ${existingMatch._id})`);
-                isSemanticSkip = true;
-                
-                analysis = {
-                    summary: existingMatch.summary, 
-                    category: existingMatch.category,
-                    politicalLean: existingMatch.politicalLean, 
-                    biasScore: existingMatch.biasScore,
-                    credibilityScore: existingMatch.credibilityScore,
-                    reliabilityScore: existingMatch.reliabilityScore,
-                    trustScore: existingMatch.trustScore,
-                    sentiment: existingMatch.sentiment,
-                    analysisType: existingMatch.analysisType || 'Full', 
-                    clusterTopic: existingMatch.clusterTopic,
-                    country: 'Global',
-                    clusterId: existingMatch.clusterId,
-                    primaryNoun: existingMatch.primaryNoun,
-                    secondaryNoun: existingMatch.secondaryNoun,
-                    keyFindings: existingMatch.keyFindings || [],
-                    recommendations: existingMatch.recommendations || []
-                };
-            } else {
-                // FRESH GENERATION (Paid)
-                if (existingMatch) {
-                    logger.info(`🔄 Match found but stale/invalid (${existingMatch.createdAt}). Regenerating AI Analysis.`);
+                if (isMatchFresh && isMatchValid) {
+                    const matchType = usedFuzzyMatch ? "Fuzzy" : "Semantic";
+                    logger.info(`💰 Cost Saver! Inheriting analysis from recent ${matchType} match (ID: ${existingMatch._id})`);
+                    isSemanticSkip = true;
+                    
+                    analysis = {
+                        summary: existingMatch.summary, 
+                        category: existingMatch.category,
+                        politicalLean: existingMatch.politicalLean, 
+                        biasScore: existingMatch.biasScore,
+                        credibilityScore: existingMatch.credibilityScore,
+                        reliabilityScore: existingMatch.reliabilityScore,
+                        trustScore: existingMatch.trustScore,
+                        sentiment: existingMatch.sentiment,
+                        analysisType: existingMatch.analysisType || 'Full', 
+                        clusterTopic: existingMatch.clusterTopic,
+                        country: 'Global',
+                        clusterId: existingMatch.clusterId,
+                        primaryNoun: existingMatch.primaryNoun,
+                        secondaryNoun: existingMatch.secondaryNoun,
+                        keyFindings: existingMatch.keyFindings || [],
+                        recommendations: existingMatch.recommendations || []
+                    };
+                } else {
+                    analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
                 }
+            } else {
                 analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
             }
 
-            // 5. Construct & Save
             const newArticleData: Partial<IArticle> = {
                 headline: article.title,
                 summary: analysis.summary || "Summary Unavailable",
@@ -139,16 +150,13 @@ class PipelineService {
                 politicalLean: analysis.politicalLean || "Not Applicable",
                 url: article.url,
                 imageUrl: article.image, 
-                // SAFETY FIX: Ensure date is valid, default to now if missing
                 publishedAt: article.publishedAt ? new Date(article.publishedAt) : new Date(),
                 analysisType: analysis.analysisType || 'Full',
                 sentiment: analysis.sentiment || 'Neutral',
-                
                 biasScore: analysis.biasScore || 0,
                 credibilityScore: analysis.credibilityScore || 0,
                 reliabilityScore: analysis.reliabilityScore || 0,
                 trustScore: analysis.trustScore || 0,
-                
                 clusterTopic: analysis.clusterTopic,
                 country: analysis.country || 'Global',
                 primaryNoun: analysis.primaryNoun,
@@ -156,8 +164,7 @@ class PipelineService {
                 clusterId: analysis.clusterId, 
                 keyFindings: analysis.keyFindings || [],
                 recommendations: analysis.recommendations || [],
-                
-                analysisVersion: isSemanticSkip ? '3.7-Inherited' : '3.7-Full',
+                analysisVersion: isSemanticSkip ? '3.8-Inherited' : '3.8-Full',
                 embedding: embedding || [] 
             };
             
@@ -166,22 +173,16 @@ class PipelineService {
             }
             
             await Article.create(newArticleData);
-            
-            // Mark processed for 48h
             await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
             await redisClient.sAdd('processed_urls', article.url);
 
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
         } catch (error: any) {
-            // Log full error for debugging
             logger.error(`❌ Pipeline Error for "${article.title}": ${error.message}`);
-            
-            // Re-throw if it's a critical infrastructure error so the Job Queue knows to retry
             if (error.message.includes('Embedding') || error.message.includes('Connection')) {
                 throw error;
             }
-            
             return 'ERROR_PIPELINE';
         }
     }
