@@ -28,7 +28,8 @@ const app = express();
 
 // --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
-    if (req.url !== '/health') {
+    // Don't log spammy health checks
+    if (req.url !== '/health' && req.url !== '/ping') {
         logger.http(`${req.method} ${req.url}`);
     }
     next();
@@ -58,12 +59,22 @@ app.use(express.json({ limit: '200kb' }));
 // --- 4. System Routes ---
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
+// LIGHTWEIGHT Health Check (For Load Balancers/Railway)
+// Does not check DB/Redis connections to prevent cascading failures
+app.get('/ping', (req: Request, res: Response) => { 
+    res.status(200).send('OK'); 
+});
+
+// DEEP Health Check (For Debugging/Status Page)
 app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
-    res.status(200).json({ 
-        status: 'OK', 
+    // Return 503 if critical services are down so monitoring tools know
+    const status = (mongoStatus === 'UP' && redisStatus === 'UP') ? 200 : 503;
+
+    res.status(status).json({ 
+        status: status === 200 ? 'OK' : 'DEGRADED', 
         mongo: mongoStatus, 
         redis: redisStatus 
     });
@@ -79,15 +90,23 @@ try {
       logger.info('Firebase Admin SDK Initialized');
     }
   }
-} catch (error: any) {
-  logger.error(`Firebase Admin Init Error: ${error.message}`);
+} catch (error) {
+    if (error instanceof Error) {
+        logger.error(`Firebase Admin Init Error: ${error.message}`);
+    } else {
+        logger.error('Firebase Admin Init Error: Unknown error');
+    }
 }
 
 // --- 6. Global Rate Limiter ---
-app.use('/api/', apiLimiter); 
+// Applied to the main API route
+app.use('/api/v1/', apiLimiter); 
 
 // --- 7. Mount Routes ---
 app.use('/share', shareRoutes); 
+// CHANGED: Versioned API Route
+app.use('/api/v1', apiRouter);
+// Fallback for older clients (Optional - remove if not needed)
 app.use('/api', apiRouter);
 
 // --- 8. Error Handling ---
@@ -128,8 +147,12 @@ const startServer = async () => {
             async () => { await queueManager.shutdown(); }
         ]);
 
-    } catch (err: any) {
-        logger.error(`❌ Critical Startup Error: ${err.message}`);
+    } catch (err) {
+        if (err instanceof Error) {
+            logger.error(`❌ Critical Startup Error: ${err.message}`);
+        } else {
+            logger.error('❌ Critical Startup Error: Unknown error');
+        }
         process.exit(1);
     }
 };
