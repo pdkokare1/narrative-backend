@@ -50,10 +50,8 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
         sendCommand: async (...args: string[]) => {
             try {
                 const client = redisClient.getClient();
-                // CRITICAL FIX: If client isn't ready, THROW error instead of returning null.
-                // Returning null causes rate-limit-redis to crash with TypeError.
-                // Throwing an error allows skipFailedRequests to handle it gracefully.
-                if (client && client.isReady()) {
+                // CRITICAL FIX: isReady is a boolean property, not a function
+                if (client && client.isReady) {
                     return await client.sendCommand(args);
                 }
                 throw new Error('Redis client not ready');
@@ -111,6 +109,7 @@ const ttsLimiterRedis = createRedisLimiter(CONSTANTS.RATE_LIMIT.TTS_MAX_REQUESTS
  * - If Redis is NOT configured: Use Memory Limiter
  */
 export const apiLimiter = (req: Request, res: Response, next: NextFunction) => {
+    // redisClient.isReady() here is correct because it calls our wrapper function in utils/redisClient.ts
     if (apiLimiterRedis && redisClient.isReady()) {
         return apiLimiterRedis(req, res, next);
     }
