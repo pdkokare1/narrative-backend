@@ -5,6 +5,7 @@ import validate from '../middleware/validate';
 import schemas from '../utils/validationSchemas';
 import Profile from '../models/profileModel';
 import ActivityLog from '../models/activityLogModel';
+import logger from '../utils/logger';
 import * as admin from 'firebase-admin';
 
 const router = express.Router();
@@ -35,12 +36,12 @@ router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Reque
         throw new Error('Username already taken by another user.');
     }
 
-    // B. Orphan Check (Relink if email matches but ID differs - rare edge case)
+    // B. Orphan Check (Relink if email matches but ID differs)
     const existingProfile = await Profile.findOne({ email }).lean();
     if (existingProfile) {
-        // Just update the ID linkage if needed
         if (existingProfile.userId !== uid) {
             await Profile.updateOne({ email }, { userId: uid });
+            logger.info(`🔗 Relinked orphan profile for ${email}`);
         }
         return res.status(200).json(existingProfile);
     }
@@ -54,10 +55,11 @@ router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Reque
         notificationsEnabled: true
     });
 
+    logger.info(`✨ New Profile Created: ${cleanUsername}`);
     res.status(201).json(newProfile);
 }));
 
-// --- 3. Update Profile (NEW) ---
+// --- 3. Update Profile ---
 router.put('/me', validate(schemas.updateProfile), asyncHandler(async (req: Request, res: Response) => {
     const { username, notificationsEnabled } = req.body;
     const userId = req.user!.uid;
@@ -92,9 +94,8 @@ router.put('/me', validate(schemas.updateProfile), asyncHandler(async (req: Requ
 }));
 
 // --- 4. Save Notification Token ---
-router.post('/save-token', asyncHandler(async (req: Request, res: Response) => {
+router.post('/save-token', validate(schemas.saveToken), asyncHandler(async (req: Request, res: Response) => {
     const { token } = req.body;
-    if (!token) throw new Error('Token required');
 
     await Profile.findOneAndUpdate(
         { userId: req.user!.uid },
@@ -170,7 +171,7 @@ router.get('/stats', asyncHandler(async (req: Request, res: Response) => {
 router.delete('/', asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.uid;
 
-    console.log(`🗑️ Deleting account for: ${userId}`);
+    logger.info(`🗑️ Deleting account for: ${userId}`);
 
     // 1. Delete MongoDB Data
     await Profile.deleteOne({ userId });
@@ -180,7 +181,7 @@ router.delete('/', asyncHandler(async (req: Request, res: Response) => {
     try {
         await admin.auth().deleteUser(userId);
     } catch (err: any) {
-        console.warn(`Firebase Delete Failed (User might be already gone): ${err.message}`);
+        logger.warn(`Firebase Delete Failed (User might be already gone): ${err.message}`);
     }
 
     res.status(200).json({ message: 'Account permanently deleted.' });
