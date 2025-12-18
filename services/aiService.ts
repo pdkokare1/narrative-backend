@@ -9,38 +9,16 @@ import { IArticle, IGeminiResponse } from '../types';
 import promptManager from '../utils/promptManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
 import { jsonrepair } from 'jsonrepair';
-import { z } from 'zod';
 import { CONSTANTS } from '../utils/constants';
+
+// Centralized Validation
+import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSchemas';
 
 // Centralized Config
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
 const PRO_MODEL = CONSTANTS.AI_MODELS.QUALITY;
 
-// --- ZOD SCHEMAS FOR VALIDATION ---
-const SentimentSchema = z.enum(["Positive", "Negative", "Neutral"]);
-
-const BasicAnalysisSchema = z.object({
-  summary: z.string(),
-  category: z.string(),
-  sentiment: SentimentSchema.optional().default("Neutral")
-});
-
-const FullAnalysisSchema = z.object({
-  summary: z.string(),
-  category: z.string(),
-  politicalLean: z.string().optional().default("Center"),
-  sentiment: SentimentSchema.optional().default("Neutral"),
-  biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  clusterTopic: z.string().optional(),
-  primaryNoun: z.string().optional(),
-  secondaryNoun: z.string().optional(),
-  keyFindings: z.array(z.string()).optional().default([]),
-  recommendations: z.array(z.string()).optional().default([])
-});
-
-// JSON Schema for Gemini (Guidance only)
+// JSON Schema for Gemini (Guidance only - passed to API)
 const GEMINI_JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -110,7 +88,7 @@ class AIService {
 
   /**
    * BATCH: Generates Embeddings
-   * ENHANCED: Chunks requests to respect API limits (max 100 per call)
+   * CHUNKS requests to respect API limits
    */
   async createBatchEmbeddings(texts: string[]): Promise<number[][] | null> {
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
@@ -180,6 +158,27 @@ class AIService {
 
   // --- Private Helpers ---
 
+  /**
+   * Aggressively cleans the AI response to extract valid JSON
+   */
+  private cleanJsonText(raw: string): string {
+    if (!raw) return "{}";
+    
+    // 1. Remove Markdown code blocks
+    let clean = raw.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
+    clean = clean.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
+    
+    // 2. Remove common text wrappers (e.g. "Here is the JSON: { ... }")
+    const firstBrace = clean.indexOf('{');
+    const lastBrace = clean.lastIndexOf('}');
+    
+    if (firstBrace !== -1 && lastBrace !== -1) {
+        clean = clean.substring(firstBrace, lastBrace + 1);
+    }
+
+    return clean;
+  }
+
   private parseGeminiResponse(data: IGeminiResponse, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) {
@@ -189,26 +188,21 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        // 1. Clean Markdown Codes (e.g. ```json ... ```)
-        // This is the most common reason for parsing failures
-        let cleanJsonString = rawText.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
-        cleanJsonString = cleanJsonString.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
-
-        // 2. Extract JSON-like substring (if any extra text remains)
-        const jsonString = extractJSON(cleanJsonString);
+        // 1. Clean & Extract
+        const cleanJsonString = this.cleanJsonText(rawText);
         
-        // 3. Repair JSON (Safe call)
-        let repairedJson = jsonString;
+        // 2. Repair JSON (Safe call for trailing commas etc)
+        let repairedJson = cleanJsonString;
         try {
-           repairedJson = jsonrepair(jsonString);
+           repairedJson = jsonrepair(cleanJsonString);
         } catch (e) {
            logger.warn("JSON Repair failed, attempting raw parse");
         }
         
-        // 4. Parse
+        // 3. Parse
         const parsedRaw = JSON.parse(repairedJson);
 
-        // 5. Validate & Transform with Zod
+        // 4. Validate & Transform with Centralized Zod Schemas
         let validated;
         if (mode === 'Basic') {
             validated = BasicAnalysisSchema.parse(parsedRaw);
@@ -249,7 +243,6 @@ class AIService {
       // Quota Errors (429) or "Resource Exhausted"
       if (status === 429 || msg.includes('429') || msg.includes('Quota') || msg.includes('RESOURCE_EXHAUSTED')) {
            logger.warn(`🛑 Gemini Quota Exceeded (Key: ...${apiKey.slice(-4)}). Pausing.`);
-           // We can mark this key as exhausted in KeyManager if we implemented multi-key for Gemini
            throw new AppError('AI Service Quota Exceeded', 429);
       }
       
