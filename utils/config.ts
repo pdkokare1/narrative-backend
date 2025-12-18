@@ -34,10 +34,12 @@ const envSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
   
   // Security
-  // CHANGED: Increased minimum length to 32 for better security
   ADMIN_SECRET: z.string().min(32, "Admin secret must be at least 32 chars long"),
   ADMIN_UIDS: z.string().optional(),
   CORS_ORIGINS: z.string().default(''), 
+  
+  // NEW: Trust Proxy Configuration (Default to 1 for Railway/Heroku)
+  TRUST_PROXY_LVL: z.string().transform(Number).default('1'),
   
   // AI Model Configuration
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
@@ -164,6 +166,7 @@ const config = {
   adminSecret: env.ADMIN_SECRET,
   adminUids: env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : [],
   corsOrigins: getCorsOrigins(),
+  trustProxyLevel: env.TRUST_PROXY_LVL, // Exported to use in server.ts
   
   worker: {
       concurrency: env.WORKER_CONCURRENCY
