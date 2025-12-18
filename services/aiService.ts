@@ -48,7 +48,13 @@ const FULL_SCHEMA = {
 
 class AIService {
   constructor() {
-    KeyManager.loadKeys('GEMINI', 'GEMINI');
+    // FIX: Register keys from central config instead of reading env directly
+    if (config.keys.gemini) {
+        KeyManager.registerProviderKeys('GEMINI', [config.keys.gemini]);
+    } else {
+        logger.warn("⚠️ No Gemini API Key found in config");
+    }
+    
     logger.info(`🤖 AI Service Initialized (Model: ${PRO_MODEL})`);
   }
 
