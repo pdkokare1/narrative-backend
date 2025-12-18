@@ -4,6 +4,7 @@ import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
 import redisClient from '../utils/redisClient';
+import config from '../utils/config';
 import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle, INewsAPIResponse } from '../types';
 import Article from '../models/articleModel';
@@ -11,8 +12,9 @@ import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
 
 class NewsService {
   constructor() {
-    KeyManager.loadKeys('GNEWS', 'GNEWS');
-    KeyManager.loadKeys('NEWS_API', 'NEWS_API');
+    // Initialize Keys from Central Config
+    KeyManager.registerProviderKeys('GNEWS', config.keys.gnews);
+    KeyManager.registerProviderKeys('NEWS_API', config.keys.newsApi);
     logger.info(`📰 News Service Initialized`);
   }
 
