@@ -5,15 +5,16 @@ import apiClient from '../utils/apiClient';
 import config from '../utils/config'; 
 import AppError from '../utils/AppError';
 import { cleanText, extractJSON } from '../utils/helpers';
-import { IArticle } from '../types';
+import { IArticle, IGeminiResponse, IGeminiBatchResponse } from '../types';
 import promptManager from '../utils/promptManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
 import { jsonrepair } from 'jsonrepair';
 import { z } from 'zod';
+import { CONSTANTS } from '../utils/constants';
 
 // Centralized Config
-const EMBEDDING_MODEL = config.aiModels?.embedding || 'text-embedding-004';
-const PRO_MODEL = config.aiModels?.pro || 'gemini-pro';
+const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
+const PRO_MODEL = CONSTANTS.AI_MODELS.QUALITY;
 
 // --- ZOD SCHEMAS FOR VALIDATION ---
 const SentimentSchema = z.enum(["Positive", "Negative", "Neutral"]);
@@ -86,7 +87,7 @@ class AIService {
       const prompt = await promptManager.getAnalysisPrompt(article, mode);
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
-      const response = await apiClient.post(url, {
+      const response = await apiClient.post<IGeminiResponse>(url, {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
@@ -134,10 +135,10 @@ class AIService {
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
             
             // Wait for each batch (sequential to avoid rate limits)
-            const response = await apiClient.post(url, { requests }, { timeout: 30000 });
+            const response = await apiClient.post<{ embeddings?: { values: number[] }[] }>(url, { requests }, { timeout: 30000 });
 
             if (response.data.embeddings) {
-                const batchValues = response.data.embeddings.map((e: any) => e.values);
+                const batchValues = response.data.embeddings.map(e => e.values);
                 allEmbeddings.push(...batchValues);
             }
         }
@@ -163,7 +164,7 @@ class AIService {
         const clean = cleanText(text).substring(0, 2000);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
         
-        const response = await apiClient.post(url, {
+        const response = await apiClient.post<{ embedding: { values: number[] } }>(url, {
             model: `models/${EMBEDDING_MODEL}`,
             content: { parts: [{ text: clean }] }
         }, { timeout: 10000 });
@@ -179,7 +180,7 @@ class AIService {
 
   // --- Private Helpers ---
 
-  private parseGeminiResponse(data: any, mode: 'Full' | 'Basic'): Partial<IArticle> {
+  private parseGeminiResponse(data: IGeminiResponse, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) {
             throw new AppError('AI returned no candidates', 502);
