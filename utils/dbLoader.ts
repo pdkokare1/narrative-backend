@@ -27,11 +27,12 @@ class DbLoader {
         }
 
         // --- PARALLEL LOADING START ---
-        // We trigger both connections at the same time instead of waiting for one to finish.
+        // We trigger both connections at the same time.
         
         const mongoPromise = this.connectMongo();
         
         // Redis is optional but recommended. We catch errors here so they don't block MongoDB.
+        // This solves the 'double connect' issue by managing it here.
         const redisPromise = initRedis().catch(err => {
             logger.warn(`⚠️ Redis Initialization failed: ${err.message}. App will run with limited caching.`);
             return null;
