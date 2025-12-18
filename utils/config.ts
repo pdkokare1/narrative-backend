@@ -31,6 +31,7 @@ const envSchema = z.object({
   
   // Security
   ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
+  ADMIN_UIDS: z.string().optional(), // NEW: Comma-separated list of Super Admin UIDs
   CORS_ORIGINS: z.string().default(''), 
   
   // AI Model Configuration
@@ -156,6 +157,7 @@ const config = {
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
+  adminUids: env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : [], // NEW: Parse list
   corsOrigins: getCorsOrigins(),
   
   worker: {
