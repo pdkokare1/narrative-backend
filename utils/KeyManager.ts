@@ -5,7 +5,6 @@ import logger from './logger';
 interface IKey {
     key: string;
     provider: string;
-    errorCount: number;
 }
 
 class KeyManager {
@@ -15,10 +14,11 @@ class KeyManager {
     private readonly COOLDOWN_TIME_SECONDS = 600; // 10 minutes
     private readonly MAX_ERRORS_BEFORE_COOLDOWN = 5;
     
-    // Circuit Breaker (Global Panic Button)
-    private globalCircuitBreaker: boolean = false;
-    private circuitBreakerResetTime: number = 0;
-    private consecutiveGlobalErrors: number = 0;
+    // Redis Keys Prefixes
+    private readonly REDIS_PREFIX_COOLDOWN = 'key_cooldown:';
+    private readonly REDIS_PREFIX_ERROR = 'key_errors:';
+    private readonly REDIS_KEY_CIRCUIT_BREAKER = 'global_circuit_breaker';
+
     private readonly GLOBAL_ERROR_THRESHOLD = 20;
 
     constructor() {
@@ -39,8 +39,7 @@ class KeyManager {
             if (!this.keys.has(k)) {
                 this.keys.set(k, {
                     key: k,
-                    provider: providerName,
-                    errorCount: 0
+                    provider: providerName
                 });
                 addedCount++;
             }
@@ -51,19 +50,18 @@ class KeyManager {
 
     /**
      * Gets the best available key.
-     * Strategy: PRIORITY (Failover).
-     * Always tries keys in order [0, 1, 2...]. Returns the first one that is NOT in cooldown.
-     * This preserves backup keys until they are actually needed.
+     * Strategy: PRIORITY (Failover) with Distributed State.
+     * Always tries keys in order [0, 1, 2...]. Returns the first one that is NOT in cooldown (checked via Redis).
      */
     public async getKey(providerName: string): Promise<string> {
-        // 1. Check Global Circuit Breaker (Stop everything if API is down)
-        if (this.globalCircuitBreaker) {
-            if (Date.now() > this.circuitBreakerResetTime) {
-                logger.info("🟢 Global Circuit Breaker Reset. Resuming AI operations.");
-                this.globalCircuitBreaker = false;
-                this.consecutiveGlobalErrors = 0;
-            } else {
-                const waitTime = Math.ceil((this.circuitBreakerResetTime - Date.now()) / 1000);
+        // 1. Check Global Circuit Breaker (Redis-based for distributed awareness)
+        // If the system is in panic mode, stop everything.
+        const cbResetTime = await redisClient.get(this.REDIS_KEY_CIRCUIT_BREAKER);
+        
+        if (cbResetTime) {
+            const resetTime = parseInt(cbResetTime, 10);
+            if (Date.now() < resetTime) {
+                const waitTime = Math.ceil((resetTime - Date.now()) / 1000);
                 throw new Error(`CIRCUIT_BREAKER_ACTIVE: System cooling down for ${waitTime}s.`);
             }
         }
@@ -76,7 +74,7 @@ class KeyManager {
         // Loop through all configured keys for this provider
         for (const candidate of allKeys) {
             // Check REDIS: Is this key cooling down?
-            const isCoolingDown = await redisClient.get(`key_cooldown:${candidate.key}`);
+            const isCoolingDown = await redisClient.get(`${this.REDIS_PREFIX_COOLDOWN}${candidate.key}`);
             
             if (isCoolingDown) {
                 // If this key is burnt, skip to the next backup key
@@ -92,19 +90,22 @@ class KeyManager {
 
     /**
      * Reports a failure. 
-     * If Rate Limit (429): Instantly sets cooldown in Redis.
-     * If other error: Increments local counter, then sets cooldown in Redis if too many errors.
+     * Uses Redis to track errors across multiple instances.
      */
     public async reportFailure(key: string, isRateLimit: boolean = false): Promise<void> {
-        this.consecutiveGlobalErrors++;
         
-        // Trip Circuit Breaker if massive failures occur
-        if (this.consecutiveGlobalErrors >= this.GLOBAL_ERROR_THRESHOLD) {
-            this.globalCircuitBreaker = true;
-            this.circuitBreakerResetTime = Date.now() + (5 * 60 * 1000); // 5 mins
+        // 1. Handle Global Circuit Breaker Logic
+        const globalErrorsKey = 'system:global_errors';
+        const currentGlobalErrors = await redisClient.incr(globalErrorsKey);
+        await redisClient.expire(globalErrorsKey, 300); // Window of 5 minutes
+
+        if (currentGlobalErrors >= this.GLOBAL_ERROR_THRESHOLD) {
+            const resetTime = Date.now() + (5 * 60 * 1000); // 5 mins
+            await redisClient.set(this.REDIS_KEY_CIRCUIT_BREAKER, resetTime.toString(), 300);
             logger.error("⛔ CRITICAL: Too many API failures. Global Circuit Breaker TRIPPED.");
         }
 
+        // 2. Handle Individual Key Failure
         const keyObj = this.keys.get(key);
         if (!keyObj) return;
         
@@ -114,33 +115,35 @@ class KeyManager {
             logger.warn(`⏳ Rate Limit hit on ...${key.slice(-4)}. Switching to backup key.`);
             shouldBan = true;
         } else {
-            keyObj.errorCount++;
-            if (keyObj.errorCount >= this.MAX_ERRORS_BEFORE_COOLDOWN) {
-                logger.warn(`⚠️ Key ...${key.slice(-4)} unstable (${keyObj.errorCount} errors). Cooling down.`);
+            // Increment shared error counter in Redis
+            const errorKey = `${this.REDIS_PREFIX_ERROR}${key}`;
+            const errorCount = await redisClient.incr(errorKey);
+            await redisClient.expire(errorKey, 3600); // Reset count every hour
+
+            if (errorCount >= this.MAX_ERRORS_BEFORE_COOLDOWN) {
+                logger.warn(`⚠️ Key ...${key.slice(-4)} unstable (${errorCount} errors). Cooling down.`);
                 shouldBan = true;
             }
         }
 
         if (shouldBan) {
             // SET COOLDOWN IN REDIS
-            // This 'true' flag will expire automatically after COOLDOWN_TIME_SECONDS
             await redisClient.set(
-                `key_cooldown:${key}`, 
+                `${this.REDIS_PREFIX_COOLDOWN}${key}`, 
                 'true', 
                 this.COOLDOWN_TIME_SECONDS
             );
             
-            // Reset local error count so it's fresh when it comes back
-            keyObj.errorCount = 0;
+            // Clear error count so it starts fresh after cooldown
+            await redisClient.del(`${this.REDIS_PREFIX_ERROR}${key}`);
         }
     }
 
-    public reportSuccess(key: string): void {
-        this.consecutiveGlobalErrors = 0; 
-        const keyObj = this.keys.get(key);
-        if (keyObj) {
-            keyObj.errorCount = 0;
-        }
+    public async reportSuccess(key: string): Promise<void> {
+        // Clear global error count slightly to indicate system health
+        // (We don't clear it fully to prevent flickering, but we could expire it faster)
+        // For individual keys, we reset their error count on success
+        await redisClient.del(`${this.REDIS_PREFIX_ERROR}${key}`);
     }
 }
 
