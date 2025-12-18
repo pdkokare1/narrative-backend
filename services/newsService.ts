@@ -5,6 +5,7 @@ import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
 import redisClient from '../utils/redisClient';
 import config from '../utils/config';
+import CircuitBreaker from '../utils/CircuitBreaker'; // ✅ Unified Circuit Breaker
 import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle, INewsAPIResponse } from '../types';
 import Article from '../models/articleModel';
@@ -57,36 +58,32 @@ class NewsService {
 
     // 2. Fallback to NewsAPI (Secondary with Circuit Breaker)
     if (allArticles.length < 5) {
-      const isNewsApiOpen = await this.checkCircuitBreaker('NEWS_API');
+      // ✅ Use Centralized Circuit Breaker
+      const isNewsApiOpen = await CircuitBreaker.isOpen('NEWS_API');
       
       if (isNewsApiOpen) {
           logger.info('⚠️ Low yield from GNews, triggering NewsAPI fallback...');
           try {
               const newsApiArticles = await this.fetchFromNewsAPI(currentCycle.newsapi);
               allArticles.push(...newsApiArticles);
-              // If successful, reset any failure counts
-              await this.resetCircuitBreaker('NEWS_API');
+              // If successful, reset failures
+              await CircuitBreaker.recordSuccess('NEWS_API');
           } catch (err: any) {
               logger.warn(`NewsAPI fallback failed: ${err.message}`);
-              await this.recordFailure('NEWS_API');
+              await CircuitBreaker.recordFailure('NEWS_API');
           }
       } else {
           logger.warn('🚫 NewsAPI Circuit Breaker is OPEN. Skipping fallback to protect system.');
       }
     }
 
-    // --- NEW OPTIMIZATION ORDER ---
-    
     // 3. Early Redis "Bouncer" Check (Cheap & Fast)
-    // We check against Redis BEFORE doing heavy text cleaning/regex
     const potentialNewArticles = await this.filterSeenInRedis(allArticles);
 
     // 4. Clean and Deduplicate (CPU Intensive)
-    // Only clean articles that passed the Redis check
     const cleaned = this.removeDuplicatesAndClean(potentialNewArticles);
     
     // 5. Database Deduplication (Disk I/O)
-    // Final check against persistent storage
     const finalUnique = await this.filterExistingInDB(cleaned);
 
     // 6. Mark accepted articles as "Seen" in Redis
@@ -94,39 +91,6 @@ class NewsService {
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
     return finalUnique;
-  }
-
-  // --- CIRCUIT BREAKER HELPERS ---
-
-  private async checkCircuitBreaker(provider: string): Promise<boolean> {
-      if (!redisClient.isReady()) return true;
-      const key = `breaker:open:${provider}`;
-      const isOpen = await redisClient.get(key);
-      return !isOpen; // If key exists, breaker is open (BLOCKED). If null, it's closed (ALLOWED).
-  }
-
-  private async recordFailure(provider: string) {
-      if (!redisClient.isReady()) return;
-      const failKey = `breaker:fail:${provider}`;
-      const openKey = `breaker:open:${provider}`;
-
-      // Increment failure count
-      const count = await redisClient.incr(failKey);
-      
-      // Set a short expiry for the failure counter (window of 10 mins)
-      if (count === 1) await redisClient.expire(failKey, 600);
-
-      // If > 3 failures in 10 mins, OPEN THE BREAKER for 30 mins
-      if (count >= 3) {
-          logger.error(`🔥 ${provider} is failing repeatedly. Opening Circuit Breaker for 30 mins.`);
-          await redisClient.set(openKey, '1', 1800); // 1800 seconds = 30 mins
-          await redisClient.del(failKey); // Reset counter
-      }
-  }
-
-  private async resetCircuitBreaker(provider: string) {
-      if (!redisClient.isReady()) return;
-      await redisClient.del(`breaker:fail:${provider}`);
   }
 
   // --- REDIS HELPERS ---
@@ -140,7 +104,7 @@ class NewsService {
     if (articles.length === 0) return [];
     
     const unseen: INewsSourceArticle[] = [];
-    const keys = articles.map(a => this.getRedisKey(a.url)); // URL is already normalized by fetchExternal
+    const keys = articles.map(a => this.getRedisKey(a.url)); 
     const results = await redisClient.mGet(keys);
     
     let skippedCount = 0;
@@ -186,7 +150,6 @@ class NewsService {
       if (articles.length === 0) return [];
       
       const urls = articles.map(a => a.url);
-      // Optimized: Only fetch the _id is enough, but we use url to compare
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
       const existingUrls = new Set(existingDocs.map((d: any) => d.url));
       
@@ -220,12 +183,11 @@ class NewsService {
   }
 
   private normalizeArticles(articles: any[], sourceName: string): INewsSourceArticle[] {
-      // NOTE: We do MINIMAL processing here just to get the URL for Redis checking
       return articles.map(a => ({
           source: { name: a.source?.name || sourceName },
           title: a.title || "", // Raw title
           description: a.description || a.content || "", // Raw description
-          url: normalizeUrl(a.url), // IMPORTANT: Normalize URL here so Redis check is valid
+          url: normalizeUrl(a.url), 
           image: a.image || a.urlToImage, 
           publishedAt: a.publishedAt || new Date().toISOString()
       }));
@@ -235,7 +197,6 @@ class NewsService {
     const seenUrls = new Set<string>();
     const seenTitles = new Set<string>();
     
-    // Simple heuristic scoring to prefer "better" looking articles
     const scoredArticles = articles.map(a => {
         let score = 0;
         if (a.image && a.image.startsWith('http')) score += 2;
@@ -248,7 +209,6 @@ class NewsService {
     for (const item of scoredArticles) {
         const article = item.article;
 
-        // Apply cleaning logic HERE, after Redis check passed
         article.title = formatHeadline(article.title);
         article.description = cleanText(article.description || "");
 
