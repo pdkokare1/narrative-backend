@@ -7,7 +7,6 @@ import logger from '../utils/logger';
 import config from '../utils/config';
 
 // Redis Config
-// CRITICAL FIX: Use the BullMQ-specific config
 const connectionConfig = config.bullMQConnection;
 const isRedisConfigured = !!connectionConfig;
 
@@ -59,7 +58,7 @@ export const startWorker = () => {
 
         }, { 
             connection: connectionConfig as ConnectionOptions,
-            concurrency: Number(process.env.WORKER_CONCURRENCY) || 5, 
+            concurrency: config.worker.concurrency, // Use centralized config
             limiter: { max: 10, duration: 1000 } 
         });
 
@@ -73,7 +72,7 @@ export const startWorker = () => {
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
         });
 
-        logger.info("✅ Background Worker Started & Listening...");
+        logger.info(`✅ Background Worker Started (Concurrency: ${config.worker.concurrency})`);
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
     }
