@@ -75,14 +75,19 @@ class NewsService {
       }
     }
 
-    // 3. Clean and Deduplicate
-    const cleaned = this.removeDuplicatesAndClean(allArticles);
-
-    // 4. Redis "Bouncer" Check
-    const redisFiltered = await this.filterSeenInRedis(cleaned);
+    // --- NEW OPTIMIZATION ORDER ---
     
-    // 5. Database Deduplication
-    const finalUnique = await this.filterExistingInDB(redisFiltered);
+    // 3. Early Redis "Bouncer" Check (Cheap & Fast)
+    // We check against Redis BEFORE doing heavy text cleaning/regex
+    const potentialNewArticles = await this.filterSeenInRedis(allArticles);
+
+    // 4. Clean and Deduplicate (CPU Intensive)
+    // Only clean articles that passed the Redis check
+    const cleaned = this.removeDuplicatesAndClean(potentialNewArticles);
+    
+    // 5. Database Deduplication (Disk I/O)
+    // Final check against persistent storage
+    const finalUnique = await this.filterExistingInDB(cleaned);
 
     // 6. Mark accepted articles as "Seen" in Redis
     await this.markAsSeenInRedis(finalUnique);
@@ -135,7 +140,7 @@ class NewsService {
     if (articles.length === 0) return [];
     
     const unseen: INewsSourceArticle[] = [];
-    const keys = articles.map(a => this.getRedisKey(a.url));
+    const keys = articles.map(a => this.getRedisKey(a.url)); // URL is already normalized by fetchExternal
     const results = await redisClient.mGet(keys);
     
     let skippedCount = 0;
@@ -215,11 +220,12 @@ class NewsService {
   }
 
   private normalizeArticles(articles: any[], sourceName: string): INewsSourceArticle[] {
+      // NOTE: We do MINIMAL processing here just to get the URL for Redis checking
       return articles.map(a => ({
           source: { name: a.source?.name || sourceName },
-          title: formatHeadline(a.title || ""),
-          description: cleanText(a.description || a.content || ""),
-          url: normalizeUrl(a.url), 
+          title: a.title || "", // Raw title
+          description: a.description || a.content || "", // Raw description
+          url: normalizeUrl(a.url), // IMPORTANT: Normalize URL here so Redis check is valid
           image: a.image || a.urlToImage, 
           publishedAt: a.publishedAt || new Date().toISOString()
       }));
@@ -241,6 +247,10 @@ class NewsService {
 
     for (const item of scoredArticles) {
         const article = item.article;
+
+        // Apply cleaning logic HERE, after Redis check passed
+        article.title = formatHeadline(article.title);
+        article.description = cleanText(article.description || "");
 
         if (!article.title || !article.url) continue;
         if (article.title.length < 10) continue; 
