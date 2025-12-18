@@ -56,6 +56,30 @@ const schemas = {
         })
     }),
 
+    // --- Activity & Logging (Restored) ---
+    logActivity: z.object({
+        body: z.object({
+            articleId: rules.objectId
+        })
+    }),
+
+    // --- Search & Feeds (Restored) ---
+    search: z.object({
+        // Allow any query parameters for search
+    }).passthrough(),
+
+    feedFilters: z.object({
+        // Allow any query parameters for filtering
+    }).passthrough(),
+
+    saveArticle: z.object({
+        id: rules.objectId
+    }),
+
+    clusterView: z.object({
+        clusterId: z.string()
+    }),
+
     // --- Legacy / Restored Schemas (Fixes Deployment) ---
     // These allow existing routes to function without changes.
     
