@@ -2,6 +2,7 @@
 import { Worker, Job, ConnectionOptions } from 'bullmq';
 import logger from '../utils/logger';
 import config from '../utils/config';
+import { CONSTANTS } from '../utils/constants';
 import { 
     handleUpdateTrending, 
     handleFetchFeed, 
@@ -24,10 +25,10 @@ export const startWorker = () => {
     }
 
     try {
-        // High concurrency for maximum throughput
-        const concurrency = Math.max(config.worker.concurrency, 10);
+        // CHANGED: Use config directly. Do NOT force high concurrency (prevents OOM crashes)
+        const concurrency = config.worker.concurrency;
 
-        newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
+        newsWorker = new Worker(CONSTANTS.QUEUE.NAME, async (job: Job) => {
             
             switch (job.name) {
                 case 'update-trending':
@@ -62,7 +63,7 @@ export const startWorker = () => {
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
         });
 
-        logger.info(`✅ Background Worker Started (Concurrency: ${concurrency})`);
+        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency})`);
 
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
