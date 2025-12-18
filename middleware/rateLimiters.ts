@@ -22,19 +22,24 @@ const keyGenerator = (req: Request | any): string => {
  * Factory to create a limiter (Memory or Redis)
  */
 const createLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
-    const useRedis = config.redisUrl && redisClient.isReady();
+    // CHANGED: We now attempt to use Redis if a URL is configured,
+    // regardless of whether the client is 'ready' at this exact nanosecond.
+    const isRedisConfigured = !!config.redisUrl;
     
     let store;
 
-    if (useRedis) {
+    if (isRedisConfigured) {
         store = new RedisStore({
             // @ts-ignore - RedisClientType compatibility wrapper
             sendCommand: async (...args: string[]) => {
                 try {
                     const client = redisClient.getClient();
+                    // We check readiness HERE, dynamically, per request
                     if (client && client.isReady) {
                         return await client.sendCommand(args);
                     }
+                    // If Redis disconnects briefly, this returns null 
+                    // which causes rate-limit-redis to fall back to memory temporarily
                     return null;
                 } catch (e) {
                     logger.error(`Redis Limit Error (${type}):`, e);
@@ -42,13 +47,9 @@ const createLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
                 }
             },
         });
-    }
-
-    // Fallback to MemoryStore is automatic if 'store' is undefined
-    if (!useRedis) {
-        logger.info(`⚠️ Using Memory Store for ${type} Rate Limiter (Redis not ready)`);
+        logger.info(`✅ Rate Limiter (${type}) configured with Redis Store strategy`);
     } else {
-        logger.info(`✅ Using Redis Store for ${type} Rate Limiter`);
+        logger.warn(`⚠️ Rate Limiter (${type}) using Memory Store (No Redis URL)`);
     }
 
     return rateLimit({
@@ -57,7 +58,7 @@ const createLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
         standardHeaders: true,
         legacyHeaders: false,
         keyGenerator: keyGenerator,
-        store: store, // If undefined, defaults to MemoryStore
+        store: store, // If undefined (no Redis URL), defaults to MemoryStore
         message: { 
             status: 'error',
             message: type === 'API' 
