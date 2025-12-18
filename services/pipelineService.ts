@@ -1,4 +1,5 @@
 // services/pipelineService.ts
+import sanitizeHtml from 'sanitize-html'; // NEW: Security Import
 import gatekeeper from './gatekeeperService'; 
 import aiService from './aiService'; 
 import clusteringService from './clusteringService';
@@ -24,6 +25,15 @@ class PipelineService {
         return false;
     }
 
+    // Helper: Sanitize Text to prevent XSS or HTML injection
+    private sanitizeContent(text: string): string {
+        if (!text) return "";
+        return sanitizeHtml(text, {
+            allowedTags: [], // Remove ALL HTML tags (<a>, <script>, etc.)
+            allowedAttributes: {} // No attributes allowed
+        }).trim();
+    }
+
     // Main Logic: Process one article completely
     async processSingleArticle(article: any): Promise<string> {
         try {
@@ -31,6 +41,12 @@ class PipelineService {
             
             // 1. Exact Duplicate Check (URL)
             if (await this.isDuplicate(article.url)) return 'DUPLICATE_URL';
+
+            // --- SECURITY & CLEANING ---
+            // Sanitize input BEFORE any processing.
+            article.title = this.sanitizeContent(article.title);
+            article.description = this.sanitizeContent(article.description);
+            // ---------------------------
 
             // --- COST SAVER: Pre-Flight Checks ---
             // Don't waste AI tokens on empty/short content
@@ -54,25 +70,16 @@ class PipelineService {
 
             let embedding: number[] | null = null;
 
-            // --- STAGE 2: Semantic Search (Paid/Batch) ---
-            // Logic: Use Batch Embedding if available -> Else create new one -> Check for semantic duplicates
+            // --- STAGE 2: Semantic Search (Paid) ---
+            // OPTIMIZATION: Only create embedding if fuzzy match failed.
             if (!existingMatch) {
-                
-                // A. Check if we already have a Batch Embedding (Zero Cost)
-                if (article.embedding && Array.isArray(article.embedding) && article.embedding.length > 0) {
-                     embedding = article.embedding;
-                     // logger.debug('⚡ Using Pre-calculated Batch Embedding');
-                } 
-                // B. Fallback: Generate on the fly (Paid Cost)
-                else {
-                    const textToEmbed = `${article.title}. ${article.description}`;
-                    embedding = await aiService.createEmbedding(textToEmbed);
-                }
+                const textToEmbed = `${article.title}. ${article.description}`;
+                embedding = await aiService.createEmbedding(textToEmbed);
 
                 if (embedding) {
                     existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
                 } else {
-                    // CRITICAL FIX: If embedding fails (API Error), do NOT proceed.
+                    // CRITICAL: If embedding fails, retry later.
                     throw new Error('Embedding generation failed (Network/API). Retrying article later.');
                 }
             }
