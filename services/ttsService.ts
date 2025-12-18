@@ -3,18 +3,19 @@ import axios from 'axios';
 import { v2 as cloudinary } from 'cloudinary';
 import config from '../utils/config';
 import logger from '../utils/logger';
+import KeyManager from '../utils/KeyManager';
+import CircuitBreaker from '../utils/CircuitBreaker';
 
 const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
-    private apiKey: string;
-
     constructor() {
-        this.apiKey = config.keys.elevenLabs || '';
-        const keyStatus = this.apiKey ? `Present (${this.apiKey.slice(0,4)}...)` : 'MISSING';
-        logger.info(`🎙️ TTS Service Init | ElevenLabs Key: ${keyStatus}`);
+        // CHANGED: Register Keys with KeyManager instead of holding a single string
+        KeyManager.registerProviderKeys('ELEVENLABS', config.keys.elevenLabs);
+        
+        logger.info(`🎙️ TTS Service Initialized | Keys: ${config.keys.elevenLabs.length}`);
 
-        // Cloudinary is already validated in config.ts, but we init the SDK here
+        // Cloudinary Init
         cloudinary.config({
             cloud_name: config.cloudinary.cloudName,
             api_key: config.cloudinary.apiKey,
@@ -49,14 +50,24 @@ class TTSService {
     }
 
     async generateAndUpload(text: string, voiceId: string, articleId: string | null, customFilename: string | null = null): Promise<string> {
-        if (!this.apiKey) {
-            throw new Error("ElevenLabs API Key is MISSING in Environment Variables.");
+        // 1. Check Circuit Breaker
+        const isOpen = await CircuitBreaker.isOpen('ELEVENLABS');
+        if (!isOpen) {
+            throw new Error("CIRCUIT_BREAKER_OPEN: ElevenLabs is currently down or rate limited.");
+        }
+
+        let apiKey: string;
+        try {
+            apiKey = await KeyManager.getKey('ELEVENLABS');
+        } catch (error: any) {
+            logger.error(`TTS Key Error: ${error.message}`);
+            throw error;
         }
 
         const safeText = this.cleanTextForNews(text);
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
 
-        logger.info(`🎙️ Generating (High Quality): "${customFilename || articleId}"...`);
+        logger.info(`🎙️ Generating Audio (HQ): "${customFilename || articleId}"`);
 
         try {
             const response = await axios.post(url, {
@@ -71,13 +82,16 @@ class TTSService {
                 }
             }, {
                 headers: {
-                    'xi-api-key': this.apiKey,
+                    'xi-api-key': apiKey,
                     'Content-Type': 'application/json',
                     'Accept': 'audio/mpeg'
                 },
                 params: { optimize_streaming_latency: 3 },
                 responseType: 'stream' 
             });
+
+            // Report Success to KeyManager
+            KeyManager.reportSuccess(apiKey);
 
             const publicId = customFilename ? customFilename : `article_${articleId}`;
 
@@ -114,11 +128,20 @@ class TTSService {
             });
 
         } catch (error: any) {
+            const status = error.response?.status;
+            
+            // Handle Quota/Auth Errors specifically
+            if (status === 401 || status === 429) {
+                logger.warn(`TTS Key Exhausted or Rate Limited (${status}). Reporting failure.`);
+                await KeyManager.reportFailure(apiKey, true);
+            } else if (status >= 500) {
+                // Server error from ElevenLabs
+                await CircuitBreaker.recordFailure('ELEVENLABS');
+            }
+
             if (error.response) {
-                logger.error(`❌ ElevenLabs API Error: ${error.response.status}`);
-                throw new Error(`ElevenLabs API Error: ${error.response.status}`);
+                throw new Error(`ElevenLabs API Error: ${status}`);
             } else {
-                logger.error(`❌ Network/Unknown Error: ${error.message}`);
                 throw error;
             }
         }
