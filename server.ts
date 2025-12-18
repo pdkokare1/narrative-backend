@@ -1,4 +1,6 @@
 // server.ts
+console.log('SYSTEM: Loading server.ts...'); // Debug log to prove file execution
+
 import express, { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
@@ -169,9 +171,7 @@ const startServer = async () => {
     }
 };
 
-// Check if this module is being run directly (not imported)
-if (require.main === module) {
-    startServer();
-}
+// Start immediately (Reverted safety check to ensure execution)
+startServer();
 
 export default app;
