@@ -5,7 +5,7 @@ import apiClient from '../utils/apiClient';
 import config from '../utils/config'; 
 import AppError from '../utils/AppError';
 import { cleanText, extractJSON } from '../utils/helpers';
-import { IArticle, IGeminiResponse, IGeminiBatchResponse } from '../types';
+import { IArticle, IGeminiResponse } from '../types';
 import promptManager from '../utils/promptManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
 import { jsonrepair } from 'jsonrepair';
@@ -91,7 +91,7 @@ class AIService {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
-          responseSchema: mode === 'Basic' ? undefined : GEMINI_JSON_SCHEMA, // Use Strict Schema only for full
+          responseSchema: mode === 'Basic' ? undefined : GEMINI_JSON_SCHEMA, 
           temperature: 0.1, 
           maxOutputTokens: 4096 
         }
@@ -189,10 +189,15 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        // 1. Extract JSON-like substring
-        const jsonString = extractJSON(rawText);
+        // 1. Clean Markdown Codes (e.g. ```json ... ```)
+        // This is the most common reason for parsing failures
+        let cleanJsonString = rawText.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
+        cleanJsonString = cleanJsonString.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
+
+        // 2. Extract JSON-like substring (if any extra text remains)
+        const jsonString = extractJSON(cleanJsonString);
         
-        // 2. Repair JSON (Safe call)
+        // 3. Repair JSON (Safe call)
         let repairedJson = jsonString;
         try {
            repairedJson = jsonrepair(jsonString);
@@ -200,10 +205,10 @@ class AIService {
            logger.warn("JSON Repair failed, attempting raw parse");
         }
         
-        // 3. Parse
+        // 4. Parse
         const parsedRaw = JSON.parse(repairedJson);
 
-        // 4. Validate & Transform with Zod
+        // 5. Validate & Transform with Zod
         let validated;
         if (mode === 'Basic') {
             validated = BasicAnalysisSchema.parse(parsedRaw);
@@ -228,23 +233,31 @@ class AIService {
 
     } catch (error: any) {
         logger.error(`AI Parse/Validation Error: ${error.message}`);
+        // Fallback to basic if full fails, rather than crashing
+        if (mode === 'Full') {
+             logger.warn("Attempting Basic Fallback due to parsing error...");
+             return this.getFallbackAnalysis({ ...data, summary: "Analysis partial due to format error." });
+        }
         throw new AppError(`Failed to parse AI response: ${error.message}`, 502);
     }
   }
 
   private async handleAIError(error: any, apiKey: string) {
       const status = error.response?.status || 500;
+      const msg = error.message || '';
+
+      // Quota Errors (429) or "Resource Exhausted"
+      if (status === 429 || msg.includes('429') || msg.includes('Quota') || msg.includes('RESOURCE_EXHAUSTED')) {
+           logger.warn(`🛑 Gemini Quota Exceeded (Key: ...${apiKey.slice(-4)}). Pausing.`);
+           // We can mark this key as exhausted in KeyManager if we implemented multi-key for Gemini
+           throw new AppError('AI Service Quota Exceeded', 429);
+      }
       
-      // Retryable errors
-      if (status === 429 || status >= 500 || error.code === 'ECONNABORTED') {
+      // Retryable errors (Server errors)
+      if (status >= 500 || error.code === 'ECONNABORTED') {
           if (apiKey) KeyManager.reportFailure(apiKey, true);
           await CircuitBreaker.recordFailure('GEMINI');
           throw new AppError('AI Service Unavailable', 503); 
-      }
-
-      // Permanent errors
-      if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
-          throw new AppError('AI Service Paused (Quota)', 429);
       }
 
       logger.error(`❌ AI Critical Failure: ${error.message}`);
