@@ -4,21 +4,20 @@ import logger from './utils/logger';
 import { startScheduler } from './jobs/scheduler';
 import queueManager from './jobs/queueManager';
 import dbLoader from './utils/dbLoader';
+import { startWorker } from './jobs/worker'; // FIX: Import from actual worker file
 
 // Imported Background Services
 import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService';
 
-const startWorker = async () => {
+const initWorkerService = async () => {
   logger.info('🛠️ Starting Background Worker...');
 
   try {
     // 1. Unified Database & Redis Connection
     await dbLoader.connect();
 
-    // 2. Initialize Background Logic (Moved from Server)
-    // These services need to run, but they shouldn't block user traffic.
-    // The Worker is the perfect place for them.
+    // 2. Initialize Background Logic 
     await Promise.all([
         emergencyService.initializeEmergencyContacts(),
         gatekeeperService.initialize()
@@ -29,7 +28,7 @@ const startWorker = async () => {
     startScheduler();
 
     // 4. Initialize Queue Consumer
-    queueManager.startWorker();
+    startWorker(); // FIX: Call the imported function directly
     
     logger.info('🚀 Background Worker Fully Operational & Listening for Jobs');
 
@@ -56,4 +55,4 @@ const shutdown = async () => {
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
-startWorker();
+initWorkerService();
