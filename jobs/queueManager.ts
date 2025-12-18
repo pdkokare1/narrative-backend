@@ -4,6 +4,7 @@ import logger from '../utils/logger';
 import config from '../utils/config';
 
 // --- 1. Redis Connection Config ---
+// Uses the enhanced config logic (supports separate Queue URL)
 const connectionConfig = config.bullMQConnection;
 const isRedisConfigured = !!connectionConfig;
 
@@ -19,8 +20,8 @@ if (isRedisConfigured && connectionConfig) {
         newsQueue = new Queue('news-fetch-queue', {
             connection: connectionConfig as ConnectionOptions,
             defaultJobOptions: {
-                removeOnComplete: 20,
-                removeOnFail: 50,
+                removeOnComplete: 20, // Keep last 20 completed jobs
+                removeOnFail: 50,     // Keep last 50 failed jobs for debugging
                 attempts: 3,
                 backoff: { type: 'exponential', delay: 5000 }
             }
