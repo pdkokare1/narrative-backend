@@ -8,7 +8,7 @@ import logger from '../utils/logger';
 
 const keyGenerator = (req: Request | any): string => {
     if (req.user && req.user.uid) {
-        return \`limiter:\${req.user.uid}\`;
+        return `limiter:${req.user.uid}`;
     }
     return req.ip || 'unknown-ip';
 };
@@ -65,12 +65,12 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
             },
             skipFailedRequests: true,
             handler: (req: Request, res: Response, next: NextFunction, options) => {
-                logger.warn(\`Rate Limit Exceeded (\${type}): \${keyGenerator(req)}\`);
+                logger.warn(`Rate Limit Exceeded (${type}): ${keyGenerator(req)}`);
                 res.status(options.statusCode).send(options.message);
             },
         });
     } catch (e) {
-        logger.warn(\`Failed to create Redis limiter: \${e}\`);
+        logger.warn(`Failed to create Redis limiter: ${e}`);
         return null;
     }
 };
@@ -106,4 +106,3 @@ export const ttsLimiter = (req: Request, res: Response, next: NextFunction) => {
     }
     return ttsLimiterMemory(req, res, next);
 };
-}
