@@ -41,6 +41,7 @@ export const startWorker = () => {
                     return await handleFetchFeed(job);
 
                 case 'process-article':
+                    // We can optionally extend the lock periodically here if needed in the future
                     return await handleProcessArticle(job);
 
                 default:
@@ -51,9 +52,12 @@ export const startWorker = () => {
         }, { 
             connection: connectionConfig as ConnectionOptions,
             concurrency: concurrency,
-            // CRITICAL: Prevent job from timing out if AI is slow
-            lockDuration: 60000, // 60 seconds
-            // CRITICAL: Limit how many jobs one worker grabs at once
+            
+            // CRITICAL CHANGE: Increased to 3 Minutes (180,000ms)
+            // This ensures Gemini has enough time to think without the job timing out.
+            lockDuration: 180000, 
+            
+            // Limit how many times a "stalled" job is retried to prevent infinite loops
             maxStalledCount: 1, 
         });
 
@@ -74,7 +78,7 @@ export const startWorker = () => {
              logger.error(`⚠️ Worker Connection Error: ${err.message}`);
         });
 
-        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency})`);
+        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency}, Lock: 3mins)`);
 
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
