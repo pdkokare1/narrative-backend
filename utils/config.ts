@@ -60,15 +60,12 @@ const parseConfig = () => {
 
 const env = parseConfig();
 
-// Helper: Scan environment for numbered API keys (e.g., GNEWS_API_KEY_1, _2...)
+// Helper: Scan environment for numbered API keys
 const extractApiKeys = (prefix: string): string[] => {
     const keys: string[] = [];
-    
-    // 1. Check default key
     const defaultKey = process.env[`${prefix}_API_KEY`]?.trim();
     if (defaultKey) keys.push(defaultKey);
 
-    // 2. Scan numbered keys (1 to 20)
     for (let i = 1; i <= 20; i++) {
         const key = process.env[`${prefix}_API_KEY_${i}`]?.trim();
         if (key && !keys.includes(key)) {
@@ -82,13 +79,17 @@ const extractApiKeys = (prefix: string): string[] => {
 const getFirebaseConfig = () => {
   if (!env.FIREBASE_SERVICE_ACCOUNT) return '';
   try {
+    // 1. Try parsing directly
     return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
   } catch (e) {
+    // 2. Try decoding from Base64
     try {
       const buff = Buffer.from(env.FIREBASE_SERVICE_ACCOUNT, 'base64');
-      return JSON.parse(buff.toString('utf-8'));
+      const decoded = buff.toString('utf-8');
+      return JSON.parse(decoded);
     } catch (err) {
-      logger.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT.');
+      // 3. Fail safely
+      logger.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT. Auth features may fail.');
       return '';
     }
   }
@@ -170,7 +171,6 @@ const config = {
   keys: {
     gemini: env.GEMINI_API_KEY || env.GEMINI_API_KEY_1 || '',
     elevenLabs: env.ELEVENLABS_API_KEY || '',
-    // Arrays of keys extracted from env
     gnews: extractApiKeys('GNEWS'),
     newsApi: extractApiKeys('NEWS_API')
   },
