@@ -6,18 +6,16 @@ import compression from 'compression';
 import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import hpp from 'hpp';
+import * as admin from 'firebase-admin';
 
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
 import redisClient from './utils/redisClient';
 import dbLoader from './utils/dbLoader';
-import { initFirebase } from './utils/firebaseInit';
-import { registerShutdownHandler } from './utils/shutdownHandler';
 
 // Services & Middleware
-import emergencyService from './services/emergencyService';
-import gatekeeperService from './services/gatekeeperService'; 
+// REMOVED: Background services (emergencyService, gatekeeperService) moved to workerEntry.ts
 import { errorHandler } from './middleware/errorMiddleware';
 import { apiLimiter } from './middleware/rateLimiters';
 
@@ -25,19 +23,7 @@ import { apiLimiter } from './middleware/rateLimiters';
 import apiRouter from './routes/index'; 
 import shareRoutes from './routes/shareRoutes'; 
 
-// --- 0. Global Safety Nets (Must be first) ---
-process.on('uncaughtException', (err) => {
-    logger.error(`🔥 UNCAUGHT EXCEPTION! Shutting down... ${err.name}: ${err.message}`);
-    logger.error(err.stack);
-    process.exit(1);
-});
-
-process.on('unhandledRejection', (reason: any) => {
-    logger.error(`🔥 UNHANDLED REJECTION! ${reason}`);
-});
-
 const app = express();
-let isReady = false; // Flag to track system readiness
 
 // --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -59,62 +45,64 @@ app.use(mongoSanitize());
 app.use(hpp());
 
 // --- 3. CORS Configuration ---
+// Improved: Uses centralized list from config (includes env variables)
 app.use(cors({
   origin: config.corsOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  // Cleaned up allowedHeaders (Removed x-admin-secret)
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Firebase-AppCheck', 'x-admin-secret'],
   credentials: true
 }));
 
 app.use(express.json({ limit: '200kb' }));
 
-// --- 4. System Routes & Health Checks ---
+// --- 4. System Routes ---
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
 app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
-    // Return detailed status, but always 200 if HTTP is working
+    // Always return 200 if the web server is running
     res.status(200).json({ 
-        status: isReady ? 'OK' : 'INITIALIZING', 
+        status: 'OK', 
         mongo: mongoStatus, 
         redis: redisStatus 
     });
 });
 
-// --- 5. Startup Protection Middleware (The Gate) ---
-// Prevents API requests from hitting services before DB is connected
-app.use((req: Request, res: Response, next: NextFunction) => {
-    if (!isReady && req.path.startsWith('/api')) {
-        return res.status(503).json({ 
-            success: false,
-            message: 'Service Initializing. Please try again in a few seconds.' 
-        });
+// --- 5. Firebase Init ---
+try {
+  if (config.firebase.serviceAccount) {
+    if (!admin.apps.length) {
+      admin.initializeApp({
+        credential: admin.credential.cert(config.firebase.serviceAccount)
+      });
+      logger.info('Firebase Admin SDK Initialized');
     }
-    next();
-});
+  }
+} catch (error: any) {
+  logger.error(`Firebase Admin Init Error: ${error.message}`);
+}
 
-// --- 6. Initialize Firebase (Centralized) ---
-initFirebase();
-
-// --- 7. Global Rate Limiter ---
+// --- 6. Global Rate Limiter ---
 app.use('/api/', apiLimiter); 
 
-// --- 8. Mount Routes ---
+// --- 7. Mount Routes ---
 app.use('/share', shareRoutes); 
 app.use('/api', apiRouter);
 
-// --- 9. Error Handling ---
+// --- 8. Error Handling ---
 app.use(errorHandler);
 
-// --- 10. Database & Server Start ---
+// --- 9. Database & Server Start ---
 const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
-        // 1. Start HTTP Server IMMEDIATELY (Fixes Deployment Timeouts)
+        // 1. Unified Database & Redis Connection
+        await dbLoader.connect();
+        
+        // 2. Start HTTP Server
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
@@ -122,45 +110,34 @@ const startServer = async () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 2. Unified Database & Redis Connection (Background)
-        await dbLoader.connect();
+        // NOTE: Background services are now initialized in workerEntry.ts 
+        // to keep the web server stateless and fast.
 
-        // 3. Mark System as READY
-        isReady = true; 
-        logger.info('🔓 API Gate Open: System is now accepting requests.');
+        // --- Graceful Shutdown ---
+        const gracefulShutdown = async () => {
+            logger.info('🛑 Received Kill Signal, shutting down gracefully...');
+            
+            const forceExit = setTimeout(() => {
+                logger.error('🛑 Force Shutdown (Timeout)');
+                process.exit(1);
+            }, 10000);
 
-        // 4. Initialize Critical Services (Lightweight)
-        (async () => {
-            try {
-                logger.info('⏳ Initializing API Services...');
-                
-                await Promise.all([
-                    emergencyService.initializeEmergencyContacts(),
-                    gatekeeperService.initialize()
-                ]);
-                logger.info('✨ API Services Ready');
-            } catch (bgError: any) {
-                logger.error(`⚠️ Service Init Warning: ${bgError.message}`);
-            }
-        })();
+            server.close(async () => {
+                logger.info('Http server closed.');
+                try {
+                    await dbLoader.disconnect();
+                    clearTimeout(forceExit);
+                    logger.info('✅ Resources released. Exiting.');
+                    process.exit(0);
+                } catch (err: any) {
+                    logger.error(`⚠️ Error during shutdown: ${err.message}`);
+                    process.exit(1);
+                }
+            });
+        };
 
-        // --- Graceful Shutdown (Centralized) ---
-        registerShutdownHandler('API Server', [
-            async () => {
-                isReady = false; // Close the gate immediately
-                return new Promise<void>((resolve, reject) => {
-                    server.close((err) => {
-                        if (err) {
-                            logger.error(`Error closing HTTP server: ${err.message}`);
-                            reject(err);
-                        } else {
-                            logger.info('Http server closed.');
-                            resolve();
-                        }
-                    });
-                });
-            }
-        ]);
+        process.on('SIGTERM', gracefulShutdown);
+        process.on('SIGINT', gracefulShutdown);
 
     } catch (err: any) {
         logger.error(`❌ Critical Startup Error: ${err.message}`);
