@@ -3,43 +3,51 @@ import { Queue, ConnectionOptions } from 'bullmq';
 import logger from '../utils/logger';
 import config from '../utils/config';
 
-// --- 1. Redis Connection Config ---
-// Uses the enhanced config logic (supports separate Queue URL)
-const connectionConfig = config.bullMQConnection;
-const isRedisConfigured = !!connectionConfig;
-
-if (!isRedisConfigured) {
-    logger.warn("⚠️ REDIS_URL not set. Background jobs will be disabled.");
-}
-
-// --- 2. Initialize Queue (Producer Only) ---
 let newsQueue: Queue | null = null;
 
-if (isRedisConfigured && connectionConfig) {
-    try {
-        newsQueue = new Queue('news-fetch-queue', {
-            connection: connectionConfig as ConnectionOptions,
-            defaultJobOptions: {
-                removeOnComplete: 20, // Keep last 20 completed jobs
-                removeOnFail: 50,     // Keep last 50 failed jobs for debugging
-                attempts: 3,
-                backoff: { type: 'exponential', delay: 5000 }
-            }
-        });
-        logger.info("✅ Job Queue (Producer) Initialized");
-    } catch (err: any) {
-        logger.error(`❌ Failed to initialize Queue: ${err.message}`);
-        newsQueue = null;
-    }
-}
-
-// --- 3. Queue Manager Interface ---
 const queueManager = {
+    /**
+     * Initializes the Queue Connection safely.
+     * Must be called before adding jobs.
+     */
+    initialize: async () => {
+        if (newsQueue) return; // Already initialized
+
+        const connectionConfig = config.bullMQConnection;
+        const isRedisConfigured = !!connectionConfig;
+
+        if (!isRedisConfigured) {
+            logger.warn("⚠️ REDIS_URL not set. Background jobs will be disabled.");
+            return;
+        }
+
+        try {
+            newsQueue = new Queue('news-fetch-queue', {
+                connection: connectionConfig as ConnectionOptions,
+                defaultJobOptions: {
+                    removeOnComplete: 20, // Keep last 20 completed jobs
+                    removeOnFail: 50,     // Keep last 50 failed jobs for debugging
+                    attempts: 3,
+                    backoff: { type: 'exponential', delay: 5000 }
+                }
+            });
+            logger.info("✅ Job Queue (Producer) Initialized");
+        } catch (err: any) {
+            logger.error(`❌ Failed to initialize Queue: ${err.message}`);
+            newsQueue = null;
+        }
+    },
+
     /**
      * Adds a single job to the queue.
      */
     addFetchJob: async (name: string = 'fetch-feed', data: any = {}, jobId?: string) => {
-        if (!newsQueue) return null;
+        if (!newsQueue) {
+            // Auto-initialize if forgotten, but warn
+            // await queueManager.initialize(); 
+            // Better to return null to avoid race conditions during shutdown
+            return null; 
+        }
         try {
             const opts = jobId ? { jobId } : {};
             return await newsQueue.add(name, data, opts);
@@ -120,6 +128,7 @@ const queueManager = {
             try {
                 await newsQueue.close();
                 logger.info('✅ Job Queue closed.');
+                newsQueue = null;
             } catch (err: any) {
                 logger.error(`⚠️ Error during Queue shutdown: ${err.message}`);
             }
