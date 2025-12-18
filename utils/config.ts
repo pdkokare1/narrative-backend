@@ -31,6 +31,8 @@ const envSchema = z.object({
   // AI & News Keys
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_API_KEY_1: z.string().optional(),
+  
+  // CHANGED: Removed single key enforcement to allow extraction logic below
   ELEVENLABS_API_KEY: z.string().optional(),
   
   // Security
@@ -38,7 +40,7 @@ const envSchema = z.object({
   ADMIN_UIDS: z.string().optional(),
   CORS_ORIGINS: z.string().default(''), 
   
-  // NEW: Trust Proxy Configuration (Default to 1 for Railway/Heroku)
+  // Trust Proxy Configuration (Default to 1 for Railway/Heroku)
   TRUST_PROXY_LVL: z.string().transform(Number).default('1'),
   
   // AI Model Configuration
@@ -166,7 +168,7 @@ const config = {
   adminSecret: env.ADMIN_SECRET,
   adminUids: env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : [],
   corsOrigins: getCorsOrigins(),
-  trustProxyLevel: env.TRUST_PROXY_LVL, // Exported to use in server.ts
+  trustProxyLevel: env.TRUST_PROXY_LVL, 
   
   worker: {
       concurrency: env.WORKER_CONCURRENCY
@@ -180,7 +182,8 @@ const config = {
 
   keys: {
     gemini: env.GEMINI_API_KEY || env.GEMINI_API_KEY_1 || '',
-    elevenLabs: env.ELEVENLABS_API_KEY || '',
+    // CHANGED: Use extraction logic for ElevenLabs to support rotation
+    elevenLabs: extractApiKeys('ELEVENLABS'),
     gnews: extractApiKeys('GNEWS'),
     newsApi: extractApiKeys('NEWS_API')
   },
