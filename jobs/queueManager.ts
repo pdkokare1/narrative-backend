@@ -14,6 +14,7 @@ const queueManager = {
         if (newsQueue) return; // Already initialized
 
         const connectionConfig = config.bullMQConnection;
+        // Basic check if URL or host is present
         const isRedisConfigured = !!connectionConfig;
 
         if (!isRedisConfigured) {
@@ -22,15 +23,24 @@ const queueManager = {
         }
 
         try {
+            // @ts-ignore - ConnectionOptions typing is sometimes strict
             newsQueue = new Queue('news-fetch-queue', {
                 connection: connectionConfig as ConnectionOptions,
                 defaultJobOptions: {
-                    removeOnComplete: 20, // Keep last 20 completed jobs
+                    removeOnComplete: 20, // Keep last 20 completed jobs to save RAM
                     removeOnFail: 50,     // Keep last 50 failed jobs for debugging
-                    attempts: 3,
-                    backoff: { type: 'exponential', delay: 5000 }
+                    attempts: 3,          // Retry 3 times if failed
+                    backoff: { 
+                        type: 'exponential', 
+                        delay: 5000 // 5s, 10s, 20s...
+                    }
                 }
             });
+            
+            newsQueue.on('error', (err) => {
+                logger.error(`❌ Queue Connection Error: ${err.message}`);
+            });
+
             logger.info("✅ Job Queue (Producer) Initialized");
         } catch (err: any) {
             logger.error(`❌ Failed to initialize Queue: ${err.message}`);
@@ -40,7 +50,7 @@ const queueManager = {
 
     /**
      * Adds a single job to the queue.
-     * CHANGED: Added Self-Healing (Auto-reconnect)
+     * Includes Self-Healing (Auto-reconnect)
      */
     addFetchJob: async (name: string = 'fetch-feed', data: any = {}, jobId?: string) => {
         // Self-Healing: Try to init if missing
@@ -89,7 +99,7 @@ const queueManager = {
             }
         }
         try {
-            // Clean up old schedules for this key to avoid duplicates
+            // 1. Clean up old schedules for this key to avoid duplicates
             const repeatableJobs = await newsQueue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
 
@@ -98,7 +108,7 @@ const queueManager = {
                 logger.debug(`🔄 Updated schedule for: ${name}`);
             }
 
-            // Add new schedule
+            // 2. Add new schedule
             const job = await newsQueue.add(name, data, {
                 repeat: { pattern: cronPattern }
             });
