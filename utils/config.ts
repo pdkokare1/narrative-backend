@@ -34,7 +34,8 @@ const envSchema = z.object({
   ELEVENLABS_API_KEY: z.string().optional(),
   
   // Security
-  ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
+  // CHANGED: Increased minimum length to 32 for better security
+  ADMIN_SECRET: z.string().min(32, "Admin secret must be at least 32 chars long"),
   ADMIN_UIDS: z.string().optional(),
   CORS_ORIGINS: z.string().default(''), 
   
@@ -157,7 +158,7 @@ const config = {
   mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
   redisOptions: getRedisConfig(),
-  bullMQConnection: getBullMQConfig(), // Uses the improved logic
+  bullMQConnection: getBullMQConfig(),
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
