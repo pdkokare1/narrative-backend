@@ -14,17 +14,13 @@ const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24;
 class PipelineService {
     
     /**
-     * Checks if the URL has already been processed using Redis Set and MongoDB
+     * Checks if the URL has already been processed using Redis Set ONLY.
+     * We defer the Database check to the final save (Atomic Safety).
      */
     private async isDuplicate(url: string): Promise<boolean> {
         if (!url) return true;
-        // 1. Fast Check (Redis)
+        // Fast Check (Redis)
         if (await redisClient.sIsMember('processed_urls', url)) return true;
-        // 2. Deep Check (Mongo)
-        if (await Article.exists({ url })) {
-            await redisClient.sAdd('processed_urls', url); 
-            return true;
-        }
         return false;
     }
 
@@ -38,7 +34,6 @@ class PipelineService {
 
     /**
      * Retrieves embedding safely without memory-risk batching.
-     * (Previous memory-batching removed to prevent data loss on server restarts)
      */
     private async getEmbeddingSafe(article: Partial<IArticle>): Promise<number[]> {
         const textToEmbed = `${article.headline || ''}. ${article.summary || ''}`;
@@ -46,12 +41,13 @@ class PipelineService {
             // We pass an array of 1 to reuse the existing batch interface of aiService
             const embeddings = await aiService.createBatchEmbeddings([textToEmbed]);
             if (!embeddings || embeddings.length === 0) {
-                throw new Error("No embedding returned from AI Service");
+                // Not fatal, but worth noting
+                return [];
             }
             return embeddings[0];
         } catch (err: any) {
             logger.error(`❌ Embedding failed: ${err.message}`);
-            throw err;
+            return []; // Return empty array to allow pipeline to continue
         }
     }
 
@@ -61,22 +57,21 @@ class PipelineService {
     async processSingleArticle(rawArticle: any): Promise<string> {
         try {
             if (!rawArticle?.url || !rawArticle?.title) {
-                logger.warn('Skipping invalid article structure');
                 return 'ERROR_INVALID';
             }
             
-            // 1. Duplicate Check
+            // 1. Fast Duplicate Check (Redis)
             if (await this.isDuplicate(rawArticle.url)) return 'DUPLICATE_URL';
 
             // 2. Prep & Sanitize
             const article: Partial<IArticle> = {
                 url: rawArticle.url,
                 headline: this.sanitizeContent(rawArticle.title),
-                summary: this.sanitizeContent(rawArticle.description), // Initial summary is often the description
+                summary: this.sanitizeContent(rawArticle.description),
                 source: rawArticle.source?.name || 'Unknown',
                 imageUrl: rawArticle.image || rawArticle.urlToImage,
                 publishedAt: rawArticle.publishedAt ? new Date(rawArticle.publishedAt) : new Date(),
-                content: rawArticle.content // Temporary field for analysis
+                content: rawArticle.content
             } as any;
 
             const contentLen = (article.summary || "").length + (rawArticle.content || "").length;
@@ -85,6 +80,7 @@ class PipelineService {
             }
 
             // 3. Gatekeeper (Is this news?)
+            // We run this BEFORE expensive operations to save money
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
             if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
 
@@ -94,14 +90,10 @@ class PipelineService {
             let embedding: number[] | null = null;
 
             if (!existingMatch) {
-                // Try to get embedding - Now SAFE (No memory batching risk)
-                try {
-                    embedding = await this.getEmbeddingSafe(article);
-                    if (embedding) {
-                        existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
-                    }
-                } catch (embedErr) {
-                    logger.warn(`Embedding generation failed, proceeding without vector check: ${embedErr}`);
+                // Get embedding safely
+                embedding = await this.getEmbeddingSafe(article);
+                if (embedding && embedding.length > 0) {
+                    existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
                 }
             }
 
@@ -156,7 +148,19 @@ class PipelineService {
                 newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding || undefined);
             }
             
-            await Article.create(newArticleData);
+            // CRITICAL: Handle Race Condition at the Database Level
+            try {
+                await Article.create(newArticleData);
+            } catch (dbError: any) {
+                // Error 11000 is MongoDB's Duplicate Key Error
+                if (dbError.code === 11000) {
+                    logger.warn(`Duplicate URL detected at save: ${article.url}`);
+                    // Add to Redis so we don't try again soon
+                    await redisClient.sAdd('processed_urls', article.url!);
+                    return 'DUPLICATE_URL';
+                }
+                throw dbError; // Rethrow actual errors
+            }
 
             // 7. Post-Save Caching
             await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
