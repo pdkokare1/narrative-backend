@@ -2,9 +2,14 @@
 import { Request, Response } from 'express';
 import asyncHandler from '../utils/asyncHandler';
 import articleService from '../services/articleService';
+import schemas from '../utils/validationSchemas';
+import { AppError } from '../utils/AppError'; // Ensure AppError is available
 
 // --- 1. Smart Trending Topics ---
 export const getTrendingTopics = asyncHandler(async (req: Request, res: Response) => {
+    // Validate (though params are empty, this strips unknown trash)
+    schemas.trending.parse({ query: req.query });
+
     const topics = await articleService.getTrendingTopics();
     res.set('Cache-Control', 'public, max-age=1800'); 
     res.status(200).json({ topics });
@@ -12,29 +17,33 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
 
 // --- 2. Intelligent Search ---
 export const searchArticles = asyncHandler(async (req: Request, res: Response) => {
-    const query = (req.query.q as string)?.trim() || '';
+    // Strict Validation
+    const { query } = schemas.search.parse({ query: req.query });
     
-    // SAFETY: Cap limit at 100 to prevent database overload
-    const requestedLimit = parseInt(req.query.limit as string) || 12;
-    const limit = Math.min(requestedLimit, 100);
+    const searchTerm = query.q || '';
+    const limit = query.limit;
 
-    const result = await articleService.searchArticles(query, limit);
+    const result = await articleService.searchArticles(searchTerm, limit);
     res.status(200).json({ articles: result.articles, pagination: { total: result.total } });
 });
 
 // --- 3. Main Feed ---
 export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
-    const result = await articleService.getMainFeed(req.query);
+    // Strict Validation
+    const { query } = schemas.feedFilters.parse({ query: req.query });
+
+    const result = await articleService.getMainFeed(query);
     
-    // Set headers for Browser Caching (reduces hits to your server)
+    // Set headers for Browser Caching
     res.set('Cache-Control', 'public, max-age=300');
     res.status(200).json(result);
 });
 
 // --- 4. "For You" Feed ---
 export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
-    // req.user is now typed correctly via types/express.d.ts
     const userId = req.user?.uid;
+    // We don't validate query here as it's purely user-based, but we could add limit
+    
     const result = await articleService.getForYouFeed(userId);
     res.status(200).json(result);
 });
@@ -55,9 +64,11 @@ export const getSavedArticles = asyncHandler(async (req: Request, res: Response)
 
 // --- 7. Toggle Save ---
 export const toggleSaveArticle = asyncHandler(async (req: Request, res: Response) => {
-    const { id } = req.params;
+    // Validate ID format
+    const { params } = schemas.saveArticle.parse({ params: req.params });
+    
     const userId = req.user!.uid;
     
-    const result = await articleService.toggleSaveArticle(userId, id);
+    const result = await articleService.toggleSaveArticle(userId, params.id);
     res.status(200).json(result);
 });
