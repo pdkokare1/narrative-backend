@@ -4,51 +4,64 @@ import logger from './logger';
 import config from './config';
 
 let client: RedisClientType | null = null;
+let connectionPromise: Promise<RedisClientType | null> | null = null;
 
-// Anti-Stampede: Tracks in-flight fetch requests
+// Anti-Stampede: Tracks in-flight fetch requests for getOrFetch
 const pendingFetches = new Map<string, Promise<any>>();
 
-export const initRedis = async () => {
-    // If client exists and is ready, return it immediately
+export const initRedis = async (): Promise<RedisClientType | null> => {
+    // 1. If client is already ready, return it.
     if (client && (client.isOpen || client.isReady)) {
         return client;
     }
 
-    // Check configuration
-    if (!config.redisOptions) {
-        logger.warn("⚠️ Redis URL not set. Caching and Background Jobs will be disabled.");
-        return null;
+    // 2. If a connection is currently being attempted, wait for it (Promise Lock)
+    if (connectionPromise) {
+        return connectionPromise;
     }
 
-    try {
-        client = createClient({
-            ...config.redisOptions, // Use centralized config
-            socket: {
-                ...config.redisOptions.socket, // Preserve socket settings if any
-                reconnectStrategy: (retries) => Math.min(retries * 100, 5000),
-                connectTimeout: 5000,
-                keepAlive: 10000 
-            }
-        });
+    // 3. Start a new connection attempt
+    connectionPromise = (async () => {
+        // Check configuration
+        if (!config.redisOptions) {
+            logger.warn("⚠️ Redis URL not set. Caching and Background Jobs will be disabled.");
+            return null;
+        }
 
-        client.on('error', (err) => {
-            // Suppress connection refused logs during startup/shutdown to avoid noise
-            if (!err.message.includes('ECONNREFUSED')) {
-                logger.warn(`Redis Client Warning: ${err.message}`);
-            }
-        });
+        try {
+            const newClient = createClient({
+                ...config.redisOptions,
+                socket: {
+                    ...config.redisOptions.socket,
+                    reconnectStrategy: (retries) => Math.min(retries * 100, 5000),
+                    connectTimeout: 5000,
+                    keepAlive: 10000 
+                }
+            });
 
-        client.on('connect', () => logger.info('🔌 Redis Client Connecting...'));
-        client.on('ready', () => logger.info('✅ Redis Client Ready & Connected'));
+            newClient.on('error', (err) => {
+                if (!err.message.includes('ECONNREFUSED')) {
+                    logger.warn(`Redis Client Warning: ${err.message}`);
+                }
+            });
 
-        await client.connect();
-        return client;
+            newClient.on('connect', () => logger.info('🔌 Redis Client Connecting...'));
+            newClient.on('ready', () => logger.info('✅ Redis Client Ready & Connected'));
 
-    } catch (err: any) {
-        logger.error(`❌ Redis Initialization Failed: ${err.message}`);
-        client = null;
-        return null;
-    }
+            await newClient.connect();
+            client = newClient as RedisClientType; // Set the global client
+            return client;
+
+        } catch (err: any) {
+            logger.error(`❌ Redis Initialization Failed: ${err.message}`);
+            client = null;
+            return null;
+        } finally {
+            connectionPromise = null; // Release lock
+        }
+    })();
+
+    return connectionPromise;
 };
 
 const redisClient = {
@@ -99,7 +112,6 @@ const redisClient = {
 
         // 2. Anti-Stampede: Check if a fetch is already running locally
         if (pendingFetches.has(key)) {
-            // If someone else is already fetching this key, wait for their result
             return pendingFetches.get(key) as Promise<T>;
         }
 
@@ -107,8 +119,6 @@ const redisClient = {
         const fetchPromise = (async () => {
             try {
                 const freshData = await fetcher();
-
-                // 4. Update Cache (Fire & Forget)
                 if (client && client.isReady && freshData) {
                     client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(() => {});
                 }
@@ -118,13 +128,12 @@ const redisClient = {
             }
         })();
 
-        // 5. Store promise in map so others can join
+        // 4. Store promise in map
         pendingFetches.set(key, fetchPromise);
 
         try {
             return await fetchPromise;
         } finally {
-            // 6. Cleanup map regardless of success/failure
             pendingFetches.delete(key);
         }
     },
