@@ -1,4 +1,5 @@
 // utils/helpers.ts
+import config from './config';
 
 // 1. Pause execution for X milliseconds
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -28,7 +29,7 @@ export const formatHeadline = (title: string): string => {
     return clean;
 };
 
-// 4. Smart URL Normalization (Balanced: Safe but Clean)
+// 4. Smart URL Normalization (Stricter for Better Deduplication)
 export const normalizeUrl = (url: string): string => {
     if (!url) return "";
     try {
@@ -37,28 +38,31 @@ export const normalizeUrl = (url: string): string => {
         // A. Remove Fragment (#section)
         urlObj.hash = '';
 
-        // B. Robust Tracking Parameter Removal
-        // We strip these from ALL URLs because they are never needed for the article itself.
-        const trackingParams = [
-            'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-            'fbclid', 'gclid', 'igsh', '_ga', 'yclid', 'msclkid', 'ref', 'source', 
-            'context', 'si' 
-        ];
-        trackingParams.forEach(param => urlObj.searchParams.delete(param));
+        // B. Aggressive Query Parameter Removal
+        // Most news sites use the path for the article ID (e.g., cnn.com/2024/01/story).
+        // Query params are almost always for tracking or UI state, which breaks deduplication.
+        
+        // Exception: YouTube and some video sites need 'v' or 'id'
+        const allowListDomains = ['youtube.com', 'youtu.be', 'vimeo.com'];
+        const isAllowListed = allowListDomains.some(d => urlObj.hostname.includes(d));
 
-        // C. Conditional Deep Cleaning
-        // If the path is a long "slug" (e.g. /2024/01/my-news-story), the query string is likely junk.
-        // But if the path is short (e.g. /article), the query string might contain the ID (?id=123).
-        
-        const isLongPath = urlObj.pathname.length > 20;
-        const isPhpOrAsp = urlObj.pathname.endsWith('.php') || urlObj.pathname.endsWith('.asp');
-        
-        // Only strip ALL params if it's a long path AND not a script file like index.php
-        if (isLongPath && !isPhpOrAsp) {
+        if (!isAllowListed) {
+            // For standard news sites, STRIP ALL QUERY PARAMS.
+            // This massively improves deduplication (e.g., ?utm_source=twitter vs ?mobile=1).
             urlObj.search = '';
+        } else {
+            // For allow-listed domains, only keep essential params (simplified)
+            const keepParams = ['v', 'id', 'q'];
+            const currentParams = new URLSearchParams(urlObj.search);
+            const newParams = new URLSearchParams();
+            
+            keepParams.forEach(p => {
+                if (currentParams.has(p)) newParams.set(p, currentParams.get(p)!);
+            });
+            urlObj.search = newParams.toString();
         }
 
-        // D. Remove Trailing Slash (cnn.com/story/ == cnn.com/story)
+        // C. Remove Trailing Slash (cnn.com/story/ == cnn.com/story)
         let finalUrl = urlObj.toString();
         if (finalUrl.endsWith('/')) {
             finalUrl = finalUrl.slice(0, -1);
@@ -71,7 +75,7 @@ export const normalizeUrl = (url: string): string => {
     }
 };
 
-// 5. Robust JSON Extractor (New: Prevents AI Parsing Crashes)
+// 5. Robust JSON Extractor (Prevents AI Parsing Crashes)
 export const extractJSON = (text: string): string => {
     if (!text) return "{}";
     try {
@@ -88,4 +92,22 @@ export const extractJSON = (text: string): string => {
         }
         return "{}"; // Failed to find JSON object
     }
+};
+
+// 6. Centralized Admin Check Helper
+// Determines if a user token represents an admin
+export const isUserAdmin = (userToken: any): boolean => {
+    if (!userToken) return false;
+
+    // Check A: Is user in the hardcoded Allow-List? (Highest Priority)
+    if (config.adminUids && config.adminUids.includes(userToken.uid)) {
+        return true;
+    }
+
+    // Check B: Does user have the custom Firebase claim?
+    if (userToken.admin === true) {
+        return true;
+    }
+
+    return false;
 };
