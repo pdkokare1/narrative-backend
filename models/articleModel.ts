@@ -113,27 +113,43 @@ articleSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
 // --- 4. STATIC METHODS ---
 // This moves complex search logic OUT of the controller and INTO the model.
 articleSchema.statics.smartSearch = async function(term: string, limit: number = 20) {
-  // Option A: If we had Atlas Search (Future Proofing)
-  /*
-  return this.aggregate([
-    {
-      $search: {
-        index: "default",
-        text: { query: term, path: { wildcard: "*" } }
+  try {
+    // Option A: Atlas Search (Primary)
+    // This provides fuzzy matching and better relevance if the index exists.
+    return await this.aggregate([
+      {
+        $search: {
+          index: "default", // Ensure you create this index in Atlas Dashboard
+          text: { 
+            query: term, 
+            path: { wildcard: "*" }
+            // fuzzy: {} // Optional: Enable for typo tolerance
+          }
+        }
+      },
+      { 
+        $limit: limit 
+      },
+      {
+        $project: {
+          headline: 1, summary: 1, url: 1, imageUrl: 1, 
+          source: 1, category: 1, publishedAt: 1,
+          score: { $meta: "searchScore" }
+        }
       }
-    },
-    { $limit: limit }
-  ]);
-  */
-
-  // Option B: Standard MongoDB Text Search (Current)
-  // We use the text index defined above.
-  return this.find(
-    { $text: { $search: term } },
-    { score: { $meta: 'textScore' } } // Return relevance score
-  )
-  .sort({ score: { $meta: 'textScore' }, publishedAt: -1 }) // Sort by relevance, then date
-  .limit(limit);
+    ]);
+  } catch (error) {
+    // console.warn("Atlas Search failed (Index missing?), falling back to Standard Text Search.");
+    
+    // Option B: Standard MongoDB Text Search (Fallback)
+    // We use the text index defined above.
+    return this.find(
+      { $text: { $search: term } },
+      { score: { $meta: 'textScore' } } // Return relevance score
+    )
+    .sort({ score: { $meta: 'textScore' }, publishedAt: -1 }) // Sort by relevance, then date
+    .limit(limit);
+  }
 };
 
 const Article = mongoose.model<ArticleDocument, ArticleModel>('Article', articleSchema);
