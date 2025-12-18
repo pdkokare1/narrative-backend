@@ -14,7 +14,11 @@ const envSchema = z.object({
   // Database & Cache
   MONGODB_URI: z.string().url(),
   MONGO_POOL_SIZE: z.string().transform(Number).default('10'),
+  
+  // Redis - Primary (Cache/Rate Limits)
   REDIS_URL: z.string().optional(),
+  // Redis - Queue (Background Jobs) - Optional, falls back to REDIS_URL
+  REDIS_QUEUE_URL: z.string().optional(),
 
   // Worker Configuration
   WORKER_CONCURRENCY: z.string().transform(Number).default('5'),
@@ -31,7 +35,7 @@ const envSchema = z.object({
   
   // Security
   ADMIN_SECRET: z.string().min(5, "Admin secret must be at least 5 chars"),
-  ADMIN_UIDS: z.string().optional(), // NEW: Comma-separated list of Super Admin UIDs
+  ADMIN_UIDS: z.string().optional(),
   CORS_ORIGINS: z.string().default(''), 
   
   // AI Model Configuration
@@ -80,16 +84,13 @@ const extractApiKeys = (prefix: string): string[] => {
 const getFirebaseConfig = () => {
   if (!env.FIREBASE_SERVICE_ACCOUNT) return '';
   try {
-    // 1. Try parsing directly
     return JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
   } catch (e) {
-    // 2. Try decoding from Base64
     try {
       const buff = Buffer.from(env.FIREBASE_SERVICE_ACCOUNT, 'base64');
       const decoded = buff.toString('utf-8');
       return JSON.parse(decoded);
     } catch (err) {
-      // 3. Fail safely
       logger.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT. Auth features may fail.');
       return '';
     }
@@ -114,7 +115,7 @@ const getCorsOrigins = () => {
   return Array.from(new Set(defaults)); 
 };
 
-// --- REDIS CONFIG ---
+// --- REDIS CONFIG (CACHE) ---
 const getRedisConfig = () => {
   if (!env.REDIS_URL) return undefined;
   
@@ -129,17 +130,20 @@ const getRedisConfig = () => {
   }
 };
 
-// --- BULLMQ CONFIG ---
+// --- BULLMQ CONFIG (QUEUE) ---
 const getBullMQConfig = () => {
-    if (!env.REDIS_URL) return undefined;
+    // Prefer specific Queue URL, fallback to general Redis URL
+    const targetUrl = env.REDIS_QUEUE_URL || env.REDIS_URL;
+    
+    if (!targetUrl) return undefined;
     try {
-        const parsed = new URL(env.REDIS_URL);
+        const parsed = new URL(targetUrl);
         return {
             host: parsed.hostname,
             port: Number(parsed.port),
             username: parsed.username || undefined,
             password: parsed.password || undefined,
-            tls: env.REDIS_URL.startsWith('rediss:') ? { rejectUnauthorized: false } : undefined
+            tls: targetUrl.startsWith('rediss:') ? { rejectUnauthorized: false } : undefined
         };
     } catch (e) {
         logger.error("❌ Failed to parse Redis URL for BullMQ");
@@ -153,11 +157,11 @@ const config = {
   mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
   redisOptions: getRedisConfig(),
-  bullMQConnection: getBullMQConfig(),
+  bullMQConnection: getBullMQConfig(), // Uses the improved logic
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
-  adminUids: env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : [], // NEW: Parse list
+  adminUids: env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : [],
   corsOrigins: getCorsOrigins(),
   
   worker: {
