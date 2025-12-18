@@ -40,14 +40,20 @@ const queueManager = {
 
     /**
      * Adds a single job to the queue.
+     * CHANGED: Added Self-Healing (Auto-reconnect)
      */
     addFetchJob: async (name: string = 'fetch-feed', data: any = {}, jobId?: string) => {
+        // Self-Healing: Try to init if missing
         if (!newsQueue) {
-            // Auto-initialize if forgotten, but warn
-            // await queueManager.initialize(); 
-            // Better to return null to avoid race conditions during shutdown
-            return null; 
+            logger.warn("⚠️ Queue not ready in addFetchJob. Attempting auto-initialization...");
+            await queueManager.initialize();
+            
+            if (!newsQueue) {
+                logger.error("❌ Auto-init failed. Job dropped.");
+                return null;
+            }
         }
+
         try {
             const opts = jobId ? { jobId } : {};
             return await newsQueue.add(name, data, opts);
@@ -75,8 +81,12 @@ const queueManager = {
      */
     scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
         if (!newsQueue) {
-            logger.warn('⚠️ Queue not initialized, skipping schedule.');
-            return null;
+            // Try one last time to connect
+            await queueManager.initialize();
+            if (!newsQueue) {
+                logger.warn('⚠️ Queue not initialized, skipping schedule.');
+                return null;
+            }
         }
         try {
             // Clean up old schedules for this key to avoid duplicates
