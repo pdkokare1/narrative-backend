@@ -13,9 +13,9 @@ import config from './utils/config';
 import logger from './utils/logger';
 import redisClient from './utils/redisClient';
 import dbLoader from './utils/dbLoader';
+import queueManager from './jobs/queueManager';
 
 // Services & Middleware
-// REMOVED: Background services (emergencyService, gatekeeperService) moved to workerEntry.ts
 import { errorHandler } from './middleware/errorMiddleware';
 import { apiLimiter } from './middleware/rateLimiters';
 
@@ -45,7 +45,6 @@ app.use(mongoSanitize());
 app.use(hpp());
 
 // --- 3. CORS Configuration ---
-// Improved: Uses centralized list from config (includes env variables)
 app.use(cors({
   origin: config.corsOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -101,6 +100,7 @@ const startServer = async () => {
 
         // 1. Unified Database & Redis Connection
         await dbLoader.connect();
+        await redisClient.initRedis(); // Ensure Redis starts safely
         
         // 2. Start HTTP Server
         const PORT = config.port || 3001;
@@ -109,9 +109,6 @@ const startServer = async () => {
         const server = app.listen(Number(PORT), HOST, () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
-
-        // NOTE: Background services are now initialized in workerEntry.ts 
-        // to keep the web server stateless and fast.
 
         // --- Graceful Shutdown ---
         const gracefulShutdown = async () => {
@@ -125,7 +122,13 @@ const startServer = async () => {
             server.close(async () => {
                 logger.info('Http server closed.');
                 try {
+                    // Close Queue Producer
+                    await queueManager.shutdown();
+                    // Close Database
                     await dbLoader.disconnect();
+                    // Close Redis
+                    await redisClient.quit();
+
                     clearTimeout(forceExit);
                     logger.info('✅ Resources released. Exiting.');
                     process.exit(0);
