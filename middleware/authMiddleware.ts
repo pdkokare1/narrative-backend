@@ -65,20 +65,28 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
 };
 
 // --- Admin Authentication (Strict System) ---
-// ACCEPTS: ONLY Valid Firebase Admin Token (No more insecure secret headers)
 export const checkAdmin = async (req: Request, res: Response, next: NextFunction) => {
     
-    // 1. Check for User Token with Admin Claim
+    // 1. Check for User Token with Admin Claim OR Hardcoded UID
     const token = req.headers.authorization?.split('Bearer ')[1];
     if (token) {
         try {
             const decodedToken = await admin.auth().verifyIdToken(token);
+            
+            // Check A: Is user in the hardcoded Allow-List? (Highest Priority)
+            if (config.adminUids.includes(decodedToken.uid)) {
+                req.user = decodedToken;
+                return next();
+            }
+
+            // Check B: Does user have the custom claim?
             if (decodedToken.admin === true) {
                 req.user = decodedToken;
                 return next();
-            } else {
-                logger.warn(`🛑 Admin Access Denied: User ${decodedToken.uid} is not an admin.`);
-            }
+            } 
+            
+            logger.warn(`🛑 Admin Access Denied: User ${decodedToken.uid} is not an admin.`);
+            
         } catch (e) {
             // Token invalid, fall through to error
         }
