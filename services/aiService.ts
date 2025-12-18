@@ -6,25 +6,41 @@ import config from '../utils/config';
 import AppError from '../utils/AppError';
 import { cleanText, extractJSON } from '../utils/helpers';
 import { IArticle } from '../types';
-import promptManager from '../utils/promptManager'; // ✅ Fixed: Static Import
-import CircuitBreaker from '../utils/CircuitBreaker'; // ✅ Added: Circuit Breaker
+import promptManager from '../utils/promptManager';
+import CircuitBreaker from '../utils/CircuitBreaker';
+import { jsonrepair } from 'jsonrepair';
+import { z } from 'zod';
 
 // Centralized Config
 const EMBEDDING_MODEL = config.aiModels.embedding;
 const PRO_MODEL = config.aiModels.pro;
 
-// --- STRICT GEMINI SCHEMAS ---
-const BASIC_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    summary: { type: "STRING" },
-    category: { type: "STRING" },
-    sentiment: { type: "STRING", enum: ["Positive", "Negative", "Neutral"] }
-  },
-  required: ["summary", "category", "sentiment"]
-};
+// --- ZOD SCHEMAS FOR VALIDATION ---
+const SentimentSchema = z.enum(["Positive", "Negative", "Neutral"]);
 
-const FULL_SCHEMA = {
+const BasicAnalysisSchema = z.object({
+  summary: z.string(),
+  category: z.string(),
+  sentiment: SentimentSchema.optional().default("Neutral")
+});
+
+const FullAnalysisSchema = z.object({
+  summary: z.string(),
+  category: z.string(),
+  politicalLean: z.string().optional().default("Center"),
+  sentiment: SentimentSchema.optional().default("Neutral"),
+  biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  clusterTopic: z.string().optional(),
+  primaryNoun: z.string().optional(),
+  secondaryNoun: z.string().optional(),
+  keyFindings: z.array(z.string()).optional().default([]),
+  recommendations: z.array(z.string()).optional().default([])
+});
+
+// JSON Schema for Gemini (Guidance only)
+const GEMINI_JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
     summary: { type: "STRING" },
@@ -35,16 +51,10 @@ const FULL_SCHEMA = {
     credibilityScore: { type: "NUMBER" },
     reliabilityScore: { type: "NUMBER" },
     clusterTopic: { type: "STRING" },
-    primaryNoun: { type: "STRING" },
-    secondaryNoun: { type: "STRING" },
     keyFindings: { type: "ARRAY", items: { type: "STRING" } },
     recommendations: { type: "ARRAY", items: { type: "STRING" } }
   },
-  required: [
-    "summary", "category", "politicalLean", "sentiment", 
-    "biasScore", "credibilityScore", "reliabilityScore", 
-    "clusterTopic", "keyFindings", "recommendations"
-  ]
+  required: ["summary", "category", "politicalLean", "sentiment"]
 };
 
 class AIService {
@@ -74,43 +84,38 @@ class AIService {
       apiKey = await KeyManager.getKey('GEMINI');
       
       const prompt = await promptManager.getAnalysisPrompt(article, mode);
-      const schema = mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
       const response = await apiClient.post(url, {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json",
-          responseSchema: schema, 
+          responseSchema: mode === 'Basic' ? undefined : GEMINI_JSON_SCHEMA, // Use Strict Schema only for full
           temperature: 0.1, 
           maxOutputTokens: 4096 
         }
       }, { timeout: 60000 });
 
       KeyManager.reportSuccess(apiKey);
-      await CircuitBreaker.recordSuccess('GEMINI'); // ✅ Reset failures on success
+      await CircuitBreaker.recordSuccess('GEMINI');
 
       return this.parseGeminiResponse(response.data, mode);
 
     } catch (error: any) {
       await this.handleAIError(error, apiKey);
-      // If we reach here (handleAIError didn't throw), return fallback
       return this.getFallbackAnalysis(article);
     }
   }
 
   /**
-   * BATCH: Generates Embeddings for multiple texts at once
+   * BATCH: Generates Embeddings
    */
   async createBatchEmbeddings(texts: string[]): Promise<number[][] | null> {
-    // Circuit Breaker check for embeddings too
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
     if (!isSystemHealthy) return null;
 
     try {
         const apiKey = await KeyManager.getKey('GEMINI');
-        
-        // Safeguard: Gemini Batch Limit is usually 100
         const safeBatch = texts.slice(0, 100); 
 
         const requests = safeBatch.map(text => ({
@@ -119,7 +124,6 @@ class AIService {
         }));
 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
-        
         const response = await apiClient.post(url, { requests }, { timeout: 20000 });
 
         KeyManager.reportSuccess(apiKey);
@@ -128,8 +132,7 @@ class AIService {
         if (response.data.embeddings) {
             return response.data.embeddings.map((e: any) => e.values);
         }
-        throw new AppError('Invalid response structure from Batch Embedding API', 502);
-
+        return null;
     } catch (error: any) {
         logger.error(`Batch Embedding Error: ${error.message}`);
         await CircuitBreaker.recordFailure('GEMINI');
@@ -138,7 +141,7 @@ class AIService {
   }
 
   /**
-   * SINGLE: Generates Embedding for one text
+   * SINGLE: Generates Embedding
    */
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
@@ -171,35 +174,41 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
+        // 1. Extract JSON-like substring
         const jsonString = extractJSON(rawText);
-        const parsed = JSON.parse(jsonString);
+        
+        // 2. Repair JSON (Fixes trailing commas, missing quotes, etc.)
+        const repairedJson = jsonrepair(jsonString);
+        
+        // 3. Parse
+        const parsedRaw = JSON.parse(repairedJson);
 
+        // 4. Validate & Transform with Zod
+        let validated;
         if (mode === 'Basic') {
+            validated = BasicAnalysisSchema.parse(parsedRaw);
             return {
-                summary: parsed.summary,
-                category: parsed.category,
-                sentiment: parsed.sentiment,
+                ...validated,
                 politicalLean: 'Not Applicable',
                 analysisType: 'SentimentOnly',
                 biasScore: 0, credibilityScore: 0, reliabilityScore: 0, trustScore: 0
             };
+        } else {
+            validated = FullAnalysisSchema.parse(parsedRaw);
+            
+            // Calculate Trust Score
+            const trustScore = Math.round(Math.sqrt(validated.credibilityScore * validated.reliabilityScore));
+            
+            return {
+                ...validated,
+                analysisType: 'Full',
+                trustScore
+            };
         }
-
-        // Calculate Derived Scores
-        parsed.analysisType = 'Full';
-        parsed.trustScore = 0;
-        
-        const credibility = Number(parsed.credibilityScore) || 0;
-        const reliability = Number(parsed.reliabilityScore) || 0;
-        
-        if (credibility > 0) {
-            parsed.trustScore = Math.round(Math.sqrt(credibility * reliability));
-        }
-
-        return parsed;
 
     } catch (error: any) {
-        logger.error(`AI Parse Error: ${error.message}`);
+        logger.error(`AI Parse/Validation Error: ${error.message}`);
+        // Only throw if we want to trigger fallback
         throw new AppError(`Failed to parse AI response: ${error.message}`, 502);
     }
   }
@@ -207,24 +216,18 @@ class AIService {
   private async handleAIError(error: any, apiKey: string) {
       const status = error.response?.status || 500;
       
-      // 1. Rate Limits or Server Errors -> Retry
+      // Retryable errors
       if (status === 429 || status >= 500 || error.code === 'ECONNABORTED') {
           if (apiKey) KeyManager.reportFailure(apiKey, true);
-          logger.warn(`⚠️ AI Service Busy/Timeout (Status ${status}). Job will retry.`);
-          
-          // ✅ Record Failure in Circuit Breaker
           await CircuitBreaker.recordFailure('GEMINI');
-
           throw new AppError('AI Service Unavailable', 503); 
       }
 
-      // 2. Quota Exhausted / Circuit Breaker
+      // Permanent errors
       if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
-          logger.warn(`⚡ AI Service Paused: ${error.message}`);
           throw new AppError('AI Service Paused (Quota)', 429);
       }
 
-      // 3. Other Errors (Validation, etc) -> Log and allow fallback
       logger.error(`❌ AI Critical Failure: ${error.message}`);
   }
 
