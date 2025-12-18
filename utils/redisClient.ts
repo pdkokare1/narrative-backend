@@ -149,10 +149,14 @@ const redisClient = {
         }
     },
 
-    // --- IMPROVED: Robust Locking with Owner ID ---
-    // Instead of just 'LOCKED', we store an ID so we know WHO locked it.
+    // --- CRITICAL SECURITY FIX: Fail Closed Locking ---
+    // If Redis is down, we return FALSE. This prevents expensive jobs (like AI)
+    // from running without a lock and causing billing spikes.
     acquireLock: async (key: string, ttlSeconds: number = 60): Promise<boolean> => {
-        if (!client || !isHealthy) return true; // Fail open (allow job to run if redis down)
+        if (!client || !isHealthy) {
+            logger.warn(`⚠️ Cannot acquire lock '${key}': Redis unavailable.`);
+            return false; // Fail Closed
+        } 
         try {
             const result = await client.set(key, 'LOCKED_BY_JOB', {
                 NX: true, // Only set if not exists
@@ -160,7 +164,8 @@ const redisClient = {
             });
             return result === 'OK';
         } catch (e) {
-            return true; 
+            logger.warn(`⚠️ Error acquiring lock '${key}': ${e}`);
+            return false; // Fail Closed on error
         }
     },
     
