@@ -20,32 +20,43 @@ class NewsService {
   }
 
   /**
-   * Retrieves the current cycle index from Redis to ensure rotation persists
-   * across server restarts.
+   * Retrieves the current cycle index from Redis.
    */
-  private async getNextCycle() {
+  private async getCycleIndex(): Promise<number> {
       const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
-      let index = 0;
-
       if (redisClient.isReady()) {
           try {
               const stored = await redisClient.get(redisKey);
-              const current = stored ? parseInt(stored, 10) : 0;
-              index = (current + 1) % FETCH_CYCLES.length;
-              await redisClient.set(redisKey, index.toString(), 86400); 
+              return stored ? parseInt(stored, 10) : 0;
           } catch (e) {
-              logger.warn(`Redis Cycle Fetch Error, defaulting to 0: ${e}`);
+              return 0;
           }
       }
+      return 0;
+  }
 
-      return FETCH_CYCLES[index];
+  /**
+   * Advances the cycle index to the next one (Round Robin)
+   */
+  private async advanceCycle(): Promise<void> {
+      const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
+      const current = await this.getCycleIndex();
+      const next = (current + 1) % FETCH_CYCLES.length;
+      
+      if (redisClient.isReady()) {
+         await redisClient.set(redisKey, next.toString(), 86400);
+      }
+      logger.info(`🔄 Advancing News Cycle to Index: ${next}`);
   }
 
   async fetchNews(): Promise<INewsSourceArticle[]> {
     const allArticles: INewsSourceArticle[] = [];
-    const currentCycle = await this.getNextCycle();
     
-    logger.info(`🔄 News Fetch Cycle: ${currentCycle.name}`);
+    // Get current config
+    const cycleIndex = await this.getCycleIndex();
+    const currentCycle = FETCH_CYCLES[cycleIndex];
+    
+    logger.info(`🔄 News Fetch Cycle: ${currentCycle.name} (Index: ${cycleIndex})`);
 
     // 1. Try GNews First (Primary)
     try {
@@ -53,6 +64,12 @@ class NewsService {
         allArticles.push(...gnewsArticles);
     } catch (err: any) {
         logger.warn(`GNews fetch failed: ${err.message}`);
+        
+        // IMMEDIATE RETRY LOGIC: If we hit a Rate Limit (429), advance cycle immediately
+        if (err.response?.status === 429) {
+            logger.warn("⚠️ GNews Limit Reached. Advancing cycle for next run.");
+            await this.advanceCycle();
+        }
     }
 
     // 2. Fallback to NewsAPI (Secondary with Circuit Breaker)
@@ -67,10 +84,12 @@ class NewsService {
               await CircuitBreaker.recordSuccess('NEWS_API');
           } catch (err: any) {
               logger.warn(`NewsAPI fallback failed: ${err.message}`);
-              await CircuitBreaker.recordFailure('NEWS_API');
+              if (err.response?.status === 429) {
+                   await CircuitBreaker.recordFailure('NEWS_API');
+              }
           }
       } else {
-          logger.warn('🚫 NewsAPI Circuit Breaker is OPEN. Skipping fallback to protect system.');
+          logger.warn('🚫 NewsAPI Circuit Breaker is OPEN. Skipping fallback.');
       }
     }
 
@@ -85,6 +104,10 @@ class NewsService {
 
     // 6. Mark accepted articles as "Seen" in Redis
     await this.markAsSeenInRedis(finalUnique);
+
+    // 7. Auto-Advance Cycle if we are cycling through categories
+    // (Optional: Only if you want to rotate topics every fetch)
+    await this.advanceCycle();
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
     return finalUnique;
@@ -192,9 +215,6 @@ class NewsService {
 
   /**
    * ENHANCED SCORING & DEDUPLICATION
-   * 1. Assigns score based on quality signals
-   * 2. Penalizes clickbait
-   * 3. Deduplicates based on normalized title
    */
   private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
     const seenUrls = new Set<string>();
@@ -212,7 +232,6 @@ class NewsService {
         if (a.title && a.title.length > 40) score += 1;
 
         // 3. Trusted Source Signal (+3)
-        // Checks if the source name is inside our trusted list
         if (TRUSTED_SOURCES.some(src => sourceLower.includes(src))) {
             score += 3;
         }
@@ -230,7 +249,6 @@ class NewsService {
     for (const item of scoredArticles) {
         const article = item.article;
 
-        // Skip low quality trash (Score < 0)
         if (item.score < 0) continue;
 
         article.title = formatHeadline(article.title);
@@ -243,7 +261,6 @@ class NewsService {
         const url = article.url;
         if (seenUrls.has(url)) continue;
 
-        // Aggressive Title Normalization for Dupes
         const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
         if (seenTitles.has(cleanTitle)) continue;
         
@@ -252,7 +269,6 @@ class NewsService {
         uniqueArticles.push(article);
     }
 
-    // Return sorted by date (newest first)
     return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
