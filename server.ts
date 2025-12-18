@@ -7,6 +7,7 @@ import helmet from 'helmet';
 import mongoSanitize from 'express-mongo-sanitize';
 import hpp from 'hpp';
 import * as admin from 'firebase-admin';
+import { randomUUID } from 'crypto';
 
 // Config & Utils
 import config from './utils/config';
@@ -26,11 +27,20 @@ import shareRoutes from './routes/shareRoutes';
 
 const app = express();
 
-// --- 1. Request Logging ---
+// --- 1. Request ID & Logging ---
+// Assigns a unique ID to every request for debugging
+app.use((req: Request, res: Response, next: NextFunction) => {
+    const requestId = randomUUID();
+    (req as any).requestId = requestId;
+    res.setHeader('X-Request-Id', requestId);
+    next();
+});
+
 app.use((req: Request, res: Response, next: NextFunction) => {
     // Don't log spammy health checks
     if (req.url !== '/health' && req.url !== '/ping') {
-        logger.http(`${req.method} ${req.url}`);
+        const id = (req as any).requestId || '-';
+        logger.http(`[${id}] ${req.method} ${req.url}`);
     }
     next();
 });
@@ -159,6 +169,9 @@ const startServer = async () => {
     }
 };
 
-startServer();
+// Check if this module is being run directly (not imported)
+if (require.main === module) {
+    startServer();
+}
 
 export default app;
