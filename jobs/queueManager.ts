@@ -3,19 +3,18 @@ import { Queue, ConnectionOptions } from 'bullmq';
 import logger from '../utils/logger';
 import config from '../utils/config';
 
-// Registry to hold multiple queues (e.g., 'news', 'email', 'notifications')
+// Registry to hold multiple queues
 const queues: Record<string, Queue> = {};
 
-// Constant for the main news queue to ensure consistency
+// Constant for the main news queue
 const NEWS_QUEUE_NAME = 'news-fetch-queue';
 
 const queueManager = {
     /**
      * Initializes the Queues safely.
-     * Now capable of initializing multiple queues if needed.
+     * Should be called ONCE at server startup.
      */
     initialize: async () => {
-        // If already initialized, skip
         if (queues[NEWS_QUEUE_NAME]) return;
 
         const connectionConfig = config.bullMQConnection;
@@ -27,7 +26,6 @@ const queueManager = {
         }
 
         try {
-            // Helper to create a standardized queue
             const createQueue = (name: string) => {
                 const q = new Queue(name, {
                     connection: connectionConfig as ConnectionOptions,
@@ -40,6 +38,7 @@ const queueManager = {
                 });
                 
                 q.on('error', (err) => {
+                    // Log but don't crash - BullMQ auto-reconnects
                     logger.error(`❌ Queue [${name}] Connection Error: ${err.message}`);
                 });
                 return q;
@@ -58,14 +57,13 @@ const queueManager = {
      * Generic wrapper to add a job to any registered queue
      */
     addJobToQueue: async (queueName: string, jobName: string, data: any, opts: any = {}) => {
-        // Self-healing: Ensure init
-        if (!queues[queueName]) {
-            await queueManager.initialize();
-        }
+        // OPTIMIZATION: Removed auto-init check. 
+        // We assume initialize() was called at startup.
         
         const queue = queues[queueName];
         if (!queue) {
-            logger.error(`❌ Queue [${queueName}] not available. Job dropped.`);
+            // Only log debug to avoid spamming logs if Redis is intentionally disabled
+            logger.debug(`⚠️ Queue [${queueName}] not available. Job dropped.`);
             return null;
         }
 
@@ -77,23 +75,13 @@ const queueManager = {
         }
     },
 
-    /**
-     * Legacy wrapper: Adds a single job to the news queue.
-     * Kept for backward compatibility with existing controllers.
-     */
     addFetchJob: async (name: string = 'fetch-feed', data: any = {}, jobId?: string) => {
         const opts = jobId ? { jobId } : {};
         return await queueManager.addJobToQueue(NEWS_QUEUE_NAME, name, data, opts);
     },
 
-    /**
-     * Adds multiple jobs efficiently (Batching).
-     * Defaults to News Queue.
-     */
     addBulk: async (jobs: { name: string; data: any; opts?: any }[]) => {
-        if (!queues[NEWS_QUEUE_NAME]) await queueManager.initialize();
         const queue = queues[NEWS_QUEUE_NAME];
-        
         if (!queue) return null;
         try {
             return await queue.addBulk(jobs);
@@ -103,28 +91,20 @@ const queueManager = {
         }
     },
 
-    /**
-     * Schedules a recurring job using Cron syntax.
-     */
     scheduleRepeatableJob: async (name: string, cronPattern: string, data: any) => {
+        // For scheduling, we allow a lazy init because this happens rarely (once at boot)
         if (!queues[NEWS_QUEUE_NAME]) await queueManager.initialize();
         const queue = queues[NEWS_QUEUE_NAME];
 
-        if (!queue) {
-            logger.warn('⚠️ Queue not initialized, skipping schedule.');
-            return null;
-        }
+        if (!queue) return null;
         try {
-            // 1. Clean up old schedules
             const repeatableJobs = await queue.getRepeatableJobs();
             const existing = repeatableJobs.find(j => j.name === name);
 
             if (existing) {
                 await queue.removeRepeatableByKey(existing.key);
-                logger.debug(`🔄 Updated schedule for: ${name}`);
             }
 
-            // 2. Add new schedule
             const job = await queue.add(name, data, {
                 repeat: { pattern: cronPattern }
             });
@@ -137,9 +117,6 @@ const queueManager = {
         }
     },
 
-    /**
-     * Get queue health statistics.
-     */
     getStats: async () => {
         const queue = queues[NEWS_QUEUE_NAME];
         if (!queue) return { waiting: 0, active: 0, completed: 0, failed: 0, status: 'disabled' };
@@ -156,9 +133,6 @@ const queueManager = {
         }
     },
 
-    /**
-     * Gracefully close all queue connections.
-     */
     shutdown: async () => {
         logger.info('🛑 Shutting down Job Queues...');
         const promises = Object.values(queues).map(async (queue) => {
@@ -170,9 +144,6 @@ const queueManager = {
         });
         
         await Promise.all(promises);
-        // Clear registry
-        for (const key in queues) delete queues[key];
-        
         logger.info('✅ All Job Queues closed.');
     }
 };
