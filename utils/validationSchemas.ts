@@ -15,13 +15,17 @@ const rules = {
     email: z.string().email("Invalid email address"),
     
     url: z.string().url("Invalid URL format"),
+
+    // Pagination & Limits
+    limit: z.coerce.number().min(1).max(100).default(12),
+    page: z.coerce.number().min(1).default(1),
 };
 
 /**
  * Route Schemas
  */
 const schemas = {
-    // --- Profile Routes (New Strict Style) ---
+    // --- Profile Routes ---
     createProfile: z.object({
         body: z.object({
             username: rules.username,
@@ -43,57 +47,65 @@ const schemas = {
         })
     }),
 
-    // --- Share/Public Routes ---
-    shareParams: z.object({
-        params: z.object({
-            id: rules.objectId
-        })
-    }),
-
+    // --- Article Interaction ---
     byId: z.object({
         params: z.object({
             id: rules.objectId
         })
     }),
 
-    // --- Activity & Logging (Restored) ---
-    logActivity: z.object({
-        body: z.object({
-            articleId: rules.objectId
+    saveArticle: z.object({
+        params: z.object({
+            id: rules.objectId
         })
     }),
 
-    // --- Search & Feeds (Restored) ---
+    // --- Search & Discovery (Strict Validation) ---
     search: z.object({
-        // Allow any query parameters for search
-    }).passthrough(),
+        query: z.object({
+            q: z.string().trim().optional(),
+            limit: rules.limit,
+            // Filters
+            category: z.string().optional(),
+            politicalLean: z.string().optional()
+        })
+    }),
 
+    // --- Feed Filters ---
     feedFilters: z.object({
-        // Allow any query parameters for filtering
-    }).passthrough(),
+        query: z.object({
+            limit: rules.limit,
+            cursor: z.string().optional(), // For infinite scroll
+            category: z.string().optional(),
+            politicalLean: z.string().optional(),
+            country: z.string().optional(),
+            source: z.string().optional()
+        })
+    }),
 
-    saveArticle: z.object({
-        id: rules.objectId
+    // --- Trending ---
+    trending: z.object({
+        query: z.object({
+            limit: rules.limit
+        })
+    }),
+
+    // --- Legacy / Passthrough (For backwards compatibility) ---
+    shareParams: z.object({
+        params: z.object({ id: rules.objectId })
+    }),
+    
+    logActivity: z.object({
+        body: z.object({ articleId: rules.objectId })
     }),
 
     clusterView: z.object({
-        clusterId: z.string()
-    }),
-
-    // --- Legacy / Restored Schemas (Fixes Deployment) ---
-    // These allow existing routes to function without changes.
-    
-    emergencyFilters: z.object({
-        // Placeholder: Allows any query params for now to unblock build
+        query: z.object({ clusterId: z.string().optional() })
     }).passthrough(),
 
-    getAudio: z.object({
-        text: z.string().optional(),
-        articleId: z.string().optional(),
-        voiceId: z.string().optional()
-    }).passthrough(),
+    emergencyFilters: z.object({}).passthrough(),
     
-    // Add generic placeholders for other potentially missing keys
+    getAudio: z.object({}).passthrough(),
     createCluster: z.object({}).passthrough(),
     updateCluster: z.object({}).passthrough(),
 };
