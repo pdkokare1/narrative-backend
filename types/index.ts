@@ -59,7 +59,7 @@ export interface IArticle {
   updatedAt?: Date;
 }
 
-// --- 2. External News API Interfaces (NEW) ---
+// --- 2. External News API Interfaces ---
 export interface INewsSourceArticle {
   source: { id?: string; name: string };
   title: string;
@@ -69,6 +69,7 @@ export interface INewsSourceArticle {
   image?: string;      // GNews style
   urlToImage?: string; // NewsAPI style
   publishedAt: string;
+  score?: number;      // Internal ranking score
 }
 
 export interface INewsAPIResponse {
@@ -77,7 +78,32 @@ export interface INewsAPIResponse {
   articles: INewsSourceArticle[];
 }
 
-// --- 3. Gamification Interfaces ---
+// --- 3. Google Gemini Interfaces (NEW) ---
+export interface IGeminiPart {
+  text: string;
+}
+
+export interface IGeminiContent {
+  parts: IGeminiPart[];
+  role?: string;
+}
+
+export interface IGeminiCandidate {
+  content: IGeminiContent;
+  finishReason?: string;
+  safetyRatings?: any[];
+}
+
+export interface IGeminiResponse {
+  candidates?: IGeminiCandidate[];
+  promptFeedback?: any;
+}
+
+export interface IGeminiBatchResponse {
+  embeddings: { values: number[] }[];
+}
+
+// --- 4. Gamification Interfaces ---
 export interface IBadge {
   id: string;
   label: string;
@@ -86,7 +112,7 @@ export interface IBadge {
   earnedAt: Date;
 }
 
-// --- 4. User Profile Interface ---
+// --- 5. User Profile Interface ---
 export interface IUserProfile {
   userId: string;
   email: string;
@@ -107,7 +133,7 @@ export interface IUserProfile {
   notificationsEnabled: boolean;
 }
 
-// --- 5. Activity Log Interface ---
+// --- 6. Activity Log Interface ---
 export interface IActivityLog {
   userId: string;
   articleId: string;
@@ -115,7 +141,7 @@ export interface IActivityLog {
   timestamp?: Date;
 }
 
-// --- 6. Emergency Contact Interface ---
+// --- 7. Emergency Contact Interface ---
 export interface IEmergencyContact {
   category: string;
   serviceName: string;
@@ -127,7 +153,7 @@ export interface IEmergencyContact {
   isGlobal: boolean;
 }
 
-// --- 7. AI Prompt Interface ---
+// --- 8. AI Prompt Interface ---
 export interface IAIPrompt {
   type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION';
   text: string;
