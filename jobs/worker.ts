@@ -17,7 +17,10 @@ export const startWorker = () => {
         logger.error("❌ Cannot start worker: Redis not configured.");
         return;
     }
-    if (newsWorker) return; 
+    if (newsWorker) {
+        logger.warn("⚠️ Worker already running.");
+        return;
+    }
 
     try {
         newsWorker = new Worker('news-fetch-queue', async (job: Job) => {
@@ -30,17 +33,18 @@ export const startWorker = () => {
             }
 
             // --- B. Feed Fetcher (The Fan-Out) ---
+            // Handles both 'fetch-feed' and scheduled/manual variations
             if (job.name === 'fetch-feed' || job.name === 'scheduled-news-fetch' || job.name === 'manual-fetch') {
                 logger.info(`👷 Job: Fetching Feed...`);
                 const articles = await newsFetcher.fetchFeed();
 
                 if (articles.length > 0) {
-                    // Use queueManager to add child jobs
+                    // Create sub-jobs for EACH article (Fan-Out) using the Producer
                     const jobs = articles.map(article => ({
                         name: 'process-article',
                         data: article,
                         opts: { 
-                            removeOnComplete: true, 
+                            removeOnComplete: true, // Don't clog Redis history
                             attempts: 3 
                         }
                     }));
@@ -51,7 +55,7 @@ export const startWorker = () => {
                 return { status: 'dispatched', count: articles.length };
             }
 
-            // --- C. Article Processor ---
+            // --- C. Article Processor (High Concurrency) ---
             if (job.name === 'process-article') {
                 return await newsFetcher.processArticleJob(job.data);
             }
@@ -59,10 +63,12 @@ export const startWorker = () => {
         }, { 
             connection: connectionConfig as ConnectionOptions,
             concurrency: config.worker.concurrency, // Use centralized config
-            limiter: { max: 10, duration: 1000 } 
+            limiter: { max: 10, duration: 1000 } // Safety throttle
         });
 
+        // Event Listeners for Logging
         newsWorker.on('completed', (job: Job) => {
+            // Only log high-level jobs to keep logs clean
             if (job.name === 'fetch-feed' || job.name === 'update-trending') {
                 logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
             }
@@ -73,6 +79,7 @@ export const startWorker = () => {
         });
 
         logger.info(`✅ Background Worker Started (Concurrency: ${config.worker.concurrency})`);
+
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
     }
@@ -80,7 +87,8 @@ export const startWorker = () => {
 
 export const shutdownWorker = async () => {
     if (newsWorker) {
+        logger.info('🛑 Shutting down Worker...');
         await newsWorker.close();
-        logger.info('🛑 Worker shutdown complete.');
+        logger.info('✅ Worker shutdown complete.');
     }
 };
