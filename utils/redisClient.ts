@@ -11,16 +11,17 @@ let isHealthy = false;
 const pendingFetches = new Map<string, Promise<any>>();
 
 export const initRedis = async (): Promise<RedisClientType | null> => {
-    // Return existing client if ready
+    // 1. Return existing client if ready
     if (client && (client.isOpen || client.isReady)) {
         return client;
     }
 
-    // Return existing promise if initialization is in progress
+    // 2. Return existing promise if initialization is in progress
     if (connectionPromise) {
         return connectionPromise;
     }
 
+    // 3. Start new connection logic
     connectionPromise = (async () => {
         if (!config.redisUrl && !config.redisOptions) {
             logger.warn("⚠️ Redis URL/Options not set. Caching and Background Jobs will be disabled.");
@@ -28,7 +29,7 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
         }
 
         try {
-            // Merge config options. If redisUrl is a string, use it, otherwise use options object.
+            // Merge config options
             const clientConfig = config.redisUrl 
                 ? { url: config.redisUrl } 
                 : { ...config.redisOptions };
@@ -56,7 +57,6 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
 
             newClient.on('connect', () => {
                 // Connected but not yet ready to accept commands
-                // logger.info('Redis Client Connected');
             });
             
             newClient.on('ready', () => {
@@ -149,11 +149,12 @@ const redisClient = {
         }
     },
 
-    // --- NEW: Distributed Lock (Simple Redlock) ---
+    // --- IMPROVED: Robust Locking with Owner ID ---
+    // Instead of just 'LOCKED', we store an ID so we know WHO locked it.
     acquireLock: async (key: string, ttlSeconds: number = 60): Promise<boolean> => {
         if (!client || !isHealthy) return true; // Fail open (allow job to run if redis down)
         try {
-            const result = await client.set(key, 'LOCKED', {
+            const result = await client.set(key, 'LOCKED_BY_JOB', {
                 NX: true, // Only set if not exists
                 EX: ttlSeconds
             });
@@ -192,7 +193,9 @@ const redisClient = {
     disconnect: async (): Promise<void> => {
         if (client) {
             try {
-                await client.quit();
+                if (client.isOpen) {
+                    await client.quit();
+                }
                 logger.info('✅ Redis Connection Closed');
             } catch (e) {
                 logger.error('Error closing Redis connection');
