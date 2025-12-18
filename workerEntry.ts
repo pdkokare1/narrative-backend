@@ -1,10 +1,10 @@
 // workerEntry.ts
-import config from './utils/config';
 import logger from './utils/logger';
 import { startScheduler } from './jobs/scheduler';
 import queueManager from './jobs/queueManager';
 import dbLoader from './utils/dbLoader';
-import { startWorker } from './jobs/worker';
+import { startWorker, shutdownWorker } from './jobs/worker';
+import { registerShutdownHandler } from './utils/shutdownHandler';
 
 // Imported Background Services
 import emergencyService from './services/emergencyService';
@@ -17,18 +17,13 @@ const initWorkerService = async () => {
     // 1. Unified Database & Redis Connection
     await dbLoader.connect();
 
-    // 2. Initialize Background Logic 
-    // We use Promise.allSettled to ensure one failure doesn't stop the whole worker
-    const results = await Promise.allSettled([
+    // 2. Initialize Background Logic (Fail Fast)
+    // ✅ CHANGED: We use Promise.all to ensure that if Gatekeeper/Emergency fails, 
+    // the worker restarts immediately rather than running in a broken state.
+    await Promise.all([
         emergencyService.initializeEmergencyContacts(),
         gatekeeperService.initialize()
     ]);
-
-    results.forEach((result, index) => {
-        if (result.status === 'rejected') {
-            logger.error(`⚠️ Background Service ${index} failed to init: ${result.reason}`);
-        }
-    });
 
     logger.info('✨ Background Services Initialized');
 
@@ -40,27 +35,16 @@ const initWorkerService = async () => {
     
     logger.info('🚀 Background Worker Fully Operational & Listening for Jobs');
 
+    // 5. Register Graceful Shutdown
+    registerShutdownHandler('Worker Service', [
+        async () => { await queueManager.shutdown(); },
+        async () => { await shutdownWorker(); }
+    ]);
+
   } catch (err: any) {
     logger.error(`❌ Worker Startup Failed: ${err.message}`);
-    process.exit(1);
+    process.exit(1); // Exit so Railway/Docker can restart it
   }
 };
-
-// Graceful Shutdown
-const shutdown = async () => {
-  logger.info('🛑 Worker stopping...');
-  try {
-    await queueManager.shutdown();
-    await dbLoader.disconnect(); 
-    logger.info('✅ Worker resources released.');
-    process.exit(0);
-  } catch (err: any) {
-    logger.error(`⚠️ Error during worker shutdown: ${err.message}`);
-    process.exit(1);
-  }
-};
-
-process.on('SIGTERM', shutdown);
-process.on('SIGINT', shutdown);
 
 initWorkerService();
