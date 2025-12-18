@@ -14,6 +14,7 @@ import logger from './utils/logger';
 import redisClient from './utils/redisClient';
 import dbLoader from './utils/dbLoader';
 import queueManager from './jobs/queueManager';
+import { registerShutdownHandler } from './utils/shutdownHandler';
 
 // Services & Middleware
 import { errorHandler } from './middleware/errorMiddleware';
@@ -111,35 +112,21 @@ const startServer = async () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // --- Graceful Shutdown ---
-        const gracefulShutdown = async () => {
-            logger.info('🛑 Received Kill Signal, shutting down gracefully...');
-            
-            const forceExit = setTimeout(() => {
-                logger.error('🛑 Force Shutdown (Timeout)');
-                process.exit(1);
-            }, 10000);
-
-            server.close(async () => {
-                logger.info('Http server closed.');
-                try {
-                    // Close Queue Producer
-                    await queueManager.shutdown();
-                    // Close Database & Redis
-                    await dbLoader.disconnect();
-
-                    clearTimeout(forceExit);
-                    logger.info('✅ Resources released. Exiting.');
-                    process.exit(0);
-                } catch (err: any) {
-                    logger.error(`⚠️ Error during shutdown: ${err.message}`);
-                    process.exit(1);
-                }
-            });
-        };
-
-        process.on('SIGTERM', gracefulShutdown);
-        process.on('SIGINT', gracefulShutdown);
+        // 4. Register Graceful Shutdown
+        registerShutdownHandler('API Server', [
+            // Stop accepting new HTTP connections
+            () => new Promise<void>((resolve, reject) => {
+                server.close((err) => {
+                    if (err) reject(err);
+                    else {
+                        logger.info('Http server closed.');
+                        resolve();
+                    }
+                });
+            }),
+            // Stop Queue Producer
+            async () => { await queueManager.shutdown(); }
+        ]);
 
     } catch (err: any) {
         logger.error(`❌ Critical Startup Error: ${err.message}`);
