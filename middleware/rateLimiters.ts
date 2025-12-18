@@ -50,19 +50,33 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
         sendCommand: async (...args: string[]) => {
             try {
                 const client = redisClient.getClient();
-                // CRITICAL FIX: isReady is a boolean property, not a function
+                
+                // 1. If Client is ready, execute command
                 if (client && client.isReady) {
                     return await client.sendCommand(args);
                 }
-                throw new Error('Redis client not ready');
+
+                // 2. CRITICAL FIX: Handling Startup Race Condition
+                // If Redis is not ready yet (during server startup), we must NOT throw an error.
+                // Throwing here crashes the entire Node process.
+                
+                // If the library is trying to load a script, return a dummy SHA to keep it happy.
+                if (args.includes('SCRIPT') && args.includes('LOAD')) {
+                    return "startup_placeholder_sha";
+                }
+
+                // Otherwise return null/undefined so the operation fails gracefully without crashing
+                return null;
             } catch (e) {
                 // Determine if we should log this as an error or just a warning
                 const msg = e instanceof Error ? e.message : String(e);
-                // Silence the "not ready" errors during startup to keep logs clean
+                
+                // Silence the "not ready" errors to keep logs clean
                 if (msg !== 'Redis client not ready') {
-                    logger.error(`Redis Limit Error (${type}):`, e);
+                    logger.warn(`Redis Limit Warning (${type}): ${msg}`);
                 }
-                throw e; // Propagate to express-rate-limit to trigger skipFailedRequests
+                // Do NOT rethrow. Rethrowing crashes the app during init.
+                return null; 
             }
         },
     });
@@ -81,7 +95,6 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
                 : 'Audio generation limit reached.' 
         },
         // If Redis fails (or is not ready), we allow the request to proceed (Fail Open)
-        // This prevents the "Unexpected reply" crash during startup.
         skipFailedRequests: true, 
         handler: (req: Request, res: Response, next: NextFunction, options) => {
             logger.warn(`Rate Limit Exceeded (${type}): ${keyGenerator(req)}`);
