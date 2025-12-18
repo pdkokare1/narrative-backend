@@ -1,84 +1,59 @@
 // workerEntry.ts
-import mongoose from 'mongoose';
-import http from 'http'; 
-
-// Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import redisClient from './utils/redisClient';
-import dbLoader from './utils/dbLoader';
-import { initFirebase } from './utils/firebaseInit';
-import { registerShutdownHandler } from './utils/shutdownHandler';
-
-// Jobs
-import { startWorker, shutdownWorker } from './jobs/worker';
 import { startScheduler } from './jobs/scheduler';
+import queueManager from './jobs/queueManager';
+import dbLoader from './utils/dbLoader';
 
-// --- 0. Global Safety Nets ---
-process.on('uncaughtException', (err) => {
-    logger.error(`🔥 WORKER CRASH! Uncaught Exception: ${err.name}: ${err.message}`);
-    logger.error(err.stack);
+// Imported Background Services
+import emergencyService from './services/emergencyService';
+import gatekeeperService from './services/gatekeeperService';
+
+const startWorker = async () => {
+  logger.info('🛠️ Starting Background Worker...');
+
+  try {
+    // 1. Unified Database & Redis Connection
+    await dbLoader.connect();
+
+    // 2. Initialize Background Logic (Moved from Server)
+    // These services need to run, but they shouldn't block user traffic.
+    // The Worker is the perfect place for them.
+    await Promise.all([
+        emergencyService.initializeEmergencyContacts(),
+        gatekeeperService.initialize()
+    ]);
+    logger.info('✨ Background Services Initialized');
+
+    // 3. Start the Scheduler (Cron Jobs)
+    startScheduler();
+
+    // 4. Initialize Queue Consumer
+    queueManager.startWorker();
+    
+    logger.info('🚀 Background Worker Fully Operational & Listening for Jobs');
+
+  } catch (err: any) {
+    logger.error(`❌ Worker Startup Failed: ${err.message}`);
     process.exit(1);
-});
-
-process.on('unhandledRejection', (reason: any) => {
-    logger.error(`🔥 WORKER WARNING! Unhandled Rejection: ${reason}`);
-});
-
-// --- 1. Start Health Check Server IMMEDIATELY ---
-// This ensures Railway deployment passes even if DB takes time to connect
-const port = process.env.PORT || 8080;
-const server = http.createServer((req, res) => {
-    if (req.url === '/health' || req.url === '/') {
-        res.writeHead(200);
-        res.end('Worker Running');
-    } else {
-        res.writeHead(404);
-        res.end();
-    }
-});
-
-server.listen(port, () => {
-    logger.info(`🏥 Worker Health Check Server listening on port ${port}`);
-});
-
-// --- 2. Initialize Firebase (Centralized) ---
-initFirebase();
-
-// --- 3. Start Background Services ---
-const startBackgroundService = async () => {
-    try {
-        logger.info('👷 Starting Background Worker Process...');
-
-        // Connect to Database & Redis
-        await dbLoader.connect();
-
-        // Start the Job Processor (Consumer)
-        startWorker();
-
-        // Start the Scheduler (Producer)
-        await startScheduler();
-
-        logger.info('✅ Worker & Scheduler are fully operational.');
-
-    } catch (err: any) {
-        logger.error(`❌ Critical Worker Startup Error: ${err.message}`);
-        // We exit here because if the DB fails, the worker is useless. 
-        process.exit(1);
-    }
+  }
 };
 
-startBackgroundService();
+// Graceful Shutdown
+const shutdown = async () => {
+  logger.info('🛑 Worker stopping...');
+  try {
+    await queueManager.shutdown();
+    await dbLoader.disconnect(); 
+    logger.info('✅ Worker resources released.');
+    process.exit(0);
+  } catch (err: any) {
+    logger.error(`⚠️ Error during worker shutdown: ${err.message}`);
+    process.exit(1);
+  }
+};
 
-// --- Graceful Shutdown (Centralized) ---
-registerShutdownHandler('Worker Service', [
-    async () => {
-        // Stop Health Server
-        server.close();
-        logger.info('Worker HTTP server closed.');
-    },
-    async () => {
-        // Stop Job Processor
-        await shutdownWorker();
-    }
-]);
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+startWorker();
