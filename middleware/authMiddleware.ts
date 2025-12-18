@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import * as admin from 'firebase-admin';
 import logger from '../utils/logger';
 import config from '../utils/config';
+import { isUserAdmin } from '../utils/helpers';
 
 // --- App Check (Security Gate) ---
 export const checkAppCheck = async (req: Request, res: Response, next: NextFunction) => {
@@ -67,23 +68,17 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
 // --- Admin Authentication (Strict System) ---
 export const checkAdmin = async (req: Request, res: Response, next: NextFunction) => {
     
-    // 1. Check for User Token with Admin Claim OR Hardcoded UID
+    // 1. Check for User Token with Admin Privileges
     const token = req.headers.authorization?.split('Bearer ')[1];
     if (token) {
         try {
             const decodedToken = await admin.auth().verifyIdToken(token);
             
-            // Check A: Is user in the hardcoded Allow-List? (Highest Priority)
-            if (config.adminUids.includes(decodedToken.uid)) {
+            // Check via Helper (Centralized Logic)
+            if (isUserAdmin(decodedToken)) {
                 req.user = decodedToken;
                 return next();
             }
-
-            // Check B: Does user have the custom claim?
-            if (decodedToken.admin === true) {
-                req.user = decodedToken;
-                return next();
-            } 
             
             logger.warn(`🛑 Admin Access Denied: User ${decodedToken.uid} is not an admin.`);
             
