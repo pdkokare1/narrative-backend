@@ -37,6 +37,11 @@ export const CONSTANTS = {
     EMBEDDING: "text-embedding-004"
   },
 
+  // Queue Configuration (Centralized)
+  QUEUE: {
+    NAME: 'news-fetch-queue',
+  },
+
   // Redis Keys (Prevent typos)
   REDIS_KEYS: {
     BANNED_DOMAINS: 'GATEKEEPER:BANNED_DOMAINS',
