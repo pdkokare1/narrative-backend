@@ -11,7 +11,7 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import redisClient from './utils/redisClient';
+import redisClient, { initRedis } from './utils/redisClient'; // ✅ Added initRedis import
 import dbLoader from './utils/dbLoader';
 import queueManager from './jobs/queueManager';
 import { registerShutdownHandler } from './utils/shutdownHandler';
@@ -28,15 +28,15 @@ const app = express();
 
 // --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
-    // Don't log spammy health checks
     if (req.url !== '/health' && req.url !== '/ping') {
         logger.http(`${req.method} ${req.url}`);
     }
     next();
 });
 
-// CHANGED: Use Configurable Trust Proxy Level
-app.set('trust proxy', config.trustProxyLevel);
+// CHANGED: Use Configurable Trust Proxy Level (Recommended for Railway)
+// '1' indicates the app is behind 1 reverse proxy (Railway's load balancer)
+app.set('trust proxy', 1);
 
 // --- 2. Security Middleware ---
 app.use(helmet({ 
@@ -60,13 +60,10 @@ app.use(express.json({ limit: '200kb' }));
 // --- 4. System Routes ---
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
-// LIGHTWEIGHT Health Check (For Load Balancers/Railway)
-// Does not check DB/Redis connections to prevent cascading failures
 app.get('/ping', (req: Request, res: Response) => { 
     res.status(200).send('OK'); 
 });
 
-// DEEP Health Check (For Debugging/Status Page)
 app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
@@ -92,22 +89,16 @@ try {
     }
   }
 } catch (error) {
-    if (error instanceof Error) {
-        logger.error(`Firebase Admin Init Error: ${error.message}`);
-    } else {
-        logger.error('Firebase Admin Init Error: Unknown error');
-    }
+    logger.error(`Firebase Admin Init Error: ${error instanceof Error ? error.message : 'Unknown'}`);
 }
 
 // --- 6. Global Rate Limiter ---
-// Applied to the main API route
 app.use('/api/v1/', apiLimiter); 
 
 // --- 7. Mount Routes ---
 app.use('/share', shareRoutes); 
-// CHANGED: Versioned API Route
 app.use('/api/v1', apiRouter);
-// Fallback for older clients (Optional - remove if not needed)
+// Fallback
 app.use('/api', apiRouter);
 
 // --- 8. Error Handling ---
@@ -118,18 +109,21 @@ const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
-        // 1. Start HTTP Server IMMEDIATELY
-        // This ensures Railway Health Check passes even if DB is slow to connect.
+        // 1. Initialize Redis FIRST (Before accepting traffic)
+        // This ensures rate limiters work immediately upon startup
+        await initRedis();
+
+        // 2. Start HTTP Server
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
         const server = app.listen(Number(PORT), HOST, () => {
-            logger.info(`✅ Server running on http://${HOST}:${PORT} (Accepting connections)`);
+            logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 2. Register Graceful Shutdown
+        // 3. Register Graceful Shutdown
         registerShutdownHandler('API Server', [
-            // Stop accepting new HTTP connections
+            // Stop HTTP
             () => new Promise<void>((resolve, reject) => {
                 server.close((err) => {
                     if (err) reject(err);
@@ -139,32 +133,25 @@ const startServer = async () => {
                     }
                 });
             }),
-            // Stop DB and Queue
+            // Stop DB, Queue, Redis
             async () => { await dbLoader.disconnect(); },
-            async () => { await queueManager.shutdown(); }
+            async () => { await queueManager.shutdown(); },
+            async () => { await redisClient.disconnect(); } // ✅ Close Redis last
         ]);
 
-        // 3. Connect to Infrastructure (Async/Non-blocking)
-        // If this fails, the app stays up but returns 503 for data requests, 
-        // which is better than a crash loop.
-        logger.info('⏳ Connecting to Database & Queue...');
+        // 4. Connect to DB (Non-blocking)
+        logger.info('⏳ Connecting to Database...');
         dbLoader.connect()
             .then(async () => {
-                 // Initialize Queue only after DB/Redis is ready
                  await queueManager.initialize();
                  logger.info('✨ Infrastructure Fully Initialized');
             })
             .catch((err) => {
                 logger.error(`❌ Infrastructure Connection Failed: ${err.message}`);
-                // Optional: process.exit(1) if you want to force restart
             });
 
     } catch (err) {
-        if (err instanceof Error) {
-            logger.error(`❌ Critical Startup Error: ${err.message}`);
-        } else {
-            logger.error('❌ Critical Startup Error: Unknown error');
-        }
+        logger.error(`❌ Critical Startup Error: ${err instanceof Error ? err.message : 'Unknown'}`);
         process.exit(1);
     }
 };
