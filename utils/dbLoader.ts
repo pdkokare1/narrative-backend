@@ -7,12 +7,12 @@ import { initRedis, default as redisClient } from './redisClient';
 /**
  * Centralized Database Loader
  * Handles connections for both MongoDB and Redis.
- * IMPROVED: Uses Parallel Loading for faster startup.
+ * ENHANCED: Uses Exponential Backoff for robust cloud reconnection.
  */
 class DbLoader {
     private isConnected: boolean = false;
-    private readonly MAX_RETRIES = 5;
-    private readonly RETRY_DELAY_MS = 3000;
+    private readonly MAX_RETRIES = 10; // Increased retries for resilience
+    private readonly BASE_DELAY_MS = 1000; // Start with 1 second
 
     public async connect(): Promise<void> {
         if (this.isConnected) {
@@ -48,6 +48,7 @@ class DbLoader {
 
     private async connectMongo(): Promise<void> {
         let retries = 0;
+        
         while (retries < this.MAX_RETRIES) {
             try {
                 // Clear previous listeners to avoid duplicates on reconnect
@@ -69,14 +70,18 @@ class DbLoader {
 
             } catch (err: any) {
                 retries++;
-                logger.error(`⚠️ MongoDB Connection Failed (Attempt ${retries}/${this.MAX_RETRIES}): ${err.message}`);
+                
+                // Exponential Backoff: 1s, 2s, 4s, 8s, 16s... max 30s
+                const delay = Math.min(this.BASE_DELAY_MS * Math.pow(2, retries), 30000);
+                
+                logger.error(`⚠️ MongoDB Connection Failed (Attempt ${retries}/${this.MAX_RETRIES}). Retrying in ${delay/1000}s... Error: ${err.message}`);
                 
                 if (retries >= this.MAX_RETRIES) {
                     logger.error(`❌ Critical Infrastructure Failure: Could not connect to MongoDB after ${this.MAX_RETRIES} attempts.`);
                     process.exit(1); 
                 }
 
-                await new Promise(res => setTimeout(res, this.RETRY_DELAY_MS));
+                await new Promise(res => setTimeout(res, delay));
             }
         }
     }
