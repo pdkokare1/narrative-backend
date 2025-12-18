@@ -12,8 +12,8 @@ import { jsonrepair } from 'jsonrepair';
 import { z } from 'zod';
 
 // Centralized Config
-const EMBEDDING_MODEL = config.aiModels.embedding;
-const PRO_MODEL = config.aiModels.pro;
+const EMBEDDING_MODEL = config.aiModels?.embedding || 'text-embedding-004';
+const PRO_MODEL = config.aiModels?.pro || 'gemini-pro';
 
 // --- ZOD SCHEMAS FOR VALIDATION ---
 const SentimentSchema = z.enum(["Positive", "Negative", "Neutral"]);
@@ -59,7 +59,7 @@ const GEMINI_JSON_SCHEMA = {
 
 class AIService {
   constructor() {
-    if (config.keys.gemini) {
+    if (config.keys?.gemini) {
         KeyManager.registerProviderKeys('GEMINI', [config.keys.gemini]);
     } else {
         logger.warn("⚠️ No Gemini API Key found in config");
@@ -177,8 +177,13 @@ class AIService {
         // 1. Extract JSON-like substring
         const jsonString = extractJSON(rawText);
         
-        // 2. Repair JSON (Fixes trailing commas, missing quotes, etc.)
-        const repairedJson = jsonrepair(jsonString);
+        // 2. Repair JSON (Safe call)
+        let repairedJson = jsonString;
+        try {
+           repairedJson = jsonrepair(jsonString);
+        } catch (e) {
+           logger.warn("JSON Repair failed, attempting raw parse");
+        }
         
         // 3. Parse
         const parsedRaw = JSON.parse(repairedJson);
@@ -208,7 +213,6 @@ class AIService {
 
     } catch (error: any) {
         logger.error(`AI Parse/Validation Error: ${error.message}`);
-        // Only throw if we want to trigger fallback
         throw new AppError(`Failed to parse AI response: ${error.message}`, 502);
     }
   }
