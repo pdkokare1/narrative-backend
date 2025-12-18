@@ -5,7 +5,7 @@ import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
 import config from '../utils/config'; 
-import { cleanText } from '../utils/helpers';
+import { cleanText, extractJSON } from '../utils/helpers'; // FIX: Imported extractor
 import { IArticle } from '../types';
 
 // Centralized Config
@@ -163,7 +163,9 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new Error('Empty response from AI');
 
-        const parsed = JSON.parse(rawText);
+        // FIX: Use robust extractor instead of direct JSON.parse
+        const jsonString = extractJSON(rawText);
+        const parsed = JSON.parse(jsonString);
 
         if (mode === 'Basic') {
             return {
