@@ -23,6 +23,8 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
 
     // 3. Start new connection logic
     connectionPromise = (async () => {
+        // If no URL/Options, we can't connect.
+        // We check specific config fields to ensure we have a valid target.
         if (!config.redisUrl && !config.redisOptions) {
             logger.warn("⚠️ Redis URL/Options not set. Caching and Background Jobs will be disabled.");
             return null;
@@ -49,7 +51,7 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
 
             newClient.on('error', (err) => {
                 isHealthy = false;
-                // suppress repetitive connection refused logs
+                // suppress repetitive connection refused logs during startup/outages
                 if (!err.message.includes('ECONNREFUSED') && !err.message.includes('Socket closed')) {
                     logger.warn(`Redis Client Warning: ${err.message}`);
                 }
@@ -87,16 +89,23 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
 };
 
 const redisClient = {
+    // --- BASIC OPS ---
+
     get: async (key: string): Promise<any | null> => {
         if (!client || !isHealthy) return null;
         try {
             const data = await client.get(key);
-            return data ? JSON.parse(data) : null;
+            // Auto-parse JSON if possible, otherwise return string
+            try {
+                return data ? JSON.parse(data) : null;
+            } catch {
+                return data;
+            }
         } catch (e: any) { return null; }
     },
 
     mGet: async (keys: string[]): Promise<(string | null)[]> => {
-        if (!client || !isHealthy || keys.length === 0) return [];
+        if (!client || !isHealthy || keys.length === 0) return new Array(keys.length).fill(null);
         try {
             return await client.mGet(keys);
         } catch (e: any) { return new Array(keys.length).fill(null); }
@@ -105,11 +114,44 @@ const redisClient = {
     set: async (key: string, data: any, ttlSeconds: number = 900): Promise<void> => {
         if (!client || !isHealthy) return;
         try {
-            await client.set(key, JSON.stringify(data), { EX: ttlSeconds });
-        } catch (e: any) { }
+            const value = typeof data === 'string' ? data : JSON.stringify(data);
+            await client.set(key, value, { EX: ttlSeconds });
+        } catch (e: any) { 
+            logger.warn(`Redis Set Error: ${e.message}`);
+        }
     },
 
-    // --- ENHANCED: getOrFetch with robustness ---
+    del: async (key: string): Promise<void> => {
+        if (!client || !isHealthy) return;
+        try { await client.del(key); } catch (e) { }
+    },
+
+    // --- RATE LIMITING / COUNTERS (Restored) ---
+
+    incr: async (key: string): Promise<number> => {
+        if (!client || !isHealthy) return 0;
+        try { return await client.incr(key); } catch (e) { return 0; }
+    },
+
+    expire: async (key: string, seconds: number): Promise<boolean> => {
+        if (!client || !isHealthy) return false;
+        try { return await client.expire(key, seconds); } catch (e) { return false; }
+    },
+
+    // --- SETS (Restored for Gatekeeper) ---
+
+    sAdd: async (key: string, value: string): Promise<number> => {
+        if (!client || !isHealthy) return 0;
+        try { return await client.sAdd(key, value); } catch (e) { return 0; }
+    },
+
+    sIsMember: async (key: string, value: string): Promise<boolean> => {
+        if (!client || !isHealthy) return false;
+        try { return await client.sIsMember(key, value); } catch (e) { return false; }
+    },
+
+    // --- ADVANCED: Smart Fetching ---
+
     getOrFetch: async <T>(key: string, fetcher: () => Promise<T>, ttlSeconds: number = 900): Promise<T> => {
         // 1. Try Cache
         if (client && isHealthy) {
@@ -118,10 +160,10 @@ const redisClient = {
                 if (cachedData) {
                     return JSON.parse(cachedData) as T;
                 }
-            } catch (err) { /* proceed */ }
+            } catch (err) { /* ignore cache errors */ }
         }
 
-        // 2. Anti-Stampede (Local Memory)
+        // 2. Anti-Stampede (Deduplicate simultaneous requests)
         if (pendingFetches.has(key)) {
             return pendingFetches.get(key) as Promise<T>;
         }
@@ -149,13 +191,13 @@ const redisClient = {
         }
     },
 
-    // --- CRITICAL SECURITY FIX: Fail Closed Locking ---
-    // If Redis is down, we return FALSE. This prevents expensive jobs (like AI)
-    // from running without a lock and causing billing spikes.
+    // --- LOCKING (Restored for Workers) ---
+    // Critical: If Redis is down, this returns FALSE to prevent jobs running 
+    // simultaneously without a lock (Fail Closed).
     acquireLock: async (key: string, ttlSeconds: number = 60): Promise<boolean> => {
         if (!client || !isHealthy) {
             logger.warn(`⚠️ Cannot acquire lock '${key}': Redis unavailable.`);
-            return false; // Fail Closed
+            return false; 
         } 
         try {
             const result = await client.set(key, 'LOCKED_BY_JOB', {
@@ -165,36 +207,11 @@ const redisClient = {
             return result === 'OK';
         } catch (e) {
             logger.warn(`⚠️ Error acquiring lock '${key}': ${e}`);
-            return false; // Fail Closed on error
+            return false; 
         }
     },
-    
-    del: async (key: string): Promise<void> => {
-        if (!client || !isHealthy) return;
-        try { await client.del(key); } catch (e) { }
-    },
 
-    incr: async (key: string): Promise<number> => {
-        if (!client || !isHealthy) return 0;
-        try { return await client.incr(key); } catch (e) { return 0; }
-    },
-
-    expire: async (key: string, seconds: number): Promise<boolean> => {
-        if (!client || !isHealthy) return false;
-        try { return await client.expire(key, seconds); } catch (e) { return false; }
-    },
-
-    sAdd: async (key: string, value: string): Promise<number> => {
-        if (!client || !isHealthy) return 0;
-        try { return await client.sAdd(key, value); } catch (e) { return 0; }
-    },
-
-    sIsMember: async (key: string, value: string): Promise<boolean> => {
-        if (!client || !isHealthy) return false;
-        try { return await client.sIsMember(key, value); } catch (e) { return false; }
-    },
-
-    // Used for clean shutdowns
+    // --- CONNECTION ---
     disconnect: async (): Promise<void> => {
         if (client) {
             try {
