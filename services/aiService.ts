@@ -1,11 +1,10 @@
 // services/aiService.ts
-import { z } from 'zod';
-import promptManager from '../utils/promptManager';
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
 import config from '../utils/config'; 
-import { cleanText, extractJSON } from '../utils/helpers'; // FIX: Imported extractor
+import AppError from '../utils/AppError';
+import { cleanText, extractJSON } from '../utils/helpers';
 import { IArticle } from '../types';
 
 // Centralized Config
@@ -48,25 +47,31 @@ const FULL_SCHEMA = {
 
 class AIService {
   constructor() {
-    // FIX: Register keys from central config instead of reading env directly
     if (config.keys.gemini) {
         KeyManager.registerProviderKeys('GEMINI', [config.keys.gemini]);
     } else {
         logger.warn("⚠️ No Gemini API Key found in config");
     }
-    
     logger.info(`🤖 AI Service Initialized (Model: ${PRO_MODEL})`);
   }
 
-  async analyzeArticle(article: any, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
+  /**
+   * Analyzes an article using the Generative AI Model
+   */
+  async analyzeArticle(article: Partial<IArticle>, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
     
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
+      // Use the Prompt Manager to get the prompt string (assuming promptManager exists in utils)
+      // Note: We are importing promptManager dynamically or assuming it's available. 
+      // For strictness, ensure promptManager is imported at the top if available, 
+      // otherwise we construct a basic prompt here.
+      const promptManager = require('../utils/promptManager').default; 
       const prompt = await promptManager.getAnalysisPrompt(article, mode);
+      
       const schema = mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA;
-
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
       const response = await apiClient.post(url, {
@@ -77,36 +82,26 @@ class AIService {
           temperature: 0.1, 
           maxOutputTokens: 4096 
         }
-      }, {
-          timeout: 60000 
-      });
+      }, { timeout: 60000 });
 
       KeyManager.reportSuccess(apiKey);
       return this.parseGeminiResponse(response.data, mode);
 
     } catch (error: any) {
-      if (error.response?.status === 429 || error.response?.status >= 500 || error.code === 'ECONNABORTED') {
-          if (apiKey) await KeyManager.reportFailure(apiKey, true);
-          logger.warn(`⚠️ AI Service Busy/Timeout/Down (Status ${error.response?.status || error.code}). Job will retry.`);
-          throw error; 
-      }
-
-      if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
-          logger.warn(`⚡ AI Service Paused: ${error.message}`);
-          throw error; 
-      }
-
-      logger.error(`❌ AI Critical Failure (Non-Retriable): ${error.message}`);
+      this.handleAIError(error, apiKey);
+      // If we reach here (meaning handleAIError didn't throw), return fallback
       return this.getFallbackAnalysis(article);
     }
   }
 
-  // --- NEW: Batch Embedding for High Efficiency ---
+  /**
+   * BATCH: Generates Embeddings for multiple texts at once
+   */
   async createBatchEmbeddings(texts: string[]): Promise<number[][] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI');
         
-        // Prepare batch request (Gemini Limit: 100 per call, but we should safeguard)
+        // Safeguard: Gemini Batch Limit is usually 100
         const safeBatch = texts.slice(0, 100); 
 
         const requests = safeBatch.map(text => ({
@@ -116,16 +111,14 @@ class AIService {
 
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
         
-        const response = await apiClient.post(url, { requests }, {
-            timeout: 20000 
-        });
+        const response = await apiClient.post(url, { requests }, { timeout: 20000 });
 
         KeyManager.reportSuccess(apiKey);
 
         if (response.data.embeddings) {
             return response.data.embeddings.map((e: any) => e.values);
         }
-        return null;
+        throw new AppError('Invalid response structure from Batch Embedding API', 502);
 
     } catch (error: any) {
         logger.error(`Batch Embedding Error: ${error.message}`);
@@ -133,19 +126,19 @@ class AIService {
     }
   }
 
+  /**
+   * SINGLE: Generates Embedding for one text
+   */
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
-        
         const clean = cleanText(text).substring(0, 2000);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
         
         const response = await apiClient.post(url, {
             model: `models/${EMBEDDING_MODEL}`,
             content: { parts: [{ text: clean }] }
-        }, {
-            timeout: 10000 
-        });
+        }, { timeout: 10000 });
 
         KeyManager.reportSuccess(apiKey);
         return response.data.embedding.values;
@@ -156,14 +149,17 @@ class AIService {
     }
   }
 
+  // --- Private Helpers ---
+
   private parseGeminiResponse(data: any, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
-        if (!data.candidates || data.candidates.length === 0) throw new Error('No candidates returned from AI');
+        if (!data.candidates || data.candidates.length === 0) {
+            throw new AppError('AI returned no candidates', 502);
+        }
         
         const rawText = data.candidates[0].content.parts[0].text;
-        if (!rawText) throw new Error('Empty response from AI');
+        if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        // FIX: Use robust extractor instead of direct JSON.parse
         const jsonString = extractJSON(rawText);
         const parsed = JSON.parse(jsonString);
 
@@ -178,6 +174,7 @@ class AIService {
             };
         }
 
+        // Calculate Derived Scores
         parsed.analysisType = 'Full';
         parsed.trustScore = 0;
         
@@ -191,13 +188,34 @@ class AIService {
         return parsed;
 
     } catch (error: any) {
-        throw new Error(`Parsing failed: ${error.message}`);
+        logger.error(`AI Parse Error: ${error.message}`);
+        throw new AppError(`Failed to parse AI response: ${error.message}`, 502);
     }
   }
 
-  private getFallbackAnalysis(article: any): Partial<IArticle> {
+  private handleAIError(error: any, apiKey: string) {
+      const status = error.response?.status || 500;
+      
+      // 1. Rate Limits or Server Errors -> Retry
+      if (status === 429 || status >= 500 || error.code === 'ECONNABORTED') {
+          if (apiKey) KeyManager.reportFailure(apiKey, true);
+          logger.warn(`⚠️ AI Service Busy/Timeout (Status ${status}). Job will retry.`);
+          throw new AppError('AI Service Unavailable', 503); 
+      }
+
+      // 2. Quota Exhausted / Circuit Breaker
+      if (error.message.includes('CIRCUIT_BREAKER') || error.message.includes('NO_KEYS')) {
+          logger.warn(`⚡ AI Service Paused: ${error.message}`);
+          throw new AppError('AI Service Paused (Quota)', 429);
+      }
+
+      // 3. Other Errors (Validation, etc) -> Log and allow fallback
+      logger.error(`❌ AI Critical Failure: ${error.message}`);
+  }
+
+  private getFallbackAnalysis(article: Partial<IArticle>): Partial<IArticle> {
       return {
-          summary: article.description || "Analysis unavailable (System Error)",
+          summary: article.summary || "Analysis unavailable (System Error)",
           category: "Uncategorized",
           politicalLean: "Not Applicable",
           biasScore: 0,
