@@ -11,28 +11,35 @@ let isHealthy = false;
 const pendingFetches = new Map<string, Promise<any>>();
 
 export const initRedis = async (): Promise<RedisClientType | null> => {
+    // Return existing client if ready
     if (client && (client.isOpen || client.isReady)) {
         return client;
     }
 
+    // Return existing promise if initialization is in progress
     if (connectionPromise) {
         return connectionPromise;
     }
 
     connectionPromise = (async () => {
-        if (!config.redisOptions) {
-            logger.warn("⚠️ Redis URL not set. Caching and Background Jobs will be disabled.");
+        if (!config.redisUrl && !config.redisOptions) {
+            logger.warn("⚠️ Redis URL/Options not set. Caching and Background Jobs will be disabled.");
             return null;
         }
 
         try {
+            // Merge config options. If redisUrl is a string, use it, otherwise use options object.
+            const clientConfig = config.redisUrl 
+                ? { url: config.redisUrl } 
+                : { ...config.redisOptions };
+
             const newClient = createClient({
-                ...config.redisOptions,
+                ...clientConfig,
                 socket: {
-                    ...config.redisOptions.socket,
+                    ...((clientConfig as any).socket || {}),
                     reconnectStrategy: (retries) => {
-                        const delay = Math.min(retries * 100, 5000);
-                        return delay;
+                        // Exponential backoff: 100ms, 200ms, ... max 5000ms
+                        return Math.min(retries * 100, 5000);
                     },
                     connectTimeout: 10000, 
                     keepAlive: 10000 
@@ -41,13 +48,15 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
 
             newClient.on('error', (err) => {
                 isHealthy = false;
+                // suppress repetitive connection refused logs
                 if (!err.message.includes('ECONNREFUSED') && !err.message.includes('Socket closed')) {
                     logger.warn(`Redis Client Warning: ${err.message}`);
                 }
             });
 
             newClient.on('connect', () => {
-                isHealthy = true;
+                // Connected but not yet ready to accept commands
+                // logger.info('Redis Client Connected');
             });
             
             newClient.on('ready', () => {
@@ -57,6 +66,7 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
 
             newClient.on('end', () => {
                 isHealthy = false;
+                logger.warn('Redis Client Disconnected');
             });
 
             await newClient.connect();
@@ -140,9 +150,8 @@ const redisClient = {
     },
 
     // --- NEW: Distributed Lock (Simple Redlock) ---
-    // Prevents multiple servers from running the same heavy job simultaneously
     acquireLock: async (key: string, ttlSeconds: number = 60): Promise<boolean> => {
-        if (!client || !isHealthy) return true; // If redis is down, proceed anyway (fail open)
+        if (!client || !isHealthy) return true; // Fail open (allow job to run if redis down)
         try {
             const result = await client.set(key, 'LOCKED', {
                 NX: true, // Only set if not exists
@@ -150,7 +159,7 @@ const redisClient = {
             });
             return result === 'OK';
         } catch (e) {
-            return true; // Fail open
+            return true; 
         }
     },
     
@@ -179,11 +188,18 @@ const redisClient = {
         try { return await client.sIsMember(key, value); } catch (e) { return false; }
     },
 
-    quit: async (): Promise<void> => {
+    // Used for clean shutdowns
+    disconnect: async (): Promise<void> => {
         if (client) {
-            await client.quit();
-            isHealthy = false;
-            logger.info('Redis connection closed gracefully.');
+            try {
+                await client.quit();
+                logger.info('✅ Redis Connection Closed');
+            } catch (e) {
+                logger.error('Error closing Redis connection');
+            } finally {
+                client = null;
+                isHealthy = false;
+            }
         }
     },
 
