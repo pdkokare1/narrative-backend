@@ -11,7 +11,7 @@ import * as admin from 'firebase-admin';
 // Config & Utils
 import config from './utils/config';
 import logger from './utils/logger';
-import redisClient, { initRedis } from './utils/redisClient'; // FIX: Named import
+import redisClient from './utils/redisClient';
 import dbLoader from './utils/dbLoader';
 import queueManager from './jobs/queueManager';
 
@@ -61,7 +61,6 @@ app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
-    // Always return 200 if the web server is running
     res.status(200).json({ 
         status: 'OK', 
         mongo: mongoStatus, 
@@ -99,8 +98,8 @@ const startServer = async () => {
         logger.info('🚀 Starting Server Initialization...');
 
         // 1. Unified Database & Redis Connection
-        await dbLoader.connect();
-        await initRedis(); // FIX: Call standalone function
+        // (Redis is now handled internally by dbLoader, removing the duplicate call)
+        await dbLoader.connect(); 
         
         // 2. Start HTTP Server
         const PORT = config.port || 3001;
@@ -124,10 +123,8 @@ const startServer = async () => {
                 try {
                     // Close Queue Producer
                     await queueManager.shutdown();
-                    // Close Database
+                    // Close Database & Redis
                     await dbLoader.disconnect();
-                    // Close Redis
-                    await redisClient.quit();
 
                     clearTimeout(forceExit);
                     logger.info('✅ Resources released. Exiting.');
