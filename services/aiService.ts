@@ -6,6 +6,8 @@ import config from '../utils/config';
 import AppError from '../utils/AppError';
 import { cleanText, extractJSON } from '../utils/helpers';
 import { IArticle } from '../types';
+import promptManager from '../utils/promptManager'; // ✅ Fixed: Static Import
+import CircuitBreaker from '../utils/CircuitBreaker'; // ✅ Added: Circuit Breaker
 
 // Centralized Config
 const EMBEDDING_MODEL = config.aiModels.embedding;
@@ -61,16 +63,17 @@ class AIService {
   async analyzeArticle(article: Partial<IArticle>, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
     
+    // 1. Circuit Breaker Check
+    const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
+    if (!isSystemHealthy) {
+        logger.warn('⚡ Circuit Breaker OPEN for Gemini. Using Fallback.');
+        return this.getFallbackAnalysis(article);
+    }
+
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
-      // Use the Prompt Manager to get the prompt string (assuming promptManager exists in utils)
-      // Note: We are importing promptManager dynamically or assuming it's available. 
-      // For strictness, ensure promptManager is imported at the top if available, 
-      // otherwise we construct a basic prompt here.
-      const promptManager = require('../utils/promptManager').default; 
       const prompt = await promptManager.getAnalysisPrompt(article, mode);
-      
       const schema = mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
@@ -85,11 +88,13 @@ class AIService {
       }, { timeout: 60000 });
 
       KeyManager.reportSuccess(apiKey);
+      await CircuitBreaker.recordSuccess('GEMINI'); // ✅ Reset failures on success
+
       return this.parseGeminiResponse(response.data, mode);
 
     } catch (error: any) {
-      this.handleAIError(error, apiKey);
-      // If we reach here (meaning handleAIError didn't throw), return fallback
+      await this.handleAIError(error, apiKey);
+      // If we reach here (handleAIError didn't throw), return fallback
       return this.getFallbackAnalysis(article);
     }
   }
@@ -98,6 +103,10 @@ class AIService {
    * BATCH: Generates Embeddings for multiple texts at once
    */
   async createBatchEmbeddings(texts: string[]): Promise<number[][] | null> {
+    // Circuit Breaker check for embeddings too
+    const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
+    if (!isSystemHealthy) return null;
+
     try {
         const apiKey = await KeyManager.getKey('GEMINI');
         
@@ -114,6 +123,7 @@ class AIService {
         const response = await apiClient.post(url, { requests }, { timeout: 20000 });
 
         KeyManager.reportSuccess(apiKey);
+        await CircuitBreaker.recordSuccess('GEMINI');
 
         if (response.data.embeddings) {
             return response.data.embeddings.map((e: any) => e.values);
@@ -122,6 +132,7 @@ class AIService {
 
     } catch (error: any) {
         logger.error(`Batch Embedding Error: ${error.message}`);
+        await CircuitBreaker.recordFailure('GEMINI');
         return null;
     }
   }
@@ -193,13 +204,17 @@ class AIService {
     }
   }
 
-  private handleAIError(error: any, apiKey: string) {
+  private async handleAIError(error: any, apiKey: string) {
       const status = error.response?.status || 500;
       
       // 1. Rate Limits or Server Errors -> Retry
       if (status === 429 || status >= 500 || error.code === 'ECONNABORTED') {
           if (apiKey) KeyManager.reportFailure(apiKey, true);
           logger.warn(`⚠️ AI Service Busy/Timeout (Status ${status}). Job will retry.`);
+          
+          // ✅ Record Failure in Circuit Breaker
+          await CircuitBreaker.recordFailure('GEMINI');
+
           throw new AppError('AI Service Unavailable', 503); 
       }
 
