@@ -15,6 +15,7 @@ const initWorkerService = async () => {
 
   try {
     // 1. Unified Database & Redis Connection
+    // This now handles both Mongo and Redis in parallel
     await dbLoader.connect();
 
     // 2. Initialize Background Logic (Fail Fast)
@@ -38,7 +39,8 @@ const initWorkerService = async () => {
     // 5. Register Graceful Shutdown
     registerShutdownHandler('Worker Service', [
         async () => { await queueManager.shutdown(); },
-        async () => { await shutdownWorker(); }
+        async () => { await shutdownWorker(); },
+        async () => { await dbLoader.disconnect(); }
     ]);
 
   } catch (err) {
