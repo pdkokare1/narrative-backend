@@ -9,21 +9,10 @@ import redisClient from '../utils/redisClient';
 import AppError from '../utils/AppError';
 import { IArticle } from '../types';
 
-// Types for the Batch Queue
-interface BatchItem {
-    article: Partial<IArticle>;
-    resolve: (value: number[]) => void;
-    reject: (reason?: any) => void;
-}
-
 const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24;
-const BATCH_SIZE = 10;
-const BATCH_TIMEOUT_MS = 2000;
 
 class PipelineService {
-    private batchQueue: BatchItem[] = [];
-    private batchTimer: NodeJS.Timeout | null = null;
-
+    
     /**
      * Checks if the URL has already been processed using Redis Set and MongoDB
      */
@@ -48,55 +37,22 @@ class PipelineService {
     }
 
     /**
-     * BATCH PROCESSOR: Sends accumulated texts to AI Service
+     * Retrieves embedding safely without memory-risk batching.
+     * (Previous memory-batching removed to prevent data loss on server restarts)
      */
-    private async processEmbeddingsBatch() {
-        if (this.batchQueue.length === 0) return;
-
-        // Copy and clear queue immediately to unblock new additions
-        const currentBatch = [...this.batchQueue];
-        this.batchQueue = [];
-        
-        if (this.batchTimer) {
-            clearTimeout(this.batchTimer);
-            this.batchTimer = null;
-        }
-
+    private async getEmbeddingSafe(article: Partial<IArticle>): Promise<number[]> {
+        const textToEmbed = `${article.headline || ''}. ${article.summary || ''}`;
         try {
-            const textsToEmbed = currentBatch.map(item => 
-                `${item.article.headline || ''}. ${item.article.summary || ''}`
-            );
-            
-            const embeddings = await aiService.createBatchEmbeddings(textsToEmbed);
-
-            if (embeddings && embeddings.length === currentBatch.length) {
-                // Success: Resolve all promises
-                for (let i = 0; i < currentBatch.length; i++) {
-                    currentBatch[i].resolve(embeddings[i]);
-                }
-            } else {
-                throw new AppError('Batch embedding count mismatch', 502);
+            // We pass an array of 1 to reuse the existing batch interface of aiService
+            const embeddings = await aiService.createBatchEmbeddings([textToEmbed]);
+            if (!embeddings || embeddings.length === 0) {
+                throw new Error("No embedding returned from AI Service");
             }
-        } catch (error: any) {
-            logger.error(`❌ Batch Embedding Failure: ${error.message}`);
-            // Critical: Reject all items so the worker knows to retry them individually or fail the job
-            currentBatch.forEach(item => item.reject(error));
+            return embeddings[0];
+        } catch (err: any) {
+            logger.error(`❌ Embedding failed: ${err.message}`);
+            throw err;
         }
-    }
-
-    /**
-     * Adds an article to the batch queue and waits for its embedding
-     */
-    private async getEmbeddingWithBatching(article: Partial<IArticle>): Promise<number[]> {
-        return new Promise((resolve, reject) => {
-            this.batchQueue.push({ article, resolve, reject });
-
-            if (this.batchQueue.length >= BATCH_SIZE) {
-                this.processEmbeddingsBatch();
-            } else if (!this.batchTimer) {
-                this.batchTimer = setTimeout(() => this.processEmbeddingsBatch(), BATCH_TIMEOUT_MS);
-            }
-        });
     }
 
     /**
@@ -138,15 +94,14 @@ class PipelineService {
             let embedding: number[] | null = null;
 
             if (!existingMatch) {
-                // Try to get embedding via Batch System
+                // Try to get embedding - Now SAFE (No memory batching risk)
                 try {
-                    embedding = await this.getEmbeddingWithBatching(article);
+                    embedding = await this.getEmbeddingSafe(article);
                     if (embedding) {
                         existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
                     }
-                } catch (batchErr) {
-                    // If batch fails, we don't crash, but we might skip semantic check
-                    logger.warn(`Batch embedding failed, proceeding without vector check: ${batchErr}`);
+                } catch (embedErr) {
+                    logger.warn(`Embedding generation failed, proceeding without vector check: ${embedErr}`);
                 }
             }
 
