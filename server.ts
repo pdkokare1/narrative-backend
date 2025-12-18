@@ -35,7 +35,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     next();
 });
 
-// CHANGED: Use Configurable Trust Proxy Level
+// CHANGED: Use Configurable Trust Proxy Level (Safe for Railway/Heroku)
 app.set('trust proxy', config.trustProxyLevel);
 
 // --- 2. Security Middleware ---
@@ -61,7 +61,7 @@ app.use(express.json({ limit: '200kb' }));
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
 // LIGHTWEIGHT Health Check (For Load Balancers/Railway)
-// Does not check DB/Redis connections to prevent cascading failures
+// This must respond 200 OK even if DB is connecting
 app.get('/ping', (req: Request, res: Response) => { 
     res.status(200).send('OK'); 
 });
@@ -118,23 +118,17 @@ const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
-        // 1. Unified Database & Redis Connection
-        await dbLoader.connect(); 
-        
-        // 2. Initialize Job Queue (Safe Startup)
-        await queueManager.initialize();
-
-        // 3. Start HTTP Server
         const PORT = config.port || 3001;
         const HOST = '0.0.0.0'; 
 
+        // 1. START HTTP SERVER FIRST (Optimistic Startup)
+        // This ensures Health Checks pass immediately, preventing Deployment Timeouts.
         const server = app.listen(Number(PORT), HOST, () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 4. Register Graceful Shutdown
+        // 2. Register Graceful Shutdown
         registerShutdownHandler('API Server', [
-            // Stop accepting new HTTP connections
             () => new Promise<void>((resolve, reject) => {
                 server.close((err) => {
                     if (err) reject(err);
@@ -144,9 +138,15 @@ const startServer = async () => {
                     }
                 });
             }),
-            // Stop Queue Producer
             async () => { await queueManager.shutdown(); }
         ]);
+
+        // 3. CONNECT SERVICES IN BACKGROUND
+        // We do this AFTER listening so the app assumes "Ready" state quickly.
+        logger.info('⏳ Connecting to Database & Queue...');
+        
+        await dbLoader.connect(); 
+        await queueManager.initialize();
 
     } catch (err) {
         if (err instanceof Error) {
