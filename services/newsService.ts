@@ -6,10 +6,13 @@ import apiClient from '../utils/apiClient';
 import redisClient from '../utils/redisClient';
 import config from '../utils/config';
 import CircuitBreaker from '../utils/CircuitBreaker'; 
-import { cleanText, formatHeadline, normalizeUrl } from '../utils/helpers';
+import { normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle, INewsAPIResponse } from '../types';
 import Article from '../models/articleModel';
-import { FETCH_CYCLES, CONSTANTS, TRUSTED_SOURCES, JUNK_KEYWORDS } from '../utils/constants';
+import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
+
+// NEW: Import the centralized processor
+import articleProcessor from './articleProcessor';
 
 class NewsService {
   constructor() {
@@ -80,18 +83,18 @@ class NewsService {
       }
     }
 
-    // 3. RACE CONDITION FIX: Filter Seen AND Lock Processing
-    // Checks Redis for existing AND reserves new ones instantly
+    // 3. REDIS LOCK: Filter Seen AND Lock Processing
+    // Prevents multiple workers from grabbing the same URL simultaneously
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
 
-    // 4. Database Check (Disk I/O)
+    // 4. DB CHECK: Filter articles already persisted
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
 
-    // 5. Clean, Score, and Deduplicate
-    const finalUnique = this.removeDuplicatesAndClean(dbUnseenArticles);
+    // 5. PROCESS: Clean, Score, and Deduplicate (Fuzzy & Exact)
+    // Delegated to the new robust processor
+    const finalUnique = articleProcessor.processBatch(dbUnseenArticles);
     
-    // 6. Mark accepted articles as permanently "Seen" in Redis
-    // This extends the short "processing" lock to a long "seen" cache
+    // 6. REDIS PERSIST: Mark accepted articles as "Seen"
     await this.markAsSeenInRedis(finalUnique);
 
     await this.advanceCycle();
@@ -107,14 +110,9 @@ class NewsService {
     return `${CONSTANTS.REDIS_KEYS.NEWS_SEEN_PREFIX}${hash}`;
   }
 
-  /**
-   * ATOMIC LOCKING
-   * Checks if article exists. If not, sets a temporary "processing" lock.
-   * If lock acquisition fails, it means another worker is already on it.
-   */
   private async filterSeenOrProcessing(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
     if (articles.length === 0) return [];
-    if (!redisClient.isReady()) return articles; // Fail open if Redis down
+    if (!redisClient.isReady()) return articles; 
 
     const client = redisClient.getClient();
     if (!client) return articles;
@@ -127,21 +125,17 @@ class NewsService {
         
         try {
             // SET key "processing" Only If Not Exists (NX)
-            // Expires in 10 minutes (600s) to auto-release if worker crashes
             const result = await client.set(key, 'processing', { 
                 NX: true, 
-                EX: 600 
+                EX: 600 // 10 mins lock
             });
 
             if (result === 'OK') {
-                // We successfully acquired the lock
                 unique.push(article);
             } else {
-                // It was already there (Seen or Processing)
                 blockedCount++;
             }
         } catch (e) {
-            // If Redis errors, include safe default
             unique.push(article);
         }
     }
@@ -163,7 +157,7 @@ class NewsService {
               const multi = client.multi();
               for (const article of articles) {
                   const key = this.getRedisKey(article.url);
-                  // Overwrite 'processing' with '1' and long TTL (48h)
+                  // 48h TTL
                   multi.set(key, '1', { EX: 172800 }); 
               }
               await multi.exec();
@@ -184,6 +178,8 @@ class NewsService {
       
       return articles.filter(a => !existingUrls.has(a.url));
   }
+
+  // --- API FETCHERS ---
 
   private async fetchFromGNews(params: any): Promise<INewsSourceArticle[]> {
     const apiKey = await KeyManager.getKey('GNEWS');
@@ -220,54 +216,6 @@ class NewsService {
           image: a.image || a.urlToImage, 
           publishedAt: a.publishedAt || new Date().toISOString()
       }));
-  }
-
-  private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
-    const seenUrls = new Set<string>();
-    const seenTitles = new Set<string>();
-    
-    const scoredArticles = articles.map(a => {
-        let score = 0;
-        const titleLower = (a.title || "").toLowerCase();
-        const sourceLower = (a.source.name || "").toLowerCase();
-
-        // Scoring Logic
-        if (a.image && a.image.startsWith('http')) score += 2;
-        else score -= 10; 
-        if (a.title && a.title.length > 40) score += 1;
-        if (TRUSTED_SOURCES.some(src => sourceLower.includes(src))) score += 3;
-        if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) score -= 20;
-
-        return { article: a, score };
-    }).sort((a, b) => b.score - a.score); 
-
-    const uniqueArticles: INewsSourceArticle[] = [];
-
-    for (const item of scoredArticles) {
-        const article = item.article;
-
-        if (item.score < -5) continue;
-
-        article.title = formatHeadline(article.title);
-        article.description = cleanText(article.description || "");
-
-        if (!article.title || !article.url) continue;
-        if (article.title.length < 25) continue; 
-        if (article.title === "No Title") continue;
-        if (!article.description || article.description.length < 50) continue; 
-
-        const url = article.url;
-        if (seenUrls.has(url)) continue;
-
-        const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (seenTitles.has(cleanTitle)) continue;
-        
-        seenUrls.add(url);
-        seenTitles.add(cleanTitle);
-        uniqueArticles.push(article);
-    }
-
-    return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
 
