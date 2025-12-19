@@ -98,7 +98,7 @@ class AIService {
     } else {
         logger.warn("⚠️ No Gemini API Key found in config");
     }
-    logger.info(\`🤖 AI Service Initialized (Quality: \${CONSTANTS.AI_MODELS.QUALITY})\`);
+    logger.info(`🤖 AI Service Initialized (Quality: ${CONSTANTS.AI_MODELS.QUALITY})`);
   }
 
   /**
@@ -136,7 +136,7 @@ class AIService {
           
           const partC = clean.substring(clean.length - keepOutro);
           
-          return \`\${partA}\\n\\n[...Timeline Skipped...]\\n\\n\${partB}\\n\\n[...Details Skipped...]\\n\\n\${partC}\`;
+          return `${partA}\n\n[...Timeline Skipped...]\n\n${partB}\n\n[...Details Skipped...]\n\n${partC}`;
       }
 
       return clean;
@@ -167,13 +167,13 @@ class AIService {
       
       // Cost Control: Skip if content is ghost-thin
       if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
-          logger.warn(\`Skipping AI analysis: Content too short (\${optimizedArticle.summary.length} chars)\`);
+          logger.warn(`Skipping AI analysis: Content too short (${optimizedArticle.summary.length} chars)`);
           return this.getFallbackAnalysis(article);
       }
 
       const prompt = await promptManager.getAnalysisPrompt(optimizedArticle, mode);
       
-      const url = \`https://generativelanguage.googleapis.com/v1beta/models/\${targetModel}:generateContent?key=\${apiKey}\`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
       // 2. Call API with Strict Schema
       const response = await apiClient.post<IGeminiResponse>(url, {
@@ -228,11 +228,11 @@ class AIService {
             
             await Promise.all(parallelBatch.map(async (chunk) => {
                 const requests = chunk.map(item => ({
-                    model: \`models/\${EMBEDDING_MODEL}\`,
+                    model: `models/${EMBEDDING_MODEL}`,
                     content: { parts: [{ text: item.text }] }
                 }));
 
-                const url = \`https://generativelanguage.googleapis.com/v1beta/models/\${EMBEDDING_MODEL}:batchEmbedContents?key=\${apiKey}\`;
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
                 
                 try {
                     const response = await apiClient.post<{ embeddings?: { values: number[] }[] }>(url, { requests }, { timeout: 45000 });
@@ -244,7 +244,7 @@ class AIService {
                         });
                     }
                 } catch (err: any) {
-                    logger.warn(\`Partial Batch Failure: \${err.message}\`);
+                    logger.warn(`Partial Batch Failure: ${err.message}`);
                 }
             }));
         }
@@ -255,7 +255,7 @@ class AIService {
         return allEmbeddings.filter(e => e.length > 0);
 
     } catch (error: any) {
-        logger.error(\`Batch Embedding Error: \${error.message}\`);
+        logger.error(`Batch Embedding Error: ${error.message}`);
         await CircuitBreaker.recordFailure('GEMINI');
         return null;
     }
@@ -268,10 +268,10 @@ class AIService {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
         const clean = cleanText(text).substring(0, 2000);
-        const url = \`https://generativelanguage.googleapis.com/v1beta/models/\${EMBEDDING_MODEL}:embedContent?key=\${apiKey}\`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
         
         const response = await apiClient.post<{ embedding: { values: number[] } }>(url, {
-            model: \`models/\${EMBEDDING_MODEL}\`,
+            model: `models/${EMBEDDING_MODEL}`,
             content: { parts: [{ text: clean }] }
         }, { timeout: 10000 });
 
@@ -279,7 +279,7 @@ class AIService {
         return response.data.embedding.values;
 
     } catch (error: any) {
-        logger.error(\`Embedding Error: \${error.message}\`);
+        logger.error(`Embedding Error: ${error.message}`);
         return null; 
     }
   }
@@ -321,13 +321,13 @@ class AIService {
         }
 
     } catch (error: any) {
-        logger.error(\`AI Parse/Validation Error: \${error.message}\`);
+        logger.error(`AI Parse/Validation Error: ${error.message}`);
         if (mode === 'Full') {
              logger.warn("Attempting Basic Fallback due to parsing error...");
              // Updated: Pass original article so we don't lose the summary in the fallback
              return this.getFallbackAnalysis(originalArticle);
         }
-        throw new AppError(\`Failed to parse AI response: \${error.message}\`, 502);
+        throw new AppError(`Failed to parse AI response: ${error.message}`, 502);
     }
   }
 
@@ -336,7 +336,7 @@ class AIService {
       const msg = error.message || '';
 
       if (status === 429 || msg.includes('429') || msg.includes('Quota') || msg.includes('RESOURCE_EXHAUSTED')) {
-           logger.warn(\`🛑 Gemini Quota Exceeded (Key: ...\${apiKey.slice(-4)}). Pausing.\`);
+           logger.warn(`🛑 Gemini Quota Exceeded (Key: ...${apiKey.slice(-4)}). Pausing.`);
            throw new AppError('AI Service Quota Exceeded', 429);
       }
       
@@ -346,7 +346,7 @@ class AIService {
           throw new AppError('AI Service Unavailable', 503); 
       }
 
-      logger.error(\`❌ AI Critical Failure: \${error.message}\`);
+      logger.error(`❌ AI Critical Failure: ${error.message}`);
   }
 
   private getFallbackAnalysis(article: Partial<IArticle>): Partial<IArticle> {
