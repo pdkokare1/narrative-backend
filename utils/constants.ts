@@ -25,10 +25,10 @@ export const CONSTANTS = {
     TTL_SHORT: 300,    // 5 mins
     
     // Specific Use Cases
-    TTL_TRENDING: 1800, // 30 mins (Trending doesn't change instantly)
-    TTL_FEED: 300,      // 5 mins (Main feed)
-    TTL_SEARCH: 600,    // 10 mins (Common searches like "Election")
-    TTL_PERSONAL: 900,  // 15 mins (My Mix/For You)
+    TTL_TRENDING: 1800, // 30 mins
+    TTL_FEED: 300,      // 5 mins
+    TTL_SEARCH: 600,    // 10 mins
+    TTL_PERSONAL: 900,  // 15 mins
   },
   
   // Timeouts (Standardized)
@@ -38,8 +38,8 @@ export const CONSTANTS = {
 
   // AI Configuration
   AI_MODELS: {
-    FAST: "gemini-2.5-flash", // For Gatekeeper & Quick Checks
-    QUALITY: "gemini-2.5-pro", // For Deep Analysis
+    FAST: "gemini-2.0-flash", // For Gatekeeper & Quick Checks
+    QUALITY: "gemini-2.0-pro", // For Deep Analysis
     EMBEDDING: "text-embedding-004"
   },
 
@@ -54,11 +54,11 @@ export const CONSTANTS = {
     GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_',
     TRENDING: 'trending_topics_smart',
     NEWS_CYCLE: 'news:fetch_cycle',
+    NEWS_SEEN_PREFIX: 'news:seen:', // Added for NewsService
   }
 };
 
 // --- NEWS FETCH CYCLES ---
-// Controls which regions/topics we rotate through to keep content diverse
 export const FETCH_CYCLES = [
     { name: 'US-Focus', gnews: { country: 'us' }, newsapi: { country: 'us' } },
     { name: 'IN-Focus', gnews: { country: 'in' }, newsapi: { country: 'in' } },
