@@ -27,7 +27,7 @@ class DbLoader {
         }
 
         // --- PARALLEL LOADING START ---
-        // We trigger both connections at the same time.
+        // We trigger both connections at the same time for faster startup.
         
         const mongoPromise = this.connectMongo();
         
