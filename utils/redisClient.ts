@@ -10,13 +10,17 @@ let isHealthy = false;
 // Anti-Stampede: Tracks in-flight fetch requests for getOrFetch
 const pendingFetches = new Map<string, Promise<any>>();
 
+/**
+ * Initialize Redis Connection
+ * Designed to be called by dbLoader.ts
+ */
 export const initRedis = async (): Promise<RedisClientType | null> => {
     // 1. Return existing client if ready
     if (client && (client.isOpen || client.isReady)) {
         return client;
     }
 
-    // 2. Return existing promise if initialization is in progress
+    // 2. Return existing promise if initialization is in progress (Singleton)
     if (connectionPromise) {
         return connectionPromise;
     }
@@ -39,29 +43,38 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
                 ...clientConfig,
                 socket: {
                     ...((clientConfig as any).socket || {}),
+                    // Railway/Cloud Resilience:
+                    // Reconnect aggressively but back off to prevent spamming
                     reconnectStrategy: (retries) => {
-                        // Exponential backoff: 100ms, 200ms, ... max 5000ms
-                        return Math.min(retries * 100, 5000);
+                        if (retries > 20) {
+                             logger.error("❌ Redis: Max Retries Reached. Waiting 5s...");
+                             return 5000;
+                        }
+                        return Math.min(retries * 100, 3000);
                     },
-                    connectTimeout: 10000, 
-                    keepAlive: 10000 
+                    connectTimeout: 15000, 
+                    keepAlive: 15000 
                 }
             });
 
             newClient.on('error', (err) => {
                 isHealthy = false;
-                // suppress repetitive connection refused logs during startup/outages
-                if (!err.message.includes('ECONNREFUSED') && !err.message.includes('Socket closed')) {
-                    logger.warn(`Redis Client Warning: ${err.message}`);
+                // Suppress noisy logs during startup or shutdowns
+                if (err.message.includes('ECONNREFUSED') || err.message.includes('Socket closed')) {
+                    // Only log if it persists
+                    return; 
                 }
+                logger.warn(`Redis Client Warning: ${err.message}`);
             });
 
             newClient.on('connect', () => {
-                // Connected but not yet ready to accept commands
+                // Connecting...
             });
             
             newClient.on('ready', () => {
-                logger.info('✅ Redis Client Ready & Connected');
+                if (!isHealthy) {
+                    logger.info('✅ Redis Client Ready & Connected');
+                }
                 isHealthy = true;
             });
 
@@ -159,6 +172,7 @@ const redisClient = {
         }
 
         // 2. Anti-Stampede (Deduplicate)
+        // If 50 users ask for "Top News" at once, only ONE request goes to DB.
         if (pendingFetches.has(key)) {
             return pendingFetches.get(key) as Promise<T>;
         }
