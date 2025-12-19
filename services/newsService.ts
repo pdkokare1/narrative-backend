@@ -13,31 +13,22 @@ import { FETCH_CYCLES, CONSTANTS, TRUSTED_SOURCES, JUNK_KEYWORDS } from '../util
 
 class NewsService {
   constructor() {
-    // Initialize Keys from Central Config
     KeyManager.registerProviderKeys('GNEWS', config.keys.gnews);
     KeyManager.registerProviderKeys('NEWS_API', config.keys.newsApi);
     logger.info(`📰 News Service Initialized`);
   }
 
-  /**
-   * Retrieves the current cycle index from Redis.
-   */
   private async getCycleIndex(): Promise<number> {
       const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
       if (redisClient.isReady()) {
           try {
               const stored = await redisClient.get(redisKey);
               return stored ? parseInt(stored, 10) : 0;
-          } catch (e) {
-              return 0;
-          }
+          } catch (e) { return 0; }
       }
       return 0;
   }
 
-  /**
-   * Advances the cycle index to the next one (Round Robin)
-   */
   private async advanceCycle(): Promise<void> {
       const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
       const current = await this.getCycleIndex();
@@ -58,26 +49,24 @@ class NewsService {
     
     logger.info(`🔄 News Fetch Cycle: ${currentCycle.name} (Index: ${cycleIndex})`);
 
-    // 1. Try GNews First (Primary)
+    // 1. Try GNews First
     try {
         const gnewsArticles = await this.fetchFromGNews(currentCycle.gnews);
         allArticles.push(...gnewsArticles);
     } catch (err: any) {
         logger.warn(`GNews fetch failed: ${err.message}`);
-        
-        // IMMEDIATE RETRY LOGIC: If we hit a Rate Limit (429), advance cycle immediately
         if (err.response?.status === 429) {
-            logger.warn("⚠️ GNews Limit Reached. Advancing cycle for next run.");
+            logger.warn("⚠️ GNews Limit Reached. Advancing cycle.");
             await this.advanceCycle();
         }
     }
 
-    // 2. Fallback to NewsAPI (Secondary with Circuit Breaker)
+    // 2. Fallback to NewsAPI
     if (allArticles.length < 5) {
       const isNewsApiOpen = await CircuitBreaker.isOpen('NEWS_API');
       
       if (isNewsApiOpen) {
-          logger.info('⚠️ Low yield from GNews, triggering NewsAPI fallback...');
+          logger.info('⚠️ Low yield, triggering NewsAPI fallback...');
           try {
               const newsApiArticles = await this.fetchFromNewsAPI(currentCycle.newsapi);
               allArticles.push(...newsApiArticles);
@@ -88,25 +77,23 @@ class NewsService {
                    await CircuitBreaker.recordFailure('NEWS_API');
               }
           }
-      } else {
-          logger.warn('🚫 NewsAPI Circuit Breaker is OPEN. Skipping fallback.');
       }
     }
 
-    // 3. Early Redis "Bouncer" Check (Cheap & Fast)
-    const potentialNewArticles = await this.filterSeenInRedis(allArticles);
+    // 3. RACE CONDITION FIX: Filter Seen AND Lock Processing
+    // Checks Redis for existing AND reserves new ones instantly
+    const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
 
-    // 4. IMPROVED: Database Check (Disk I/O)
-    // We check the DB *before* the expensive cleaning process to save CPU.
+    // 4. Database Check (Disk I/O)
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
 
-    // 5. Clean, Score, and Deduplicate (CPU Intensive)
+    // 5. Clean, Score, and Deduplicate
     const finalUnique = this.removeDuplicatesAndClean(dbUnseenArticles);
     
-    // 6. Mark accepted articles as "Seen" in Redis
+    // 6. Mark accepted articles as permanently "Seen" in Redis
+    // This extends the short "processing" lock to a long "seen" cache
     await this.markAsSeenInRedis(finalUnique);
 
-    // 7. Auto-Advance Cycle if we are cycling through categories
     await this.advanceCycle();
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
@@ -117,33 +104,53 @@ class NewsService {
 
   private getRedisKey(url: string): string {
     const hash = crypto.createHash('md5').update(url).digest('hex');
-    // CENTRALIZED KEY PREFIX
     return `${CONSTANTS.REDIS_KEYS.NEWS_SEEN_PREFIX}${hash}`;
   }
 
-  private async filterSeenInRedis(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
+  /**
+   * ATOMIC LOCKING
+   * Checks if article exists. If not, sets a temporary "processing" lock.
+   * If lock acquisition fails, it means another worker is already on it.
+   */
+  private async filterSeenOrProcessing(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
     if (articles.length === 0) return [];
-    
-    const unseen: INewsSourceArticle[] = [];
-    const keys = articles.map(a => this.getRedisKey(a.url)); 
-    const results = await redisClient.mGet(keys);
-    
-    let skippedCount = 0;
+    if (!redisClient.isReady()) return articles; // Fail open if Redis down
 
-    for (let i = 0; i < articles.length; i++) {
-        // If result is null/undefined, it's not in Redis (Unseen)
-        if (!results[i]) {
-            unseen.push(articles[i]);
-        } else {
-            skippedCount++;
+    const client = redisClient.getClient();
+    if (!client) return articles;
+
+    const unique: INewsSourceArticle[] = [];
+    let blockedCount = 0;
+
+    for (const article of articles) {
+        const key = this.getRedisKey(article.url);
+        
+        try {
+            // SET key "processing" Only If Not Exists (NX)
+            // Expires in 10 minutes (600s) to auto-release if worker crashes
+            const result = await client.set(key, 'processing', { 
+                NX: true, 
+                EX: 600 
+            });
+
+            if (result === 'OK') {
+                // We successfully acquired the lock
+                unique.push(article);
+            } else {
+                // It was already there (Seen or Processing)
+                blockedCount++;
+            }
+        } catch (e) {
+            // If Redis errors, include safe default
+            unique.push(article);
         }
     }
 
-    if (skippedCount > 0) {
-        logger.info(`🚫 Redis blocked ${skippedCount} duplicate articles.`);
+    if (blockedCount > 0) {
+        logger.info(`🚫 Redis blocked ${blockedCount} duplicates/processing articles.`);
     }
     
-    return unseen;
+    return unique;
   }
 
   private async markAsSeenInRedis(articles: INewsSourceArticle[]) {
@@ -156,7 +163,8 @@ class NewsService {
               const multi = client.multi();
               for (const article of articles) {
                   const key = this.getRedisKey(article.url);
-                  multi.set(key, '1', { EX: 172800 }); // 48 hours
+                  // Overwrite 'processing' with '1' and long TTL (48h)
+                  multi.set(key, '1', { EX: 172800 }); 
               }
               await multi.exec();
           } catch (e: any) {
@@ -171,7 +179,6 @@ class NewsService {
       if (articles.length === 0) return [];
       
       const urls = articles.map(a => a.url);
-      // Use .select('url').lean() for maximum speed
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
       const existingUrls = new Set(existingDocs.map((d: any) => d.url));
       
@@ -215,10 +222,6 @@ class NewsService {
       }));
   }
 
-  /**
-   * ENHANCED SCORING & DEDUPLICATION (PRE-FLIGHT CHECK)
-   * This is where we save money by filtering out trash before AI analysis.
-   */
   private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
     const seenUrls = new Set<string>();
     const seenTitles = new Set<string>();
@@ -228,48 +231,34 @@ class NewsService {
         const titleLower = (a.title || "").toLowerCase();
         const sourceLower = (a.source.name || "").toLowerCase();
 
-        // 1. Image Signal (+2) - Critical for Frontend
+        // Scoring Logic
         if (a.image && a.image.startsWith('http')) score += 2;
-        else score -= 10; // Penalize no-image articles heavily (we want a visual feed)
-
-        // 2. Length Signal (+1)
+        else score -= 10; 
         if (a.title && a.title.length > 40) score += 1;
-
-        // 3. Trusted Source Signal (+3)
-        if (TRUSTED_SOURCES.some(src => sourceLower.includes(src))) {
-            score += 3;
-        }
-
-        // 4. Junk/Clickbait Penalty (-5)
-        if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) {
-            score -= 20; // Massive penalty for junk
-        }
+        if (TRUSTED_SOURCES.some(src => sourceLower.includes(src))) score += 3;
+        if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) score -= 20;
 
         return { article: a, score };
-    }).sort((a, b) => b.score - a.score); // Sort highest score first
+    }).sort((a, b) => b.score - a.score); 
 
     const uniqueArticles: INewsSourceArticle[] = [];
 
     for (const item of scoredArticles) {
         const article = item.article;
 
-        // PRE-FLIGHT CHECKS:
-        // A. Score too low (likely junk or no image)
         if (item.score < -5) continue;
 
         article.title = formatHeadline(article.title);
         article.description = cleanText(article.description || "");
 
-        // B. Data Integrity Checks
         if (!article.title || !article.url) continue;
-        if (article.title.length < 25) continue; // Skip very short titles
+        if (article.title.length < 25) continue; 
         if (article.title === "No Title") continue;
-        if (!article.description || article.description.length < 50) continue; // Skip empty/tiny descriptions
+        if (!article.description || article.description.length < 50) continue; 
 
         const url = article.url;
         if (seenUrls.has(url)) continue;
 
-        // C. Fuzzy Title Match (Deduplication)
         const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
         if (seenTitles.has(cleanTitle)) continue;
         
@@ -278,7 +267,6 @@ class NewsService {
         uniqueArticles.push(article);
     }
 
-    // Return most recent first
     return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
