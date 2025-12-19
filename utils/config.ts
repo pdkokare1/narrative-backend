@@ -50,7 +50,7 @@ const envSchema = z.object({
   
   // AI Model Configuration
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
-  AI_MODEL_PRO: z.string().default('gemini-2.0-flash'),
+  AI_MODEL_PRO: z.string().default('gemini-2.5-pro'), // Updated to 2.5 Pro
 
   // Firebase
   FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
