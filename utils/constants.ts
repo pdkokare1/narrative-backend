@@ -19,10 +19,16 @@ export const CONSTANTS = {
     SEMANTIC_AGE_HOURS: 24, // If a similar article is older than this, re-analyze it
   },
 
-  // Cache Settings
+  // Cache Settings & TTLs (Time To Live in Seconds)
   CACHE: {
-    TTL_DEFAULT: 900, // 15 mins (in seconds)
-    TTL_SHORT: 300,   // 5 mins
+    TTL_DEFAULT: 900,  // 15 mins
+    TTL_SHORT: 300,    // 5 mins
+    
+    // Specific Use Cases
+    TTL_TRENDING: 1800, // 30 mins (Trending doesn't change instantly)
+    TTL_FEED: 300,      // 5 mins (Main feed)
+    TTL_SEARCH: 600,    // 10 mins (Common searches like "Election")
+    TTL_PERSONAL: 900,  // 15 mins (My Mix/For You)
   },
   
   // Timeouts (Standardized)
