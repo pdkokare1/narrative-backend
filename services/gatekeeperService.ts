@@ -1,7 +1,4 @@
-{
-type: "file",
-fileName: "pdkokare1/narrative-backend/narrative-backend-200417e7ce8ef5718aa5faa40dac94157230de0b/services/gatekeeperService.ts",
-fullContent: `// services/gatekeeperService.ts
+// services/gatekeeperService.ts
 import { jsonrepair } from 'jsonrepair';
 import KeyManager from '../utils/KeyManager';
 import redis from '../utils/redisClient'; 
@@ -205,5 +202,4 @@ class GatekeeperService {
     }
 }
 
-export default new GatekeeperService();`
-}
+export default new GatekeeperService();
