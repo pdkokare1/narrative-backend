@@ -96,17 +96,18 @@ class NewsService {
     // 3. Early Redis "Bouncer" Check (Cheap & Fast)
     const potentialNewArticles = await this.filterSeenInRedis(allArticles);
 
-    // 4. Clean, Score, and Deduplicate (CPU Intensive)
-    const cleaned = this.removeDuplicatesAndClean(potentialNewArticles);
-    
-    // 5. Database Deduplication (Disk I/O)
-    const finalUnique = await this.filterExistingInDB(cleaned);
+    // 4. IMPROVED: Database Check (Disk I/O) - MOVED UP
+    // We check the DB *before* the expensive cleaning process to save CPU.
+    const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
 
+    // 5. Clean, Score, and Deduplicate (CPU Intensive)
+    // Now we only clean articles that are confirmed to be new to the DB.
+    const finalUnique = this.removeDuplicatesAndClean(dbUnseenArticles);
+    
     // 6. Mark accepted articles as "Seen" in Redis
     await this.markAsSeenInRedis(finalUnique);
 
     // 7. Auto-Advance Cycle if we are cycling through categories
-    // (Optional: Only if you want to rotate topics every fetch)
     await this.advanceCycle();
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
