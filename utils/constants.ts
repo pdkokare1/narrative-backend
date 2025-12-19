@@ -1,7 +1,4 @@
-{
-type: "file",
-fileName: "pdkokare1/narrative-backend/narrative-backend-200417e7ce8ef5718aa5faa40dac94157230de0b/utils/constants.ts",
-fullContent: `// utils/constants.ts
+// utils/constants.ts
 
 export const ONE_MINUTE = 60 * 1000;
 export const FIFTEEN_MINUTES = 15 * 60 * 1000;
@@ -139,5 +136,4 @@ export const JUNK_KEYWORDS = [
     // Administrative / Paywall Trash
     'subscribe now', 'sign up', 'newsletter', 'login', 'register',
     'have an account?', 'exclusive content', 'premium', 'giveaway'
-];`
-}
+];
