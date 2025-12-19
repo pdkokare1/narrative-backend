@@ -19,6 +19,7 @@ const rules = {
     // Pagination & Limits
     limit: z.coerce.number().min(1).max(100).default(12),
     page: z.coerce.number().min(1).default(1),
+    offset: z.coerce.number().min(0).default(0), // Added offset support
 };
 
 /**
@@ -33,7 +34,6 @@ export const BasicAnalysisSchema = z.object({
 });
 
 // Detailed Component Schemas for Deep Analysis
-// These define the shape of the nested objects Gemini returns
 const MetricComponentSchema = z.object({
     sentimentPolarity: z.number().optional(), 
     emotionalLanguage: z.number().optional(), 
@@ -68,27 +68,26 @@ export const FullAnalysisSchema = z.object({
   
   // Primary Scores
   biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  biasLabel: z.string().optional(), // NEW: Capture the text label (e.g., "Left Leaning")
+  biasLabel: z.string().optional(),
   
   credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  credibilityGrade: z.string().optional(), // NEW
+  credibilityGrade: z.string().optional(),
   
   reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  reliabilityGrade: z.string().optional(), // NEW
+  reliabilityGrade: z.string().optional(),
   
-  trustLevel: z.string().optional(), // NEW: e.g., "High", "Medium", "Low"
+  trustLevel: z.string().optional(),
   
   // Metadata & Taxonomy
   clusterTopic: z.string().optional(),
-  country: z.string().optional(), // NEW: Vital for filtering news by region
+  country: z.string().optional(),
   primaryNoun: z.string().optional(),
   secondaryNoun: z.string().optional(),
   
   keyFindings: z.array(z.string()).optional().default([]),
   recommendations: z.array(z.string()).optional().default([]),
 
-  // Complex Analysis Objects (Crucial for Narrative Frontend)
-  // These were previously being stripped out
+  // Complex Analysis Objects
   biasComponents: z.object({
       linguistic: MetricComponentSchema.optional(),
       sourceSelection: SourceComponentSchema.optional(),
@@ -159,6 +158,7 @@ const schemas = {
         query: z.object({
             q: z.string().trim().optional(),
             limit: rules.limit,
+            offset: rules.offset, // Added offset here
             // Filters
             category: z.string().optional(),
             politicalLean: z.string().optional()
@@ -169,7 +169,8 @@ const schemas = {
     feedFilters: z.object({
         query: z.object({
             limit: rules.limit,
-            cursor: z.string().optional(), // For infinite scroll
+            offset: rules.offset, // Added offset here to fix 400 error
+            cursor: z.string().optional(), // Kept for backward compatibility
             category: z.string().optional(),
             politicalLean: z.string().optional(),
             country: z.string().optional(),
