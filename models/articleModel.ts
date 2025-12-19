@@ -106,8 +106,8 @@ articleSchema.index({ clusterId: 1, publishedAt: -1 });
 // D. "Regional News": Filter by Country + Category + Date
 articleSchema.index({ country: 1, category: 1, publishedAt: -1 });
 
-// E. "Viral/Trending": Recent articles with high trust and bias score (Controversial but trusted)
-articleSchema.index({ publishedAt: -1, trustScore: -1, biasScore: -1 });
+// E. "Viral/Trending" - DISABLED FOR PERFORMANCE (Too heavy)
+// articleSchema.index({ publishedAt: -1, trustScore: -1, biasScore: -1 });
 
 // F. "Duplicate Check": Optimizes the pipeline's duplicate check
 articleSchema.index({ url: 1 }, { unique: true });
