@@ -72,7 +72,7 @@ class TTSService {
         try {
             const response = await axios.post(url, {
                 text: safeText,
-                model_id: "eleven_turbo_v2",
+                model_id: "eleven_turbo_v2_5", // Updated to v2.5 for lower latency & better quality
                 voice_settings: {
                     stability: 0.50,       
                     similarity_boost: 0.75, 
