@@ -15,10 +15,22 @@ import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSche
 
 // Centralized Config
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
-const PRO_MODEL = CONSTANTS.AI_MODELS.QUALITY;
 
-// Strict JSON Schema for Gemini
-const GEMINI_JSON_SCHEMA = {
+// --- STRICT JSON SCHEMAS ---
+// These define exactly what Gemini MUST return. 
+// This replaces the old method of "hoping" it returns valid JSON.
+
+const BASIC_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    summary: { type: "STRING" },
+    category: { type: "STRING" },
+    sentiment: { type: "STRING", enum: ["Positive", "Negative", "Neutral"] }
+  },
+  required: ["summary", "category", "sentiment"]
+};
+
+const FULL_SCHEMA = {
   type: "OBJECT",
   properties: {
     summary: { type: "STRING" },
@@ -32,7 +44,7 @@ const GEMINI_JSON_SCHEMA = {
     keyFindings: { type: "ARRAY", items: { type: "STRING" } },
     recommendations: { type: "ARRAY", items: { type: "STRING" } }
   },
-  required: ["summary", "category", "politicalLean", "sentiment"]
+  required: ["summary", "category", "politicalLean", "sentiment", "biasScore", "credibilityScore"]
 };
 
 class AIService {
@@ -42,18 +54,20 @@ class AIService {
     } else {
         logger.warn("⚠️ No Gemini API Key found in config");
     }
-    logger.info(`🤖 AI Service Initialized (Model: ${PRO_MODEL})`);
+    logger.info(`🤖 AI Service Initialized (Quality: ${CONSTANTS.AI_MODELS.QUALITY})`);
   }
 
   /**
-   * Smart Context Truncator
-   * Saves money by ensuring we don't send massive texts.
-   * Prioritizes the "Lead" (First 30%) and "Conclusion" (Last 20%).
+   * ⚡ Smart Context Optimization (Token Saver)
+   * Instead of blindly cutting the middle, this preserves the structure:
+   * 1. Intro (First 25%): Essential for context/who/what.
+   * 2. Middle (Sampled): Takes a slice from the exact middle to catch developments.
+   * 3. Outro (Last 20%): Essential for conclusion/impact.
    */
   private optimizeTextForTokenLimits(text: string): string {
       let clean = cleanText(text);
 
-      // 1. Remove standard boilerplate
+      // 1. Remove standard boilerplate (Marketing/Legal)
       const junkPhrases = [
           "Subscribe to continue reading", "Read more", "Sign up for our newsletter",
           "Follow us on", "© 2023", "© 2024", "© 2025", "All rights reserved",
@@ -63,44 +77,31 @@ class AIService {
           clean = clean.replace(new RegExp(phrase, 'gi'), '');
       });
 
-      // 2. Strict Cost Control Check
       const MAX_CHARS = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 12000;
       
       if (clean.length > MAX_CHARS) {
-          // Smart Slice: Keep first 60%, Skip middle, Keep last 20%
-          // This preserves the Intro (Who/What) and the Conclusion (Why/Impact)
-          const keepStart = Math.floor(MAX_CHARS * 0.6);
-          const keepEnd = Math.floor(MAX_CHARS * 0.2);
+          const keepIntro = Math.floor(MAX_CHARS * 0.25);
+          const keepOutro = Math.floor(MAX_CHARS * 0.20);
+          const keepMiddle = Math.floor(MAX_CHARS * 0.15); // Sample a core section
           
-          const partA = clean.substring(0, keepStart);
-          const partB = clean.substring(clean.length - keepEnd);
+          const partA = clean.substring(0, keepIntro);
           
-          return `${partA}\n\n[...Content Truncated for Analysis...]\n\n${partB}`;
+          // Smart Middle Sample: Grab a chunk from the mathematical center of the text
+          const midPoint = Math.floor(clean.length / 2);
+          const partB = clean.substring(midPoint - (keepMiddle / 2), midPoint + (keepMiddle / 2));
+          
+          const partC = clean.substring(clean.length - keepOutro);
+          
+          return `${partA}\n\n[...Timeline Skipped...]\n\n${partB}\n\n[...Details Skipped...]\n\n${partC}`;
       }
 
       return clean;
   }
 
   /**
-   * Helper: Strips Markdown code blocks from JSON strings.
-   * Gemini often returns: ```json { ... } ``` which breaks JSON.parse()
+   * Analyzes an article using Generative AI (Strict Mode)
    */
-  private cleanJsonOutput(text: string): string {
-      if (!text) return "{}";
-      
-      // Remove markdown code blocks
-      let clean = text.replace(/```json/g, '').replace(/```/g, '');
-      
-      // Trim whitespace
-      clean = clean.trim();
-      
-      return clean;
-  }
-
-  /**
-   * Analyzes an article using the Generative AI Model
-   */
-  async analyzeArticle(article: Partial<IArticle>, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
+  async analyzeArticle(article: Partial<IArticle>, targetModel: string = CONSTANTS.AI_MODELS.QUALITY, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
     
     // 1. Circuit Breaker Check
@@ -120,7 +121,7 @@ class AIService {
           headline: article.headline ? cleanText(article.headline) : ""
       };
       
-      // If content is too thin, skip analysis (Save Money)
+      // Cost Control: Skip if content is ghost-thin
       if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
           logger.warn(`Skipping AI analysis: Content too short (${optimizedArticle.summary.length} chars)`);
           return this.getFallbackAnalysis(article);
@@ -130,12 +131,13 @@ class AIService {
       
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
+      // 2. Call API with Strict Schema
       const response = await apiClient.post<IGeminiResponse>(url, {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          responseMimeType: "application/json", // STRICT JSON MODE
-          responseSchema: mode === 'Basic' ? undefined : GEMINI_JSON_SCHEMA, 
-          temperature: 0.1, 
+          responseMimeType: "application/json", 
+          responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
+          temperature: 0.1, // Low temp for factual consistency
           maxOutputTokens: 4096 
         }
       }, { timeout: 60000 });
@@ -245,12 +247,11 @@ class AIService {
             throw new AppError('AI returned no candidates', 502);
         }
         
+        // Gemini 2.5 + Structured Output returns clean JSON text directly.
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        // FIX: Sanitize markdown before parsing
-        const cleanJson = this.cleanJsonOutput(rawText);
-        const parsedRaw = JSON.parse(cleanJson);
+        const parsedRaw = JSON.parse(rawText);
 
         let validated;
         if (mode === 'Basic') {
@@ -264,6 +265,7 @@ class AIService {
         } else {
             validated = FullAnalysisSchema.parse(parsedRaw);
             
+            // Calculate derivative scores
             const trustScore = Math.round(Math.sqrt(validated.credibilityScore * validated.reliabilityScore));
             
             return {
