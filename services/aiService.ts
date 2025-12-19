@@ -121,7 +121,8 @@ class AIService {
           clean = clean.replace(new RegExp(phrase, 'gi'), '');
       });
 
-      const MAX_CHARS = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 32000;
+      // Updated for Gemini 2.5: Increased fallback limit to 300k chars
+      const MAX_CHARS = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 300000;
       
       if (clean.length > MAX_CHARS) {
           const keepIntro = Math.floor(MAX_CHARS * 0.25);
@@ -159,9 +160,10 @@ class AIService {
       apiKey = await KeyManager.getKey('GEMINI');
       
       // OPTIMIZATION: Clean text BEFORE prompting to save tokens
+      // We pass the full summary/content here to be processed by promptManager
       const optimizedArticle = {
           ...article,
-          summary: this.optimizeTextForTokenLimits(article.summary || ""),
+          summary: this.optimizeTextForTokenLimits(article.summary || article.content || ""),
           headline: article.headline ? cleanText(article.headline) : ""
       };
       
@@ -184,7 +186,7 @@ class AIService {
           temperature: 0.1, // Low temp for factual consistency
           maxOutputTokens: 4096 
         }
-      }, { timeout: 60000 });
+      }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API }); // Use centralized timeout
 
       KeyManager.reportSuccess(apiKey);
       await CircuitBreaker.recordSuccess('GEMINI');
