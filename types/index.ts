@@ -5,6 +5,7 @@ export interface IArticle {
   _id?: string;
   headline: string;
   summary: string;
+  content?: string; // Added to support AI analysis of full text
   source: string;
   category: string;
   politicalLean: string;
