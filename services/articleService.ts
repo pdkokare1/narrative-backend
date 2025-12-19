@@ -41,59 +41,17 @@ class ArticleService {
     ); 
   }
 
-  // --- 2. Intelligent Search (Now Cached) ---
+  // --- 2. Intelligent Search (Centralized) ---
   async searchArticles(query: string, limit: number = 12) {
     if (!query) return { articles: [], total: 0 };
     
-    // Sanitize input to prevent injection
     const safeQuery = query.replace(/[^\w\s\-\.\?]/gi, '');
     const CACHE_KEY = `search:${safeQuery.toLowerCase().trim()}:${limit}`;
 
     return redis.getOrFetch(CACHE_KEY, async () => {
-        // Attempt 1: Atlas Search (Optimized)
-        const atlasPipeline: any[] = [
-            {
-                $search: {
-                    index: 'default',
-                    compound: {
-                        should: [
-                            { text: { query: safeQuery, path: 'headline', fuzzy: { maxEdits: 2 }, score: { boost: { value: 3 } } } },
-                            { text: { query: safeQuery, path: ['summary', 'clusterTopic'], fuzzy: { maxEdits: 1 } } }
-                        ]
-                    }
-                }
-            },
-            { $limit: limit },
-            {
-                $project: {
-                    headline: 1, summary: 1, source: 1, category: 1,
-                    politicalLean: 1, url: 1, imageUrl: 1, publishedAt: 1,
-                    analysisType: 1, sentiment: 1, biasScore: 1, trustScore: 1,
-                    score: { $meta: "searchScore" }
-                }
-            }
-        ];
-
-        try {
-            const results = await Article.aggregate(atlasPipeline);
-            if (results.length > 0) {
-                return { articles: results, total: results.length };
-            }
-            throw new Error("No Atlas results");
-        } catch (error) {
-            // Attempt 2: Standard Text Index (Fallback)
-            logger.info(`Falling back to Standard Text Search for: ${safeQuery}`);
-            
-            const fallback = await Article.find(
-                { $text: { $search: safeQuery } },
-                { score: { $meta: 'textScore' } }
-            )
-            .sort({ score: { $meta: 'textScore' } })
-            .limit(limit)
-            .lean();
-
-            return { articles: fallback, total: fallback.length };
-        }
+        // Updated: Delegates logic to Model (DRY Principle)
+        const articles = await Article.smartSearch(safeQuery, limit);
+        return { articles, total: articles.length };
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
@@ -274,31 +232,43 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 6. Saved Articles (No Cache - User Specific & Low Volume) ---
+  // --- 6. Saved Articles ---
   async getSavedArticles(userId: string) {
     const profile = await Profile.findOne({ userId }).select('savedArticles');
     if (!profile || !profile.savedArticles.length) return [];
     return Article.find({ _id: { $in: profile.savedArticles } }).sort({ publishedAt: -1 }).lean();
   }
 
-  // --- 7. Toggle Save ---
+  // --- 7. Toggle Save (ATOMIC) ---
   async toggleSaveArticle(userId: string, articleIdStr: string) {
-    const profile = await Profile.findOne({ userId });
-    if (!profile) throw new Error('Profile not found');
-
     const articleId = new mongoose.Types.ObjectId(articleIdStr);
-    const currentSaved = profile.savedArticles.map(s => s.toString());
     
-    let message = '';
-    if (currentSaved.includes(articleIdStr)) {
-        profile.savedArticles = profile.savedArticles.filter(s => s.toString() !== articleIdStr) as any;
+    // 1. Check current state (Read)
+    const profile = await Profile.findOne({ userId, savedArticles: articleId });
+    
+    let updateOp;
+    let message;
+    
+    if (profile) {
+        // If exists, remove it atomically
+        updateOp = { $pull: { savedArticles: articleId } };
         message = 'Article unsaved';
     } else {
-        profile.savedArticles.push(articleId);
+        // If not exists, add it atomically (avoids duplicates)
+        updateOp = { $addToSet: { savedArticles: articleId } };
         message = 'Article saved';
     }
-    await profile.save();
-    return { message, savedArticles: profile.savedArticles };
+    
+    // 2. Perform Atomic Update
+    const updatedProfile = await Profile.findOneAndUpdate(
+        { userId },
+        updateOp as any,
+        { new: true }
+    ).select('savedArticles');
+    
+    if (!updatedProfile) throw new Error('Profile not found');
+
+    return { message, savedArticles: updatedProfile.savedArticles };
   }
 }
 
