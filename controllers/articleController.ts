@@ -3,21 +3,15 @@ import { Request, Response } from 'express';
 import asyncHandler from '../utils/asyncHandler';
 import articleService from '../services/articleService';
 import schemas from '../utils/validationSchemas';
-import redisClient from '../utils/redisClient'; // Added for caching
 
 // --- 1. Smart Trending Topics ---
 export const getTrendingTopics = asyncHandler(async (req: Request, res: Response) => {
-    // Validate (though params are empty, this strips unknown trash)
+    // Validate
     schemas.trending.parse({ query: req.query });
 
-    // CACHE IMPLEMENTATION: Cache trending topics for 5 minutes (300s)
-    // CHANGED: Reduced from 30m to 5m so "Breaking News" appears faster.
-    const topics = await redisClient.getOrFetch(
-        'trending:topics',
-        async () => await articleService.getTrendingTopics(),
-        300
-    );
+    const topics = await articleService.getTrendingTopics();
 
+    // Cache-Control Header for Browser/CDN
     res.set('Cache-Control', 'public, max-age=300'); 
     res.status(200).json({ topics });
 });
@@ -30,15 +24,7 @@ export const searchArticles = asyncHandler(async (req: Request, res: Response) =
     const searchTerm = query.q || '';
     const limit = query.limit || 20;
 
-    // CACHE IMPLEMENTATION: Cache identical searches for 2 minutes (120s)
-    // If 100 people search "Election" at the same time, we only run the query once.
-    const cacheKey = `search:${searchTerm.toLowerCase().trim()}:${limit}`;
-    
-    const result = await redisClient.getOrFetch(
-        cacheKey,
-        async () => await articleService.searchArticles(searchTerm, limit),
-        120
-    );
+    const result = await articleService.searchArticles(searchTerm, limit);
 
     res.status(200).json({ articles: result.articles, pagination: { total: result.total } });
 });
@@ -48,15 +34,7 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     // Strict Validation
     const { query } = schemas.feedFilters.parse({ query: req.query });
 
-    // CACHE IMPLEMENTATION: Cache feed results for 5 minutes (300s)
-    // We create a unique key based on the filters applied.
-    const cacheKey = `feed:main:${JSON.stringify(query)}`;
-
-    const result = await redisClient.getOrFetch(
-        cacheKey,
-        async () => await articleService.getMainFeed(query),
-        300
-    );
+    const result = await articleService.getMainFeed(query);
     
     // Set headers for Browser Caching
     res.set('Cache-Control', 'public, max-age=300');
@@ -66,39 +44,14 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
 // --- 4. "For You" Feed ---
 export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user?.uid;
-    
-    if (!userId) {
-        // Fallback for guest (though middleware usually catches this)
-        const result = await articleService.getForYouFeed(userId);
-        res.status(200).json(result);
-        return;
-    }
-
-    // CACHE IMPLEMENTATION: Personalized Feed Caching (5 Minutes)
-    // This protects the DB from "pull-to-refresh" spam on the personalized tab.
-    const cacheKey = `feed:foryou:${userId}`;
-
-    const result = await redisClient.getOrFetch(
-        cacheKey,
-        async () => await articleService.getForYouFeed(userId),
-        300 // 5 Minutes
-    );
-
+    const result = await articleService.getForYouFeed(userId);
     res.status(200).json(result);
 });
 
 // --- 5. Personalized "My Mix" Feed ---
 export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.uid; 
-    
-    // Also cache My Mix if used frequently
-    const cacheKey = `feed:mymix:${userId}`;
-    const result = await redisClient.getOrFetch(
-        cacheKey,
-        async () => await articleService.getPersonalizedFeed(userId),
-        300
-    );
-    
+    const result = await articleService.getPersonalizedFeed(userId);
     res.status(200).json(result);
 });
 
@@ -113,7 +66,6 @@ export const getSavedArticles = asyncHandler(async (req: Request, res: Response)
 export const toggleSaveArticle = asyncHandler(async (req: Request, res: Response) => {
     // Validate ID format
     const { params } = schemas.saveArticle.parse({ params: req.params });
-    
     const userId = req.user!.uid;
     
     const result = await articleService.toggleSaveArticle(userId, params.id);
