@@ -2,12 +2,13 @@
 import { Queue, ConnectionOptions } from 'bullmq';
 import logger from '../utils/logger';
 import config from '../utils/config';
+import { CONSTANTS } from '../utils/constants';
 
 // Registry to hold multiple queues
 const queues: Record<string, Queue> = {};
 
-// Constant for the main news queue
-const NEWS_QUEUE_NAME = 'news-fetch-queue';
+// Use Centralized Name
+const NEWS_QUEUE_NAME = CONSTANTS.QUEUE.NAME;
 
 const queueManager = {
     /**
