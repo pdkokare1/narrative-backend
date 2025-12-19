@@ -30,6 +30,7 @@ const BASIC_SCHEMA = {
   required: ["summary", "category", "sentiment"]
 };
 
+// Updated: Expanded Schema to match Gemini 2.5 Pro's capabilities and your Prompt structure
 const FULL_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -38,13 +39,56 @@ const FULL_SCHEMA = {
     politicalLean: { type: "STRING" },
     sentiment: { type: "STRING", enum: ["Positive", "Negative", "Neutral"] },
     biasScore: { type: "NUMBER" },
+    biasLabel: { type: "STRING" },
     credibilityScore: { type: "NUMBER" },
+    credibilityGrade: { type: "STRING" },
     reliabilityScore: { type: "NUMBER" },
+    reliabilityGrade: { type: "STRING" },
+    trustLevel: { type: "STRING" },
     clusterTopic: { type: "STRING" },
+    country: { type: "STRING" },
+    primaryNoun: { type: "STRING" },
+    secondaryNoun: { type: "STRING" },
     keyFindings: { type: "ARRAY", items: { type: "STRING" } },
-    recommendations: { type: "ARRAY", items: { type: "STRING" } }
+    recommendations: { type: "ARRAY", items: { type: "STRING" } },
+    
+    // Complex Analysis Objects
+    biasComponents: {
+      type: "OBJECT",
+      properties: {
+        linguistic: { type: "OBJECT", properties: { sentimentPolarity: { type: "NUMBER" }, emotionalLanguage: { type: "NUMBER" }, loadedTerms: { type: "NUMBER" }, complexityBias: { type: "NUMBER" } } },
+        sourceSelection: { type: "OBJECT", properties: { sourceDiversity: { type: "NUMBER" }, expertBalance: { type: "NUMBER" }, attributionTransparency: { type: "NUMBER" } } },
+        demographic: { type: "OBJECT", properties: { genderBalance: { type: "NUMBER" }, racialBalance: { type: "NUMBER" }, ageRepresentation: { type: "NUMBER" } } },
+        framing: { type: "OBJECT", properties: { headlineFraming: { type: "NUMBER" }, storySelection: { type: "NUMBER" }, omissionBias: { type: "NUMBER" } } }
+      }
+    },
+    credibilityComponents: {
+      type: "OBJECT",
+      properties: {
+        sourceCredibility: { type: "NUMBER" },
+        factVerification: { type: "NUMBER" },
+        professionalism: { type: "NUMBER" },
+        evidenceQuality: { type: "NUMBER" },
+        transparency: { type: "NUMBER" },
+        audienceTrust: { type: "NUMBER" }
+      }
+    },
+    reliabilityComponents: {
+      type: "OBJECT",
+      properties: {
+        consistency: { type: "NUMBER" },
+        temporalStability: { type: "NUMBER" },
+        qualityControl: { type: "NUMBER" },
+        publicationStandards: { type: "NUMBER" },
+        correctionsPolicy: { type: "NUMBER" },
+        updateMaintenance: { type: "NUMBER" }
+      }
+    }
   },
-  required: ["summary", "category", "politicalLean", "sentiment", "biasScore", "credibilityScore"]
+  required: [
+    "summary", "category", "politicalLean", "sentiment", "biasScore", "credibilityScore", 
+    "reliabilityScore", "trustLevel", "keyFindings"
+  ]
 };
 
 class AIService {
