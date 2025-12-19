@@ -42,6 +42,12 @@ export const CONSTANTS = {
     QUALITY: "gemini-2.0-pro", // For Deep Analysis
     EMBEDDING: "text-embedding-004"
   },
+  
+  // Cost Control: Character limits to prevent massive bills
+  AI_LIMITS: {
+      MAX_INPUT_CHARS: 12000, // ~3000 Tokens (Safe Limit)
+      MIN_CONTENT_CHARS: 100, // Skip analysis if content is too thin
+  },
 
   // Queue Configuration (Centralized)
   QUEUE: {
@@ -54,7 +60,7 @@ export const CONSTANTS = {
     GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_',
     TRENDING: 'trending_topics_smart',
     NEWS_CYCLE: 'news:fetch_cycle',
-    NEWS_SEEN_PREFIX: 'news:seen:', // Added for NewsService
+    NEWS_SEEN_PREFIX: 'news:seen:',
   }
 };
 
@@ -67,10 +73,16 @@ export const FETCH_CYCLES = [
 
 // --- TRUSTED SOURCES (Boost Score) ---
 export const TRUSTED_SOURCES = [
+    // Wires & Global
     'reuters', 'associated press', 'bloomberg', 'bbc', 'npr', 'pbs', 
     'the wall street journal', 'financial times', 'deutsche welle', 
-    'al jazeera english', 'the economist', 'nature', 'science',
-    'the indian express', 'the hindu', 'livemint'
+    'al jazeera', 'the economist', 'nature', 'science',
+    
+    // India
+    'the indian express', 'the hindu', 'livemint', 'ndtv', 'business standard',
+    
+    // Tech & Specific
+    'techcrunch', 'wired', 'ars technica', 'the verge', 'nasa'
 ];
 
 // --- GLOBAL BLOCKLISTS ---
@@ -90,7 +102,8 @@ export const DEFAULT_BANNED_DOMAINS = [
     'infowars.com', 'sputniknews.com', 'rt.com', 'breitbart.com', 'naturalnews.com',
     
     // Shopping / PR Wires
-    'prweb.com', 'businesswire.com', 'prnewswire.com', 'globenewswire.com'
+    'prweb.com', 'businesswire.com', 'prnewswire.com', 'globenewswire.com',
+    'marketwatch.com' // Often acts as a PR wire
 ];
 
 export const JUNK_KEYWORDS = [
@@ -98,7 +111,7 @@ export const JUNK_KEYWORDS = [
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
     'shopping', 'gift guide', 'best buy', 'amazon prime', 'black friday', 
     'cyber monday', 'sale', '% off', 'where to buy', 'restock', 'clearance',
-    'bargain', 'doorbuster', 'cheapest',
+    'bargain', 'doorbuster', 'cheapest', 'affiliate link',
     
     // Gaming Guides
     'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
@@ -118,5 +131,9 @@ export const JUNK_KEYWORDS = [
     
     // Gambling / Lottery
     'powerball', 'mega millions', 'lottery results', 'winning numbers', 
-    'betting odds', 'prediction', 'parlay', 'gambling'
+    'betting odds', 'prediction', 'parlay', 'gambling',
+    
+    // Administrative / Paywall Trash
+    'subscribe now', 'sign up', 'newsletter', 'login', 'register',
+    'have an account?', 'exclusive content', 'premium', 'giveaway'
 ];
