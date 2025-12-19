@@ -23,6 +23,11 @@ const envSchema = z.object({
   // Worker Configuration
   WORKER_CONCURRENCY: z.string().transform(Number).default('5'),
 
+  // Rate Limiting (New: Configurable via Env)
+  RATE_LIMIT_WINDOW_MS: z.string().transform(Number).default('900000'), // 15 minutes default
+  RATE_LIMIT_MAX_API: z.string().transform(Number).default('100'),       // 100 requests per window
+  RATE_LIMIT_MAX_TTS: z.string().transform(Number).default('20'),        // 20 audio generations per window
+
   // Cloudinary
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
   CLOUDINARY_API_KEY: z.string().min(1),
@@ -173,6 +178,12 @@ const config = {
   worker: {
       concurrency: env.WORKER_CONCURRENCY
   },
+  
+  rateLimit: {
+      windowMs: env.RATE_LIMIT_WINDOW_MS,
+      maxApi: env.RATE_LIMIT_MAX_API,
+      maxTts: env.RATE_LIMIT_MAX_TTS
+  },
 
   cloudinary: {
     cloudName: env.CLOUDINARY_CLOUD_NAME,
@@ -182,7 +193,6 @@ const config = {
 
   keys: {
     gemini: env.GEMINI_API_KEY || env.GEMINI_API_KEY_1 || '',
-    // CHANGED: Use extraction logic for ElevenLabs to support rotation
     elevenLabs: extractApiKeys('ELEVENLABS'),
     gnews: extractApiKeys('GNEWS'),
     newsApi: extractApiKeys('NEWS_API')
