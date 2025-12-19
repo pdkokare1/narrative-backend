@@ -5,8 +5,9 @@ import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
 import redis from '../utils/redisClient';
 import logger from '../utils/logger';
+import { CONSTANTS } from '../utils/constants';
 
-// Interface for Filter Arguments (Type Safety)
+// Interface for Filter Arguments
 interface FeedFilters {
     category?: string;
     lean?: string;
@@ -22,74 +23,78 @@ class ArticleService {
   
   // --- 1. Smart Trending Topics ---
   async getTrendingTopics() {
-    // New: One-line cache logic (30 minutes TTL)
-    return redis.getOrFetch('trending_topics_smart', async () => {
-        
-        const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
-        const results = await Article.aggregate([
-            { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
-            { $group: { _id: "$clusterTopic", count: { $sum: 1 }, sampleScore: { $max: "$trustScore" } } },
-            { $match: { count: { $gte: 3 } } },
-            { $sort: { count: -1 } },
-            { $limit: 10 }
-        ]);
+    return redis.getOrFetch(
+        CONSTANTS.REDIS_KEYS.TRENDING, 
+        async () => {
+            const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+            const results = await Article.aggregate([
+                { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
+                { $group: { _id: "$clusterTopic", count: { $sum: 1 }, sampleScore: { $max: "$trustScore" } } },
+                { $match: { count: { $gte: 3 } } },
+                { $sort: { count: -1 } },
+                { $limit: 10 }
+            ]);
 
-        return results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
-    }, 1800); 
+            return results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
+        }, 
+        CONSTANTS.CACHE.TTL_TRENDING
+    ); 
   }
 
-  // --- 2. Intelligent Search (Optimized) ---
+  // --- 2. Intelligent Search (Now Cached) ---
   async searchArticles(query: string, limit: number = 12) {
     if (!query) return { articles: [], total: 0 };
-
+    
     // Sanitize input to prevent injection
     const safeQuery = query.replace(/[^\w\s\-\.\?]/gi, '');
-    
-    // Attempt 1: Atlas Search (Optimized for MongoDB Atlas)
-    const atlasPipeline: any[] = [
-        {
-            $search: {
-                index: 'default',
-                compound: {
-                    should: [
-                        { text: { query: safeQuery, path: 'headline', fuzzy: { maxEdits: 2 }, score: { boost: { value: 3 } } } },
-                        { text: { query: safeQuery, path: ['summary', 'clusterTopic'], fuzzy: { maxEdits: 1 } } }
-                    ]
+    const CACHE_KEY = `search:${safeQuery.toLowerCase().trim()}:${limit}`;
+
+    return redis.getOrFetch(CACHE_KEY, async () => {
+        // Attempt 1: Atlas Search (Optimized)
+        const atlasPipeline: any[] = [
+            {
+                $search: {
+                    index: 'default',
+                    compound: {
+                        should: [
+                            { text: { query: safeQuery, path: 'headline', fuzzy: { maxEdits: 2 }, score: { boost: { value: 3 } } } },
+                            { text: { query: safeQuery, path: ['summary', 'clusterTopic'], fuzzy: { maxEdits: 1 } } }
+                        ]
+                    }
+                }
+            },
+            { $limit: limit },
+            {
+                $project: {
+                    headline: 1, summary: 1, source: 1, category: 1,
+                    politicalLean: 1, url: 1, imageUrl: 1, publishedAt: 1,
+                    analysisType: 1, sentiment: 1, biasScore: 1, trustScore: 1,
+                    score: { $meta: "searchScore" }
                 }
             }
-        },
-        { $limit: limit },
-        {
-            $project: {
-                headline: 1, summary: 1, source: 1, category: 1,
-                politicalLean: 1, url: 1, imageUrl: 1, publishedAt: 1,
-                analysisType: 1, sentiment: 1, biasScore: 1, trustScore: 1,
-                score: { $meta: "searchScore" }
+        ];
+
+        try {
+            const results = await Article.aggregate(atlasPipeline);
+            if (results.length > 0) {
+                return { articles: results, total: results.length };
             }
-        }
-    ];
+            throw new Error("No Atlas results");
+        } catch (error) {
+            // Attempt 2: Standard Text Index (Fallback)
+            logger.info(`Falling back to Standard Text Search for: ${safeQuery}`);
+            
+            const fallback = await Article.find(
+                { $text: { $search: safeQuery } },
+                { score: { $meta: 'textScore' } }
+            )
+            .sort({ score: { $meta: 'textScore' } })
+            .limit(limit)
+            .lean();
 
-    try {
-        const results = await Article.aggregate(atlasPipeline);
-        if (results.length > 0) {
-            return { articles: results, total: results.length };
+            return { articles: fallback, total: fallback.length };
         }
-        throw new Error("No Atlas results");
-    } catch (error) {
-        // Attempt 2: Standard Text Index (Fallback)
-        // Only logs if Atlas fails, keeping logs clean
-        logger.info(`Falling back to Standard Text Search for: ${safeQuery}`);
-        
-        const fallback = await Article.find(
-            { $text: { $search: safeQuery } },
-            { score: { $meta: 'textScore' } }
-        )
-        .sort({ score: { $meta: 'textScore' } })
-        .limit(limit)
-        .lean();
-
-        return { articles: fallback, total: fallback.length };
-    }
+    }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
   // --- 3. Main Feed (Cached) ---
@@ -99,7 +104,6 @@ class ArticleService {
     // Unique key based on all filters
     const CACHE_KEY = `feed:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${offset}:${limit}`;
     
-    // New: One-line cache logic (5 minutes TTL)
     return redis.getOrFetch(CACHE_KEY, async () => {
         // Build Query
         const query: any = {};
@@ -138,10 +142,10 @@ class ArticleService {
 
         const total = await Article.countDocuments(query);
         return { articles, pagination: { total } };
-    }, 300);
+    }, CONSTANTS.CACHE.TTL_FEED);
   }
 
-  // --- 4. For You Feed (Now Cached!) ---
+  // --- 4. For You Feed (Cached) ---
   async getForYouFeed(userId: string | undefined) {
     // Guest User - No cache needed (lightweight)
     if (!userId) {
@@ -151,7 +155,6 @@ class ArticleService {
 
     const CACHE_KEY = `feed_foryou:${userId}`;
 
-    // New: Cache the "Challenger" calculation for 5 minutes
     return redis.getOrFetch(CACHE_KEY, async () => {
         const history = await ActivityLog.find({ userId, action: 'view_analysis' })
             .sort({ timestamp: -1 })
@@ -163,7 +166,7 @@ class ArticleService {
             return { articles: standard, meta: { reason: "No history" } };
         }
 
-        // Challenger Logic: Find user's bias and show the opposite
+        // Challenger Logic
         const articleIds = history.map(h => h.articleId);
         const viewedDocs = await Article.find({ _id: { $in: articleIds } }).select('politicalLean');
         const leanCounts: Record<string, number> = {};
@@ -192,14 +195,13 @@ class ArticleService {
             articles: challengerArticles.map(a => ({ ...a, suggestionType: 'Challenge' })), 
             meta: { basedOnCategory: 'Your Reading History', usualLean: dominantLean } 
         };
-    }, 300);
+    }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
   // --- 5. Personalized Feed (Cached) ---
   async getPersonalizedFeed(userId: string) {
     const CACHE_KEY = `my_mix_${userId}`;
     
-    // New: One-line cache logic (15 minutes TTL)
     return redis.getOrFetch(CACHE_KEY, async () => {
         const profile = await Profile.findOne({ userId }).select('userEmbedding');
         const hasVector = profile && profile.userEmbedding && profile.userEmbedding.length > 0;
@@ -269,10 +271,10 @@ class ArticleService {
             articles: recommendations.map(a => ({ ...a, suggestionType: 'Comfort' })), 
             meta: { topCategories: [metaReason] } 
         };
-    }, 900);
+    }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 6. Saved Articles ---
+  // --- 6. Saved Articles (No Cache - User Specific & Low Volume) ---
   async getSavedArticles(userId: string) {
     const profile = await Profile.findOne({ userId }).select('savedArticles');
     if (!profile || !profile.savedArticles.length) return [];
