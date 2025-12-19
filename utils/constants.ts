@@ -38,7 +38,7 @@ export const CONSTANTS = {
 
   // AI Configuration
   AI_MODELS: {
-    FAST: "gemini-3-flash", // For Gatekeeper & Quick Checks
+    FAST: "	gemini-2.5-flash", // For Gatekeeper & Quick Checks
     QUALITY: "gemini-2.5-pro", // For Deep Analysis
     EMBEDDING: "text-embedding-004"
   },
