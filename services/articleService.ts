@@ -59,14 +59,16 @@ class ArticleService {
   async getMainFeed(filters: FeedFilters) {
     const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
     
-    // Unique key based on all filters
-    const CACHE_KEY = `feed:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${offset}:${limit}`;
+    // UPDATED: Changed prefix to 'feed_v2' to bust old caches that might be empty
+    const CACHE_KEY = `feed_v2:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${offset}:${limit}`;
     
     return redis.getOrFetch(CACHE_KEY, async () => {
         // Build Query
         const query: any = {};
-        if (category && category !== 'All Categories') query.category = category;
-        if (lean && lean !== 'All Leans') query.politicalLean = lean;
+        
+        // Robust checks to ensure we don't accidentally filter by 'undefined' or empty strings
+        if (category && category !== 'All Categories' && category !== 'undefined') query.category = category;
+        if (lean && lean !== 'All Leans' && lean !== 'undefined') query.politicalLean = lean;
         
         if (region === 'India') query.country = 'India';
         else if (region === 'Global') query.country = { $ne: 'India' };
@@ -90,6 +92,9 @@ class ArticleService {
         if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
         else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
         else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
+
+        // LOGGING: This will show up in your Railway logs so you can see if the query is correct
+        console.log(`[ArticleService] Main Feed Query:`, JSON.stringify(query), `Offset: ${offset}, Limit: ${limit}`);
 
         // Database Fetch
         const articles = await Article.find(query)
