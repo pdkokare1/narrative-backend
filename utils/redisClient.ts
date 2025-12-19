@@ -94,20 +94,13 @@ const redisClient = {
         if (!client || !isHealthy) return null;
         try {
             const data = await client.get(key);
-            // Auto-parse JSON if possible, otherwise return string
-            try {
-                return data ? JSON.parse(data) : null;
-            } catch {
-                return data;
-            }
+            try { return data ? JSON.parse(data) : null; } catch { return data; }
         } catch (e: any) { return null; }
     },
 
     mGet: async (keys: string[]): Promise<(string | null)[]> => {
         if (!client || !isHealthy || keys.length === 0) return new Array(keys.length).fill(null);
-        try {
-            return await client.mGet(keys);
-        } catch (e: any) { return new Array(keys.length).fill(null); }
+        try { return await client.mGet(keys); } catch (e: any) { return new Array(keys.length).fill(null); }
     },
 
     set: async (key: string, data: any, ttlSeconds: number = 900): Promise<void> => {
@@ -149,20 +142,23 @@ const redisClient = {
         try { return await client.sIsMember(key, value); } catch (e) { return false; }
     },
 
-    // --- ADVANCED: Smart Fetching ---
+    // --- ADVANCED: Smart Fetching (Graceful Degradation) ---
 
     getOrFetch: async <T>(key: string, fetcher: () => Promise<T>, ttlSeconds: number = 900): Promise<T> => {
-        // 1. Try Cache
+        // 1. Try Cache (Safe)
         if (client && isHealthy) {
             try {
                 const cachedData = await client.get(key);
                 if (cachedData) {
                     return JSON.parse(cachedData) as T;
                 }
-            } catch (err) { /* ignore cache errors */ }
+            } catch (err) { 
+                // Log and continue to fetcher
+                logger.warn(`Redis Read Fail for ${key}: ${err instanceof Error ? err.message : err}`);
+            }
         }
 
-        // 2. Anti-Stampede (Deduplicate simultaneous requests)
+        // 2. Anti-Stampede (Deduplicate)
         if (pendingFetches.has(key)) {
             return pendingFetches.get(key) as Promise<T>;
         }
@@ -171,9 +167,12 @@ const redisClient = {
         const fetchPromise = (async () => {
             try {
                 const freshData = await fetcher();
+                
+                // Only try to cache if Redis is healthy
                 if (client && isHealthy && freshData) {
-                    // Fire and forget cache update
-                    client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch(() => {});
+                    client.set(key, JSON.stringify(freshData), { EX: ttlSeconds }).catch((e) => {
+                        logger.warn(`Redis Write Fail for ${key}: ${e.message}`);
+                    });
                 }
                 return freshData;
             } catch (error) {
@@ -192,10 +191,10 @@ const redisClient = {
 
     // --- LOCKING (Workers) ---
     
-    // Acquire a distributed lock. Returns true if lock obtained.
     acquireLock: async (key: string, ttlSeconds: number = 60): Promise<boolean> => {
         if (!client || !isHealthy) {
-            logger.warn(`⚠️ Cannot acquire lock '${key}': Redis unavailable.`);
+            // Failsafe: If Redis is dead, we cannot lock. 
+            // Returning false prevents jobs from running concurrently and messing up DB.
             return false; 
         } 
         try {
@@ -205,28 +204,20 @@ const redisClient = {
             });
             return result === 'OK';
         } catch (e) {
-            logger.warn(`⚠️ Error acquiring lock '${key}': ${e}`);
             return false; 
         }
     },
 
-    // Release a distributed lock immediately (for efficiency)
     releaseLock: async (key: string): Promise<void> => {
         if (!client || !isHealthy) return;
-        try {
-            await client.del(key);
-        } catch (e) {
-            // Ignore errors during release
-        }
+        try { await client.del(key); } catch (e) {}
     },
 
     // --- CONNECTION ---
     disconnect: async (): Promise<void> => {
         if (client) {
             try {
-                if (client.isOpen) {
-                    await client.quit();
-                }
+                if (client.isOpen) await client.quit();
                 logger.info('✅ Redis Connection Closed');
             } catch (e) {
                 logger.error('Error closing Redis connection');
