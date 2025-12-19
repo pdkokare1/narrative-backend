@@ -36,16 +36,16 @@ export const CONSTANTS = {
     EXTERNAL_API: 15000, // 15 seconds
   },
 
-  // AI Configuration
+  // AI Configuration (Gemini 2.5 Series - Dec 2025 Standard)
   AI_MODELS: {
     FAST: "gemini-2.5-flash", // For Gatekeeper & Quick Checks
     QUALITY: "gemini-2.5-pro", // For Deep Analysis
     EMBEDDING: "text-embedding-004"
   },
   
-  // Cost Control: Character limits to prevent massive bills
+  // Cost Control: Adjusted for Gemini 2.5 Pro's efficiency
   AI_LIMITS: {
-      MAX_INPUT_CHARS: 12000, // ~3000 Tokens (Safe Limit)
+      MAX_INPUT_CHARS: 32000, // Increased to ~8000 tokens to utilize Pro model better
       MIN_CONTENT_CHARS: 100, // Skip analysis if content is too thin
   },
 
