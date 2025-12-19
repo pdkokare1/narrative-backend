@@ -158,7 +158,7 @@ const schemas = {
         query: z.object({
             q: z.string().trim().optional(),
             limit: rules.limit,
-            offset: rules.offset, // Added offset here
+            offset: rules.offset, // Added offset
             // Filters
             category: z.string().optional(),
             politicalLean: z.string().optional()
@@ -169,8 +169,8 @@ const schemas = {
     feedFilters: z.object({
         query: z.object({
             limit: rules.limit,
-            offset: rules.offset, // Added offset here to fix 400 error
-            cursor: z.string().optional(), // Kept for backward compatibility
+            offset: rules.offset, // Added offset
+            cursor: z.string().optional(),
             category: z.string().optional(),
             politicalLean: z.string().optional(),
             country: z.string().optional(),
