@@ -96,12 +96,11 @@ class NewsService {
     // 3. Early Redis "Bouncer" Check (Cheap & Fast)
     const potentialNewArticles = await this.filterSeenInRedis(allArticles);
 
-    // 4. IMPROVED: Database Check (Disk I/O) - MOVED UP
+    // 4. IMPROVED: Database Check (Disk I/O)
     // We check the DB *before* the expensive cleaning process to save CPU.
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
 
     // 5. Clean, Score, and Deduplicate (CPU Intensive)
-    // Now we only clean articles that are confirmed to be new to the DB.
     const finalUnique = this.removeDuplicatesAndClean(dbUnseenArticles);
     
     // 6. Mark accepted articles as "Seen" in Redis
@@ -171,6 +170,7 @@ class NewsService {
       if (articles.length === 0) return [];
       
       const urls = articles.map(a => a.url);
+      // Use .select('url').lean() for maximum speed
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
       const existingUrls = new Set(existingDocs.map((d: any) => d.url));
       
@@ -206,8 +206,8 @@ class NewsService {
   private normalizeArticles(articles: any[], sourceName: string): INewsSourceArticle[] {
       return articles.map(a => ({
           source: { name: a.source?.name || sourceName },
-          title: a.title || "", // Raw title
-          description: a.description || a.content || "", // Raw description
+          title: a.title || "", 
+          description: a.description || a.content || "", 
           url: normalizeUrl(a.url), 
           image: a.image || a.urlToImage, 
           publishedAt: a.publishedAt || new Date().toISOString()
@@ -215,7 +215,8 @@ class NewsService {
   }
 
   /**
-   * ENHANCED SCORING & DEDUPLICATION
+   * ENHANCED SCORING & DEDUPLICATION (PRE-FLIGHT CHECK)
+   * This is where we save money by filtering out trash before AI analysis.
    */
   private removeDuplicatesAndClean(articles: INewsSourceArticle[]): INewsSourceArticle[] {
     const seenUrls = new Set<string>();
@@ -226,8 +227,9 @@ class NewsService {
         const titleLower = (a.title || "").toLowerCase();
         const sourceLower = (a.source.name || "").toLowerCase();
 
-        // 1. Image Signal (+2)
+        // 1. Image Signal (+2) - Critical for Frontend
         if (a.image && a.image.startsWith('http')) score += 2;
+        else score -= 10; // Penalize no-image articles heavily (we want a visual feed)
 
         // 2. Length Signal (+1)
         if (a.title && a.title.length > 40) score += 1;
@@ -239,7 +241,7 @@ class NewsService {
 
         // 4. Junk/Clickbait Penalty (-5)
         if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) {
-            score -= 5;
+            score -= 20; // Massive penalty for junk
         }
 
         return { article: a, score };
@@ -250,18 +252,23 @@ class NewsService {
     for (const item of scoredArticles) {
         const article = item.article;
 
-        if (item.score < 0) continue;
+        // PRE-FLIGHT CHECKS:
+        // A. Score too low (likely junk or no image)
+        if (item.score < -5) continue;
 
         article.title = formatHeadline(article.title);
         article.description = cleanText(article.description || "");
 
+        // B. Data Integrity Checks
         if (!article.title || !article.url) continue;
-        if (article.title.length < 10) continue; 
+        if (article.title.length < 25) continue; // Skip very short titles
         if (article.title === "No Title") continue;
+        if (!article.description || article.description.length < 50) continue; // Skip empty/tiny descriptions
 
         const url = article.url;
         if (seenUrls.has(url)) continue;
 
+        // C. Fuzzy Title Match (Deduplication)
         const cleanTitle = article.title.toLowerCase().replace(/[^a-z0-9]/g, '');
         if (seenTitles.has(cleanTitle)) continue;
         
@@ -270,6 +277,7 @@ class NewsService {
         uniqueArticles.push(article);
     }
 
+    // Return most recent first
     return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
   }
 }
