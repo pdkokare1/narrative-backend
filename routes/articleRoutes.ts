@@ -5,7 +5,7 @@ import schemas from '../utils/validationSchemas';
 
 // Middleware
 import { checkAuth, optionalAuth } from '../middleware/authMiddleware';
-import { searchLimiter } from '../middleware/rateLimiters'; // CHANGED: Import specific limiter
+import { searchLimiter } from '../middleware/rateLimiters'; 
 
 // Controllers
 import {
@@ -26,11 +26,12 @@ const router = express.Router();
 router.get('/trending', getTrendingTopics);
 
 // 2. Search (Atlas Search -> Text Fallback)
-// CHANGED: Added searchLimiter to prevent database spam
-router.get('/search', searchLimiter, validate(schemas.search, 'query'), searchArticles);
+// FIXED: Removed 'query' arg to enable strict mode validation
+router.get('/search', searchLimiter, validate(schemas.search), searchArticles);
 
 // 3. Main Feed (Filterable & Cached)
-router.get('/articles', validate(schemas.feedFilters, 'query'), getMainFeed);
+// FIXED: Removed 'query' arg to enable strict mode validation
+router.get('/articles', validate(schemas.feedFilters), getMainFeed);
 
 // 4. For You (Challenger Feed - Personalized for Guests & Users)
 router.get('/articles/for-you', optionalAuth, getForYouFeed);
@@ -42,6 +43,8 @@ router.get('/articles/personalized', checkAuth, getPersonalizedFeed);
 
 // 6. Saved Articles
 router.get('/saved', checkAuth, getSavedArticles);
-router.post('/:id/save', checkAuth, validate(schemas.saveArticle, 'params'), toggleSaveArticle);
+
+// FIXED: Removed 'params' arg to match the schema structure { params: { id: ... } }
+router.post('/:id/save', checkAuth, validate(schemas.saveArticle), toggleSaveArticle);
 
 export default router;
