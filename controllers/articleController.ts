@@ -10,15 +10,15 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
     // Validate (though params are empty, this strips unknown trash)
     schemas.trending.parse({ query: req.query });
 
-    // CACHE IMPLEMENTATION: Cache trending topics for 30 minutes (1800s)
-    // The trends don't change every second, so this saves massive DB load.
+    // CACHE IMPLEMENTATION: Cache trending topics for 5 minutes (300s)
+    // CHANGED: Reduced from 30m to 5m so "Breaking News" appears faster.
     const topics = await redisClient.getOrFetch(
         'trending:topics',
         async () => await articleService.getTrendingTopics(),
-        1800
+        300
     );
 
-    res.set('Cache-Control', 'public, max-age=1800'); 
+    res.set('Cache-Control', 'public, max-age=300'); 
     res.status(200).json({ topics });
 });
 
