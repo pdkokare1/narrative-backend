@@ -11,7 +11,7 @@ import { INewsSourceArticle, INewsAPIResponse } from '../types';
 import Article from '../models/articleModel';
 import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
 
-// NEW: Import the centralized processor
+// Centralized processor
 import articleProcessor from './articleProcessor';
 
 class NewsService {
@@ -40,7 +40,7 @@ class NewsService {
       if (redisClient.isReady()) {
          await redisClient.set(redisKey, next.toString(), 86400);
       }
-      logger.info(`🔄 Advancing News Cycle to Index: ${next}`);
+      logger.info(`🔄 Advancing News Cycle to Index: ${next} (${FETCH_CYCLES[next].name})`);
   }
 
   async fetchNews(): Promise<INewsSourceArticle[]> {
@@ -52,24 +52,34 @@ class NewsService {
     
     logger.info(`🔄 News Fetch Cycle: ${currentCycle.name} (Index: ${cycleIndex})`);
 
+    let gnewsFailed = false;
+
     // 1. Try GNews First
     try {
         const gnewsArticles = await this.fetchFromGNews(currentCycle.gnews);
         allArticles.push(...gnewsArticles);
+        
+        // Soft Failure Check: If GNews gives us junk (0 or 1 article), consider it failed
+        if (gnewsArticles.length < 2) {
+            logger.warn(`GNews returned low yield (${gnewsArticles.length}). Marking for fallback.`);
+            gnewsFailed = true;
+        }
+
     } catch (err: any) {
         logger.warn(`GNews fetch failed: ${err.message}`);
+        gnewsFailed = true;
         if (err.response?.status === 429) {
             logger.warn("⚠️ GNews Limit Reached. Advancing cycle.");
             await this.advanceCycle();
         }
     }
 
-    // 2. Fallback to NewsAPI
-    if (allArticles.length < 5) {
+    // 2. Fallback to NewsAPI (Triggered on Error OR Low Yield)
+    if (allArticles.length < 5 || gnewsFailed) {
       const isNewsApiOpen = await CircuitBreaker.isOpen('NEWS_API');
       
       if (isNewsApiOpen) {
-          logger.info('⚠️ Low yield, triggering NewsAPI fallback...');
+          logger.info('⚠️ Low yield/Error, triggering NewsAPI fallback...');
           try {
               const newsApiArticles = await this.fetchFromNewsAPI(currentCycle.newsapi);
               allArticles.push(...newsApiArticles);
@@ -84,14 +94,12 @@ class NewsService {
     }
 
     // 3. REDIS LOCK: Filter Seen AND Lock Processing
-    // Prevents multiple workers from grabbing the same URL simultaneously
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
 
     // 4. DB CHECK: Filter articles already persisted
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
 
     // 5. PROCESS: Clean, Score, and Deduplicate (Fuzzy & Exact)
-    // Delegated to the new robust processor
     const finalUnique = articleProcessor.processBatch(dbUnseenArticles);
     
     // 6. REDIS PERSIST: Mark accepted articles as "Seen"
@@ -141,7 +149,7 @@ class NewsService {
     }
 
     if (blockedCount > 0) {
-        logger.info(`🚫 Redis blocked ${blockedCount} duplicates/processing articles.`);
+        logger.debug(`🚫 Redis blocked ${blockedCount} duplicates/processing articles.`);
     }
     
     return unique;
