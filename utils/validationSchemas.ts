@@ -22,7 +22,7 @@ const rules = {
 };
 
 /**
- * AI & Analysis Schemas (Moved from aiService.ts)
+ * AI & Analysis Schemas (Aligned with Gemini 2.5 Pro capabilities)
  */
 export const SentimentSchema = z.enum(["Positive", "Negative", "Neutral"]);
 
@@ -32,19 +32,84 @@ export const BasicAnalysisSchema = z.object({
   sentiment: SentimentSchema.optional().default("Neutral")
 });
 
+// Detailed Component Schemas for Deep Analysis
+const MetricComponentSchema = z.object({
+    sentimentPolarity: z.number().optional(), 
+    emotionalLanguage: z.number().optional(), 
+    loadedTerms: z.number().optional(), 
+    complexityBias: z.number().optional()
+});
+
+const SourceComponentSchema = z.object({
+    sourceDiversity: z.number().optional(), 
+    expertBalance: z.number().optional(), 
+    attributionTransparency: z.number().optional()
+});
+
+const DemographicComponentSchema = z.object({
+    genderBalance: z.number().optional(), 
+    racialBalance: z.number().optional(), 
+    ageRepresentation: z.number().optional()
+});
+
+const FramingComponentSchema = z.object({
+    headlineFraming: z.number().optional(), 
+    storySelection: z.number().optional(), 
+    omissionBias: z.number().optional()
+});
+
 export const FullAnalysisSchema = z.object({
   summary: z.string(),
   category: z.string(),
   politicalLean: z.string().optional().default("Center"),
   sentiment: SentimentSchema.optional().default("Neutral"),
+  
+  // Primary Scores
   biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  biasLabel: z.string().optional(),
+  
   credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  credibilityGrade: z.string().optional(),
+  
   reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
+  reliabilityGrade: z.string().optional(),
+  
+  trustLevel: z.string().optional(),
+  
+  // Metadata & Taxonomy
   clusterTopic: z.string().optional(),
+  country: z.string().optional(),
   primaryNoun: z.string().optional(),
   secondaryNoun: z.string().optional(),
+  
   keyFindings: z.array(z.string()).optional().default([]),
-  recommendations: z.array(z.string()).optional().default([])
+  recommendations: z.array(z.string()).optional().default([]),
+
+  // Complex Analysis Objects (Crucial for Narrative Frontend)
+  biasComponents: z.object({
+      linguistic: MetricComponentSchema.optional(),
+      sourceSelection: SourceComponentSchema.optional(),
+      demographic: DemographicComponentSchema.optional(),
+      framing: FramingComponentSchema.optional()
+  }).optional(),
+
+  credibilityComponents: z.object({
+      sourceCredibility: z.number().optional(),
+      factVerification: z.number().optional(),
+      professionalism: z.number().optional(),
+      evidenceQuality: z.number().optional(),
+      transparency: z.number().optional(),
+      audienceTrust: z.number().optional()
+  }).optional(),
+
+  reliabilityComponents: z.object({
+      consistency: z.number().optional(),
+      temporalStability: z.number().optional(),
+      qualityControl: z.number().optional(),
+      publicationStandards: z.number().optional(),
+      correctionsPolicy: z.number().optional(),
+      updateMaintenance: z.number().optional()
+  }).optional()
 });
 
 /**
@@ -86,7 +151,7 @@ const schemas = {
         })
     }),
 
-    // --- Search & Discovery (Strict Validation) ---
+    // --- Search & Discovery ---
     search: z.object({
         query: z.object({
             q: z.string().trim().optional(),
