@@ -5,6 +5,7 @@ import schemas from '../utils/validationSchemas';
 
 // Middleware
 import { checkAuth, optionalAuth } from '../middleware/authMiddleware';
+import { searchLimiter } from '../middleware/rateLimiters'; // CHANGED: Import specific limiter
 
 // Controllers
 import {
@@ -25,7 +26,8 @@ const router = express.Router();
 router.get('/trending', getTrendingTopics);
 
 // 2. Search (Atlas Search -> Text Fallback)
-router.get('/search', validate(schemas.search, 'query'), searchArticles);
+// CHANGED: Added searchLimiter to prevent database spam
+router.get('/search', searchLimiter, validate(schemas.search, 'query'), searchArticles);
 
 // 3. Main Feed (Filterable & Cached)
 router.get('/articles', validate(schemas.feedFilters, 'query'), getMainFeed);
