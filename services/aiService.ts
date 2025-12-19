@@ -13,7 +13,7 @@ import { CONSTANTS } from '../utils/constants';
 // Centralized Validation
 import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSchemas';
 
-// Centralized Config
+// Centralized Config from CONSTANTS
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
 const PRO_MODEL = CONSTANTS.AI_MODELS.QUALITY;
 
@@ -46,6 +46,24 @@ class AIService {
   }
 
   /**
+   * Helper: Strips standard boilerplate to save tokens/money.
+   */
+  private optimizeTextForTokenLimits(text: string): string {
+      let clean = cleanText(text);
+      // Remove common footer/ads text
+      const junkPhrases = [
+          "Subscribe to continue reading", "Read more", "Sign up for our newsletter",
+          "Follow us on", "© 2023", "© 2024", "All rights reserved",
+          "Click here", "Advertisement", "Supported by"
+      ];
+      junkPhrases.forEach(phrase => {
+          clean = clean.replace(new RegExp(phrase, 'gi'), '');
+      });
+      // Cap at 15000 chars (approx 3-4k tokens) to prevent massive billing spikes
+      return clean.substring(0, 15000);
+  }
+
+  /**
    * Analyzes an article using the Generative AI Model
    * UPGRADE: Uses Native JSON Mode for 100% reliability.
    */
@@ -65,7 +83,7 @@ class AIService {
       // OPTIMIZATION: Clean text BEFORE prompting to save tokens
       const optimizedArticle = {
           ...article,
-          summary: article.summary ? cleanText(article.summary).substring(0, 15000) : "", // Cap input size
+          summary: this.optimizeTextForTokenLimits(article.summary || ""),
           headline: article.headline ? cleanText(article.headline) : ""
       };
 
@@ -116,7 +134,7 @@ class AIService {
         // 1. Prepare Chunks with original indices
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 2000), // Enforce clean text limit
+                 text: cleanText(text).substring(0, 2000), // Enforce clean text limit for embeddings
                  index: i + idx
              }));
              chunks.push(chunk);
