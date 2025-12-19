@@ -66,18 +66,39 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
 // --- 4. "For You" Feed ---
 export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user?.uid;
-    // We don't cache "For You" feeds heavily in Redis because they are unique per user 
-    // and might consume too much memory if you have millions of users. 
-    // Browser caching (client-side) is sufficient here.
     
-    const result = await articleService.getForYouFeed(userId);
+    if (!userId) {
+        // Fallback for guest (though middleware usually catches this)
+        const result = await articleService.getForYouFeed(userId);
+        res.status(200).json(result);
+        return;
+    }
+
+    // CACHE IMPLEMENTATION: Personalized Feed Caching (5 Minutes)
+    // This protects the DB from "pull-to-refresh" spam on the personalized tab.
+    const cacheKey = `feed:foryou:${userId}`;
+
+    const result = await redisClient.getOrFetch(
+        cacheKey,
+        async () => await articleService.getForYouFeed(userId),
+        300 // 5 Minutes
+    );
+
     res.status(200).json(result);
 });
 
 // --- 5. Personalized "My Mix" Feed ---
 export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user!.uid; 
-    const result = await articleService.getPersonalizedFeed(userId);
+    
+    // Also cache My Mix if used frequently
+    const cacheKey = `feed:mymix:${userId}`;
+    const result = await redisClient.getOrFetch(
+        cacheKey,
+        async () => await articleService.getPersonalizedFeed(userId),
+        300
+    );
+    
     res.status(200).json(result);
 });
 
