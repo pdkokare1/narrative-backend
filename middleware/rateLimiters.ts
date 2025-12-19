@@ -2,9 +2,9 @@
 import rateLimit, { RateLimitRequestHandler } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { Request, Response, NextFunction } from 'express';
-import config from '../utils/config';
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
+import { CONSTANTS } from '../utils/constants';
 
 const keyGenerator = (req: Request | any): string => {
     // Check if user is authenticated via authMiddleware
@@ -32,19 +32,19 @@ const createMemoryLimiter = (maxRequests: number, windowMs: number, type: string
 };
 
 // --- Factory: Create Redis Limiter (Primary) ---
-const createRedisLimiter = (maxRequests: number, windowMs: number, type: string) => {
+const createRedisLimiter = (maxRequests: number, windowMs: number, type: string): RateLimitRequestHandler | null => {
+    const client = redisClient.getClient();
+    
+    // Safety check: ensure client exists and is actually connected
+    if (!client || !redisClient.isReady()) {
+        return null;
+    }
+
     try {
         const store = new RedisStore({
-            // @ts-expect-error - RedisStore safe wrapping
-            sendCommand: async (...args: string[]) => {
-                try {
-                   const client = redisClient.getClient();
-                   if(!client || !client.isOpen) return null;
-                   return await client.sendCommand(args);
-                } catch(e) {
-                   return null;
-                }
-            },
+            // Pass the actual Redis client instance
+            // @ts-ignore: library type mismatch usually occurs here, but passing the client instance is correct for ioredis/node-redis
+            sendCommand: (...args: string[]) => client.sendCommand(args),
         });
 
         return rateLimit({
@@ -70,22 +70,21 @@ const createRedisLimiter = (maxRequests: number, windowMs: number, type: string)
     }
 };
 
-// --- CONFIGURATION ---
-// 1. General API (Feed, Profile, etc.) - Fast
-const API_WINDOW = 15 * 60 * 1000; // 15 Minutes
-const API_MAX = 150; 
+// --- CONFIGURATION FROM CONSTANTS ---
+const API_WINDOW = CONSTANTS.RATE_LIMIT.WINDOW_MS;
+const API_MAX = CONSTANTS.RATE_LIMIT.API_MAX_REQUESTS;
 
-// 2. Search API - Expensive
-const SEARCH_WINDOW = 1 * 60 * 1000; // 1 Minute
-const SEARCH_MAX = 30; // 30 searches per minute is plenty for humans, blocks bots
+// Search: 1 Minute Window (Strict)
+const SEARCH_WINDOW = 60 * 1000; 
+const SEARCH_MAX = 30;
 
-// 3. Audio Gen - Very Expensive ($$$)
-const TTS_WINDOW = 15 * 60 * 1000; // 15 Minutes
-const TTS_MAX = 20;
+// TTS: Expensive
+const TTS_WINDOW = CONSTANTS.RATE_LIMIT.WINDOW_MS;
+const TTS_MAX = CONSTANTS.RATE_LIMIT.TTS_MAX_REQUESTS;
 
 // --- SINGLETON INITIALIZATION ---
 
-// Memory Backups
+// Memory Backups (Always created)
 const apiLimiterMemory = createMemoryLimiter(API_MAX, API_WINDOW, 'API');
 const searchLimiterMemory = createMemoryLimiter(SEARCH_MAX, SEARCH_WINDOW, 'Search');
 const ttsLimiterMemory = createMemoryLimiter(TTS_MAX, TTS_WINDOW, 'Audio');
@@ -99,9 +98,11 @@ let ttsLimiterRedis: RateLimitRequestHandler | null = null;
 
 export const apiLimiter = (req: Request, res: Response, next: NextFunction) => {
     if (redisClient.isReady()) {
+        // Lazy Instantiation: Create only when needed and Redis is up
         if (!apiLimiterRedis) apiLimiterRedis = createRedisLimiter(API_MAX, API_WINDOW, 'API');
         if (apiLimiterRedis) return apiLimiterRedis(req, res, next);
     }
+    // Fallback
     return apiLimiterMemory(req, res, next);
 };
 
