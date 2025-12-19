@@ -33,7 +33,7 @@ export const CONSTANTS = {
   
   // Timeouts (Standardized)
   TIMEOUTS: {
-    EXTERNAL_API: 15000, // 15 seconds
+    EXTERNAL_API: 20000, // Increased to 20s for stability with Gemini Flash
   },
 
   // AI Configuration (Gemini 2.5 Series - Dec 2025 Standard)
@@ -43,9 +43,9 @@ export const CONSTANTS = {
     EMBEDDING: "text-embedding-004"
   },
   
-  // Cost Control: Adjusted for Gemini 2.5 Pro's efficiency
+  // Cost Control: Adjusted for Gemini 2.5 Pro's efficiency and 2025 Context Windows
   AI_LIMITS: {
-      MAX_INPUT_CHARS: 32000, // Increased to ~8000 tokens to utilize Pro model better
+      MAX_INPUT_CHARS: 65000, // Increased to ~16k tokens to utilize 2.5 Pro capabilities
       MIN_CONTENT_CHARS: 100, // Skip analysis if content is too thin
   },
 
