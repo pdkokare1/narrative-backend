@@ -13,9 +13,13 @@ import { CONSTANTS } from '../utils/constants';
 // Centralized Validation
 import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSchemas';
 
+// Centralized Config
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
 
 // --- STRICT JSON SCHEMAS ---
+// These define exactly what Gemini MUST return. 
+// This replaces the old method of "hoping" it returns valid JSON.
+
 const BASIC_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -54,9 +58,11 @@ class AIService {
   }
 
   /**
-   * ⚡ Smart Context Optimization
-   * Updated for 2025: Uses larger context windows (Gemini Flash)
-   * Prioritizes full text, but cleans junk to save costs.
+   * ⚡ Smart Context Optimization (Token Saver)
+   * Instead of blindly cutting the middle, this preserves the structure:
+   * 1. Intro (First 25%): Essential for context/who/what.
+   * 2. Middle (Sampled): Takes a slice from the exact middle to catch developments.
+   * 3. Outro (Last 20%): Essential for conclusion/impact.
    */
   private optimizeTextForTokenLimits(text: string): string {
       let clean = cleanText(text);
@@ -71,15 +77,22 @@ class AIService {
           clean = clean.replace(new RegExp(phrase, 'gi'), '');
       });
 
-      // 2. Safe Limit for Gemini Flash (approx 7k tokens / 30k chars)
-      // This is large enough for 99% of articles without "cutting" the middle.
-      const MAX_CHARS = 30000;
+      const MAX_CHARS = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 12000;
       
       if (clean.length > MAX_CHARS) {
-          // If genuinely massive, keep the vital Start and End
-          const keepStart = 20000; 
-          const keepEnd = 5000;
-          return `${clean.substring(0, keepStart)}\n\n[...Long content truncated...]\n\n${clean.substring(clean.length - keepEnd)}`;
+          const keepIntro = Math.floor(MAX_CHARS * 0.25);
+          const keepOutro = Math.floor(MAX_CHARS * 0.20);
+          const keepMiddle = Math.floor(MAX_CHARS * 0.15); // Sample a core section
+          
+          const partA = clean.substring(0, keepIntro);
+          
+          // Smart Middle Sample: Grab a chunk from the mathematical center of the text
+          const midPoint = Math.floor(clean.length / 2);
+          const partB = clean.substring(midPoint - (keepMiddle / 2), midPoint + (keepMiddle / 2));
+          
+          const partC = clean.substring(clean.length - keepOutro);
+          
+          return `${partA}\n\n[...Timeline Skipped...]\n\n${partB}\n\n[...Details Skipped...]\n\n${partC}`;
       }
 
       return clean;
@@ -91,6 +104,7 @@ class AIService {
   async analyzeArticle(article: Partial<IArticle>, targetModel: string = CONSTANTS.AI_MODELS.QUALITY, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
     
+    // 1. Circuit Breaker Check
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
     if (!isSystemHealthy) {
         logger.warn('⚡ Circuit Breaker OPEN for Gemini. Using Fallback.');
@@ -100,12 +114,14 @@ class AIService {
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
+      // OPTIMIZATION: Clean text BEFORE prompting to save tokens
       const optimizedArticle = {
           ...article,
           summary: this.optimizeTextForTokenLimits(article.summary || ""),
           headline: article.headline ? cleanText(article.headline) : ""
       };
       
+      // Cost Control: Skip if content is ghost-thin
       if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
           logger.warn(`Skipping AI analysis: Content too short (${optimizedArticle.summary.length} chars)`);
           return this.getFallbackAnalysis(article);
@@ -115,12 +131,13 @@ class AIService {
       
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
+      // 2. Call API with Strict Schema
       const response = await apiClient.post<IGeminiResponse>(url, {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: "application/json", 
           responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
-          temperature: 0.1, 
+          temperature: 0.1, // Low temp for factual consistency
           maxOutputTokens: 4096 
         }
       }, { timeout: 60000 });
@@ -155,7 +172,7 @@ class AIService {
 
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 2000), 
+                 text: cleanText(text).substring(0, 2000), // Enforce strict limit for embeddings
                  index: i + idx
              }));
              chunks.push(chunk);
@@ -199,6 +216,9 @@ class AIService {
     }
   }
 
+  /**
+   * SINGLE: Generates Embedding
+   */
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
@@ -219,12 +239,15 @@ class AIService {
     }
   }
 
+  // --- Private Helpers ---
+
   private parseGeminiResponse(data: IGeminiResponse, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) {
             throw new AppError('AI returned no candidates', 502);
         }
         
+        // Gemini 2.5 + Structured Output returns clean JSON text directly.
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
@@ -241,7 +264,10 @@ class AIService {
             };
         } else {
             validated = FullAnalysisSchema.parse(parsedRaw);
+            
+            // Calculate derivative scores
             const trustScore = Math.round(Math.sqrt(validated.credibilityScore * validated.reliabilityScore));
+            
             return {
                 ...validated,
                 analysisType: 'Full',
@@ -263,8 +289,8 @@ class AIService {
       const status = error.response?.status || 500;
       const msg = error.message || '';
 
-      if (status === 429 || msg.includes('429') || msg.includes('Quota')) {
-           logger.warn(`🛑 Gemini Quota Exceeded. Pausing.`);
+      if (status === 429 || msg.includes('429') || msg.includes('Quota') || msg.includes('RESOURCE_EXHAUSTED')) {
+           logger.warn(`🛑 Gemini Quota Exceeded (Key: ...${apiKey.slice(-4)}). Pausing.`);
            throw new AppError('AI Service Quota Exceeded', 429);
       }
       
