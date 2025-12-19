@@ -40,7 +40,14 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     } catch (e) {
         // Fallback: If strict validation fails on an optional field, just use raw query
         console.warn("Validation Warning (MainFeed):", e);
-        queryParams = req.query;
+        
+        // FIX: Ensure limit and offset are NUMBERS if we fallback to raw query
+        const raw = req.query as any;
+        queryParams = {
+            ...raw,
+            limit: raw.limit ? parseInt(raw.limit as string, 10) : 20,
+            offset: raw.offset ? parseInt(raw.offset as string, 10) : 0
+        };
     }
 
     const result = await articleService.getMainFeed(queryParams);
