@@ -4,11 +4,10 @@ import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
 import config from '../utils/config'; 
 import AppError from '../utils/AppError';
-import { cleanText, extractJSON } from '../utils/helpers';
+import { cleanText } from '../utils/helpers';
 import { IArticle, IGeminiResponse } from '../types';
 import promptManager from '../utils/promptManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
-import { jsonrepair } from 'jsonrepair';
 import { CONSTANTS } from '../utils/constants';
 
 // Centralized Validation
@@ -18,7 +17,7 @@ import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSche
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
 const PRO_MODEL = CONSTANTS.AI_MODELS.QUALITY;
 
-// JSON Schema for Gemini (Guidance only - passed to API)
+// JSON Schema for Gemini (Strict Mode)
 const GEMINI_JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -48,6 +47,7 @@ class AIService {
 
   /**
    * Analyzes an article using the Generative AI Model
+   * UPGRADE: Uses Native JSON Mode for 100% reliability.
    */
   async analyzeArticle(article: Partial<IArticle>, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
@@ -68,7 +68,7 @@ class AIService {
       const response = await apiClient.post<IGeminiResponse>(url, {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
-          responseMimeType: "application/json",
+          responseMimeType: "application/json", // STRICT JSON MODE
           responseSchema: mode === 'Basic' ? undefined : GEMINI_JSON_SCHEMA, 
           temperature: 0.1, 
           maxOutputTokens: 4096 
@@ -179,27 +179,6 @@ class AIService {
 
   // --- Private Helpers ---
 
-  /**
-   * Aggressively cleans the AI response to extract valid JSON
-   */
-  private cleanJsonText(raw: string): string {
-    if (!raw) return "{}";
-    
-    // 1. Remove Markdown code blocks
-    let clean = raw.replace(/```json\s*([\s\S]*?)\s*```/g, '$1');
-    clean = clean.replace(/```\s*([\s\S]*?)\s*```/g, '$1');
-    
-    // 2. Remove common text wrappers (e.g. "Here is the JSON: { ... }")
-    const firstBrace = clean.indexOf('{');
-    const lastBrace = clean.lastIndexOf('}');
-    
-    if (firstBrace !== -1 && lastBrace !== -1) {
-        clean = clean.substring(firstBrace, lastBrace + 1);
-    }
-
-    return clean;
-  }
-
   private parseGeminiResponse(data: IGeminiResponse, mode: 'Full' | 'Basic'): Partial<IArticle> {
     try {
         if (!data.candidates || data.candidates.length === 0) {
@@ -209,21 +188,10 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        // 1. Clean & Extract
-        const cleanJsonString = this.cleanJsonText(rawText);
-        
-        // 2. Repair JSON (Safe call for trailing commas etc)
-        let repairedJson = cleanJsonString;
-        try {
-           repairedJson = jsonrepair(cleanJsonString);
-        } catch (e) {
-           logger.warn("JSON Repair failed, attempting raw parse");
-        }
-        
-        // 3. Parse
-        const parsedRaw = JSON.parse(repairedJson);
+        // NATIVE JSON: We trust the output because of responseMimeType="application/json"
+        const parsedRaw = JSON.parse(rawText);
 
-        // 4. Validate & Transform with Centralized Zod Schemas
+        // Validate & Transform with Centralized Zod Schemas
         let validated;
         if (mode === 'Basic') {
             validated = BasicAnalysisSchema.parse(parsedRaw);
