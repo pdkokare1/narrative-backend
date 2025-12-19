@@ -1,5 +1,5 @@
 // services/articleService.ts
-import mongoose from 'mongoose';
+import mongoose, { PipelineStage, FilterQuery } from 'mongoose';
 import Article, { ArticleDocument } from '../models/articleModel';
 import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
@@ -19,10 +19,24 @@ interface FeedFilters {
     offset?: number | string;
 }
 
+// Return interfaces for clarity
+interface TrendingTopic {
+    topic: string;
+    count: number;
+    score: number;
+}
+
+interface ArticleResponse {
+    articles: ArticleDocument[] | Partial<ArticleDocument>[];
+    pagination?: { total: number };
+    total?: number;
+    meta?: any;
+}
+
 class ArticleService {
   
   // --- 1. Smart Trending Topics ---
-  async getTrendingTopics() {
+  async getTrendingTopics(): Promise<TrendingTopic[]> {
     return redis.getOrFetch(
         CONSTANTS.REDIS_KEYS.TRENDING, 
         async () => {
@@ -42,7 +56,7 @@ class ArticleService {
   }
 
   // --- 2. Intelligent Search (Now Cached) ---
-  async searchArticles(query: string, limit: number = 12) {
+  async searchArticles(query: string, limit: number = 12): Promise<ArticleResponse> {
     if (!query) return { articles: [], total: 0 };
     
     // Sanitize input to prevent injection
@@ -51,7 +65,7 @@ class ArticleService {
 
     return redis.getOrFetch(CACHE_KEY, async () => {
         // Attempt 1: Atlas Search (Optimized)
-        const atlasPipeline: any[] = [
+        const atlasPipeline: PipelineStage[] = [
             {
                 $search: {
                     index: 'default',
@@ -98,7 +112,7 @@ class ArticleService {
   }
 
   // --- 3. Main Feed (Cached) ---
-  async getMainFeed(filters: FeedFilters) {
+  async getMainFeed(filters: FeedFilters): Promise<ArticleResponse> {
     const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
     
     // Unique key based on all filters
@@ -106,7 +120,7 @@ class ArticleService {
     
     return redis.getOrFetch(CACHE_KEY, async () => {
         // Build Query
-        const query: any = {};
+        const query: FilterQuery<ArticleDocument> = {};
         if (category && category !== 'All Categories') query.category = category;
         if (lean && lean !== 'All Leans') query.politicalLean = lean;
         
@@ -128,7 +142,7 @@ class ArticleService {
             if (grades) query.credibilityGrade = { $in: grades };
         }
 
-        let sortOptions: any = { publishedAt: -1 };
+        let sortOptions: Record<string, 1 | -1> = { publishedAt: -1 };
         if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
         else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
         else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
@@ -146,7 +160,7 @@ class ArticleService {
   }
 
   // --- 4. For You Feed (Cached) ---
-  async getForYouFeed(userId: string | undefined) {
+  async getForYouFeed(userId: string | undefined): Promise<ArticleResponse> {
     // Guest User - No cache needed (lightweight)
     if (!userId) {
         const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
@@ -199,7 +213,7 @@ class ArticleService {
   }
 
   // --- 5. Personalized Feed (Cached) ---
-  async getPersonalizedFeed(userId: string) {
+  async getPersonalizedFeed(userId: string): Promise<ArticleResponse> {
     const CACHE_KEY = `my_mix_${userId}`;
     
     return redis.getOrFetch(CACHE_KEY, async () => {
@@ -212,7 +226,7 @@ class ArticleService {
         if (hasVector) {
             try {
                 const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-                const pipeline: any = [
+                const pipeline: PipelineStage[] = [
                     {
                         "$vectorSearch": {
                             "index": "vector_index",
@@ -221,7 +235,7 @@ class ArticleService {
                             "numCandidates": 150,
                             "limit": 50
                         }
-                    },
+                    } as any, // Cast to any because $vectorSearch type might be missing in mongoose types
                     { "$match": { "publishedAt": { "$gte": threeDaysAgo } } },
                     { "$limit": 20 },
                     {
@@ -275,7 +289,7 @@ class ArticleService {
   }
 
   // --- 6. Saved Articles (No Cache - User Specific & Low Volume) ---
-  async getSavedArticles(userId: string) {
+  async getSavedArticles(userId: string): Promise<ArticleDocument[]> {
     const profile = await Profile.findOne({ userId }).select('savedArticles');
     if (!profile || !profile.savedArticles.length) return [];
     return Article.find({ _id: { $in: profile.savedArticles } }).sort({ publishedAt: -1 }).lean();

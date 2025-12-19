@@ -8,10 +8,8 @@ export interface ArticleDocument extends Omit<IArticle, '_id'>, Document {
   updatedAt: Date;
 }
 
-// Interface for the Model (Static Methods)
-interface ArticleModel extends Model<ArticleDocument> {
-  smartSearch(term: string, limits?: number): Promise<ArticleDocument[]>;
-}
+// Interface for the Model
+interface ArticleModel extends Model<ArticleDocument> {}
 
 const articleSchema = new Schema<ArticleDocument>({
   headline: { type: String, required: true, trim: true },
@@ -58,7 +56,11 @@ const articleSchema = new Schema<ArticleDocument>({
   
   // Clustering Fields
   clusterId: { type: Number, index: true },
-  clusterTopic: { type: String, trim: true }, 
+  // Used in Trending Topics Grouping
+  clusterTopic: { type: String, trim: true, index: true },
+  // Used for "Most Covered" sort
+  clusterCount: { type: Number, default: 0, index: true },
+
   country: { type: String, index: true, trim: true, default: 'Global' }, 
   primaryNoun: { type: String, trim: true, default: null },
   secondaryNoun: { type: String, trim: true, default: null },
@@ -106,57 +108,12 @@ articleSchema.index({ clusterId: 1, publishedAt: -1 });
 // D. "Regional News": Filter by Country + Category + Date
 articleSchema.index({ country: 1, category: 1, publishedAt: -1 });
 
-// E. "Viral/Trending" - DISABLED FOR PERFORMANCE (Too heavy)
-// articleSchema.index({ publishedAt: -1, trustScore: -1, biasScore: -1 });
-
 // F. "Duplicate Check": Optimizes the pipeline's duplicate check
 articleSchema.index({ url: 1 }, { unique: true });
 
 // --- 3. DATA RETENTION ---
 // Automatically delete articles older than 90 days
 articleSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
-
-// --- 4. STATIC METHODS ---
-// This moves complex search logic OUT of the controller and INTO the model.
-articleSchema.statics.smartSearch = async function(term: string, limit: number = 20) {
-  try {
-    // Option A: Atlas Search (Primary)
-    // This provides fuzzy matching and better relevance if the index exists.
-    return await this.aggregate([
-      {
-        $search: {
-          index: "default", // Ensure you create this index in Atlas Dashboard
-          text: { 
-            query: term, 
-            path: { wildcard: "*" }
-            // fuzzy: {} // Optional: Enable for typo tolerance
-          }
-        }
-      },
-      { 
-        $limit: limit 
-      },
-      {
-        $project: {
-          headline: 1, summary: 1, url: 1, imageUrl: 1, 
-          source: 1, category: 1, publishedAt: 1,
-          score: { $meta: "searchScore" }
-        }
-      }
-    ]);
-  } catch (error) {
-    // console.warn("Atlas Search failed (Index missing?), falling back to Standard Text Search.");
-    
-    // Option B: Standard MongoDB Text Search (Fallback)
-    // We use the text index defined above.
-    return this.find(
-      { $text: { $search: term } },
-      { score: { $meta: 'textScore' } } // Return relevance score
-    )
-    .sort({ score: { $meta: 'textScore' }, publishedAt: -1 }) // Sort by relevance, then date
-    .limit(limit);
-  }
-};
 
 const Article = mongoose.model<ArticleDocument, ArticleModel>('Article', articleSchema);
 
