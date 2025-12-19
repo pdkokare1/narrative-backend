@@ -21,40 +21,43 @@ class NewsService {
     logger.info(`📰 News Service Initialized`);
   }
 
-  private async getCycleIndex(): Promise<number> {
+  /**
+   * ATOMIC CYCLE MANAGEMENT
+   * Uses Redis INCR to ensure multiple workers never clash on the same source.
+   */
+  private async getAndAdvanceCycleIndex(): Promise<number> {
       const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
-      if (redisClient.isReady()) {
-          try {
-              const stored = await redisClient.get(redisKey);
-              return stored ? parseInt(stored, 10) : 0;
-          } catch (e) { return 0; }
-      }
-      return 0;
-  }
-
-  private async advanceCycle(): Promise<void> {
-      const redisKey = CONSTANTS.REDIS_KEYS.NEWS_CYCLE;
-      const current = await this.getCycleIndex();
-      const next = (current + 1) % FETCH_CYCLES.length;
       
       if (redisClient.isReady()) {
-         await redisClient.set(redisKey, next.toString(), 86400);
+          try {
+              // Atomic Increment: Returns the NEW value immediately
+              const newValue = await redisClient.incr(redisKey);
+              
+              // Wrap around using modulo
+              const index = (newValue - 1) % FETCH_CYCLES.length;
+              return index;
+          } catch (e) { 
+              logger.warn(`Redis Cycle Error: ${e}. Defaulting to 0.`);
+              return 0; 
+          }
       }
-      logger.info(`🔄 Advancing News Cycle to Index: ${next} (${FETCH_CYCLES[next].name})`);
+      
+      // Fallback if Redis is down (Randomize to avoid stuck on same source)
+      return Math.floor(Math.random() * FETCH_CYCLES.length);
   }
 
   async fetchNews(): Promise<INewsSourceArticle[]> {
     const allArticles: INewsSourceArticle[] = [];
     
-    // Get current config
-    const cycleIndex = await this.getCycleIndex();
+    // 1. Atomic Cycle Selection
+    const cycleIndex = await this.getAndAdvanceCycleIndex();
     const currentCycle = FETCH_CYCLES[cycleIndex];
     
     logger.info(`🔄 News Fetch Cycle: ${currentCycle.name} (Index: ${cycleIndex})`);
 
     let gnewsFailed = false;
 
-    // 1. Try GNews First
+    // 2. Try GNews First
     try {
         const gnewsArticles = await this.fetchFromGNews(currentCycle.gnews);
         allArticles.push(...gnewsArticles);
@@ -68,13 +71,11 @@ class NewsService {
     } catch (err: any) {
         logger.warn(`GNews fetch failed: ${err.message}`);
         gnewsFailed = true;
-        if (err.response?.status === 429) {
-            logger.warn("⚠️ GNews Limit Reached. Advancing cycle.");
-            await this.advanceCycle();
-        }
+        
+        // Note: We don't manually "advance" anymore because INCR handled it upfront.
     }
 
-    // 2. Fallback to NewsAPI (Triggered on Error OR Low Yield)
+    // 3. Fallback to NewsAPI (Triggered on Error OR Low Yield)
     if (allArticles.length < 5 || gnewsFailed) {
       const isNewsApiOpen = await CircuitBreaker.isOpen('NEWS_API');
       
@@ -93,19 +94,18 @@ class NewsService {
       }
     }
 
-    // 3. REDIS LOCK: Filter Seen AND Lock Processing
+    // 4. REDIS LOCK: Filter Seen AND Lock Processing
+    // Clears lock immediately on failure to allow retries
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
 
-    // 4. DB CHECK: Filter articles already persisted
+    // 5. DB CHECK: Filter articles already persisted
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
 
-    // 5. PROCESS: Clean, Score, and Deduplicate (Fuzzy & Exact)
+    // 6. PROCESS: Clean, Score, and Deduplicate (Fuzzy & Exact)
     const finalUnique = articleProcessor.processBatch(dbUnseenArticles);
     
-    // 6. REDIS PERSIST: Mark accepted articles as "Seen"
+    // 7. REDIS PERSIST: Mark accepted articles as "Seen"
     await this.markAsSeenInRedis(finalUnique);
-
-    await this.advanceCycle();
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
     return finalUnique;
