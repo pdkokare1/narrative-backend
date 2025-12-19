@@ -24,7 +24,6 @@ export const initRedis = async (): Promise<RedisClientType | null> => {
     // 3. Start new connection logic
     connectionPromise = (async () => {
         // If no URL/Options, we can't connect.
-        // We check specific config fields to ensure we have a valid target.
         if (!config.redisUrl && !config.redisOptions) {
             logger.warn("⚠️ Redis URL/Options not set. Caching and Background Jobs will be disabled.");
             return null;
@@ -126,7 +125,7 @@ const redisClient = {
         try { await client.del(key); } catch (e) { }
     },
 
-    // --- RATE LIMITING / COUNTERS (Restored) ---
+    // --- RATE LIMITING / COUNTERS ---
 
     incr: async (key: string): Promise<number> => {
         if (!client || !isHealthy) return 0;
@@ -138,7 +137,7 @@ const redisClient = {
         try { return await client.expire(key, seconds); } catch (e) { return false; }
     },
 
-    // --- SETS (Restored for Gatekeeper) ---
+    // --- SETS ---
 
     sAdd: async (key: string, value: string): Promise<number> => {
         if (!client || !isHealthy) return 0;
@@ -191,9 +190,9 @@ const redisClient = {
         }
     },
 
-    // --- LOCKING (Restored for Workers) ---
-    // Critical: If Redis is down, this returns FALSE to prevent jobs running 
-    // simultaneously without a lock (Fail Closed).
+    // --- LOCKING (Workers) ---
+    
+    // Acquire a distributed lock. Returns true if lock obtained.
     acquireLock: async (key: string, ttlSeconds: number = 60): Promise<boolean> => {
         if (!client || !isHealthy) {
             logger.warn(`⚠️ Cannot acquire lock '${key}': Redis unavailable.`);
@@ -208,6 +207,16 @@ const redisClient = {
         } catch (e) {
             logger.warn(`⚠️ Error acquiring lock '${key}': ${e}`);
             return false; 
+        }
+    },
+
+    // Release a distributed lock immediately (for efficiency)
+    releaseLock: async (key: string): Promise<void> => {
+        if (!client || !isHealthy) return;
+        try {
+            await client.del(key);
+        } catch (e) {
+            // Ignore errors during release
         }
     },
 
