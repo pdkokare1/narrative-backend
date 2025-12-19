@@ -117,7 +117,8 @@ class NewsService {
 
   private getRedisKey(url: string): string {
     const hash = crypto.createHash('md5').update(url).digest('hex');
-    return `news:seen:${hash}`;
+    // CENTRALIZED KEY PREFIX
+    return `${CONSTANTS.REDIS_KEYS.NEWS_SEEN_PREFIX}${hash}`;
   }
 
   private async filterSeenInRedis(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
