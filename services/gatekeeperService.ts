@@ -50,9 +50,11 @@ class GatekeeperService {
 
     /**
      * LOCAL CHECK: Free and Fast.
+     * Updated with stricter rules for efficiency.
      */
     private async quickLocalCheck(article: any): Promise<{ isJunk: boolean; reason?: string }> {
-        const title = (article.title || "").toLowerCase();
+        const title = (article.title || "").trim();
+        const titleLower = title.toLowerCase();
         const desc = (article.description || "").toLowerCase();
         const url = (article.url || "").toLowerCase();
         const domain = this.getDomain(url);
@@ -64,7 +66,7 @@ class GatekeeperService {
         } 
         
         // 2. Keyword Check (Memory)
-        const combinedText = `${title} ${desc}`;
+        const combinedText = `${titleLower} ${desc}`;
         const foundKeyword = this.localKeywords.find(word => combinedText.includes(word));
         
         if (foundKeyword) {
@@ -74,6 +76,20 @@ class GatekeeperService {
         // 3. Length Check
         if ((title.length + desc.length) < 80) {
             return { isJunk: true, reason: 'Too Short / Empty' };
+        }
+
+        // 4. CAPS LOCK DETECTOR (New)
+        // If more than 60% of the title is uppercase and title is long enough, it's likely spam/clickbait.
+        const upperCount = title.replace(/[^A-Z]/g, "").length;
+        if (title.length > 20 && (upperCount / title.length) > 0.6) {
+             return { isJunk: true, reason: 'ALL CAPS TITLE' };
+        }
+
+        // 5. Excessive Emoji Detector (New)
+        // Count typical emoji ranges or surrogate pairs
+        const emojiCount = (title.match(/[\u{1F300}-\u{1F9FF}]/gu) || []).length;
+        if (emojiCount > 2) {
+             return { isJunk: true, reason: 'Excessive Emojis' };
         }
 
         return { isJunk: false };
@@ -179,6 +195,7 @@ class GatekeeperService {
             } catch (e) { /* ignore */ }
             
             console.error(`Gatekeeper Error:`, error.message);
+            // Default to Soft News if AI fails, so we don't crash, but use FAST model next
             return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: CONSTANTS.AI_MODELS.FAST };
         }
     }
