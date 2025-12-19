@@ -163,7 +163,8 @@ class AIService {
       // We pass the full summary/content here to be processed by promptManager
       const optimizedArticle = {
           ...article,
-          summary: this.optimizeTextForTokenLimits(article.summary || article.content || ""),
+          // FIX: Access content securely with fallback
+          summary: this.optimizeTextForTokenLimits(article.summary || (article as any).content || ""),
           headline: article.headline ? cleanText(article.headline) : ""
       };
       
