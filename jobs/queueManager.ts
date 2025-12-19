@@ -17,12 +17,14 @@ const queueManager = {
     initialize: async () => {
         if (queues[NEWS_QUEUE_NAME]) return;
 
-        // SAFE ACCESS: Check if bullMQConnection exists, otherwise fallback or skip
-        const connectionConfig = (config as any).bullMQConnection || (config as any).redisOptions;
-        const isRedisConfigured = !!connectionConfig;
+        // SAFE ACCESS: Use the strictly typed config from utils/config
+        const connectionConfig = config.bullMQConnection || config.redisOptions;
+        
+        // Ensure we have a valid object, not just a string URL
+        const isRedisConfigured = !!connectionConfig && typeof connectionConfig === 'object';
 
         if (!isRedisConfigured) {
-            logger.warn("⚠️ REDIS_URL not set. Background jobs will be disabled.");
+            logger.warn("⚠️ REDIS_URL not set or invalid. Background jobs will be disabled.");
             return;
         }
 
@@ -39,7 +41,10 @@ const queueManager = {
                 });
                 
                 q.on('error', (err) => {
-                    logger.error(`❌ Queue [${name}] Connection Error: ${err.message}`);
+                    // Suppress simple connection refused errors to avoid log spam
+                    if (!err.message.includes('ECONNREFUSED')) {
+                         logger.error(`❌ Queue [${name}] Connection Error: ${err.message}`);
+                    }
                 });
                 return q;
             };
@@ -59,6 +64,7 @@ const queueManager = {
     addJobToQueue: async (queueName: string, jobName: string, data: any, opts: any = {}) => {
         const queue = queues[queueName];
         if (!queue) {
+            // Only log debug to avoid spamming production logs if redis is down
             logger.debug(`⚠️ Queue [${queueName}] not available. Job dropped.`);
             return null;
         }
