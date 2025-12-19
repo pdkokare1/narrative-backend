@@ -34,6 +34,7 @@ class PipelineService {
 
     /**
      * Retrieves embedding safely without memory-risk batching.
+     * Used ONLY as a fallback if batch embedding was missed.
      */
     private async getEmbeddingSafe(article: Partial<IArticle>): Promise<number[]> {
         const textToEmbed = `${article.headline || ''}. ${article.summary || ''}`;
@@ -87,11 +88,21 @@ class PipelineService {
             // 4. Similarity Check & Embeddings
             let existingMatch = await clusteringService.findSimilarHeadline(article.headline!);
             let usedFuzzyMatch = !!existingMatch;
+            
+            // OPTIMIZATION: Check if embedding was pre-calculated in Batch Fetcher
             let embedding: number[] | null = null;
+            
+            if (rawArticle.embedding && Array.isArray(rawArticle.embedding)) {
+                 embedding = rawArticle.embedding;
+                 // logger.debug('⚡ Using pre-calculated batch embedding.');
+            }
 
             if (!existingMatch) {
-                // Get embedding safely
-                embedding = await this.getEmbeddingSafe(article);
+                // If no pre-calculated embedding, fetch it now (Fallback)
+                if (!embedding || embedding.length === 0) {
+                    embedding = await this.getEmbeddingSafe(article);
+                }
+
                 if (embedding && embedding.length > 0) {
                     existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
                 }
