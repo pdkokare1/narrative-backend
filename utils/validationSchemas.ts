@@ -33,6 +33,7 @@ export const BasicAnalysisSchema = z.object({
 });
 
 // Detailed Component Schemas for Deep Analysis
+// These define the shape of the nested objects Gemini returns
 const MetricComponentSchema = z.object({
     sentimentPolarity: z.number().optional(), 
     emotionalLanguage: z.number().optional(), 
@@ -58,6 +59,7 @@ const FramingComponentSchema = z.object({
     omissionBias: z.number().optional()
 });
 
+// The Main Analysis Schema
 export const FullAnalysisSchema = z.object({
   summary: z.string(),
   category: z.string(),
@@ -66,19 +68,19 @@ export const FullAnalysisSchema = z.object({
   
   // Primary Scores
   biasScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  biasLabel: z.string().optional(),
+  biasLabel: z.string().optional(), // NEW: Capture the text label (e.g., "Left Leaning")
   
   credibilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  credibilityGrade: z.string().optional(),
+  credibilityGrade: z.string().optional(), // NEW
   
   reliabilityScore: z.union([z.number(), z.string()]).transform(val => Number(val) || 0),
-  reliabilityGrade: z.string().optional(),
+  reliabilityGrade: z.string().optional(), // NEW
   
-  trustLevel: z.string().optional(),
+  trustLevel: z.string().optional(), // NEW: e.g., "High", "Medium", "Low"
   
   // Metadata & Taxonomy
   clusterTopic: z.string().optional(),
-  country: z.string().optional(),
+  country: z.string().optional(), // NEW: Vital for filtering news by region
   primaryNoun: z.string().optional(),
   secondaryNoun: z.string().optional(),
   
@@ -86,6 +88,7 @@ export const FullAnalysisSchema = z.object({
   recommendations: z.array(z.string()).optional().default([]),
 
   // Complex Analysis Objects (Crucial for Narrative Frontend)
+  // These were previously being stripped out
   biasComponents: z.object({
       linguistic: MetricComponentSchema.optional(),
       sourceSelection: SourceComponentSchema.optional(),
