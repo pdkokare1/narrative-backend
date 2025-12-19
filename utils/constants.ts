@@ -115,7 +115,7 @@ export const JUNK_KEYWORDS = [
     
     // Gaming Guides
     'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
-    'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\\'s answer', 'quordle',
+    'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\'s answer', 'quordle',
     'patch notes', 'loadout', 'tier list', 'how to get', 'where to find', 
     'twitch drops', 'codes for',
     
@@ -126,7 +126,7 @@ export const JUNK_KEYWORDS = [
     
     // Clickbait Phrases
     'watch:', 'video:', 'photos:', 'gallery:', 'live:', 'live updates', 
-    'you need to know', 'here\\'s why', 'what we know', 'everything we know',
+    'you need to know', 'here\'s why', 'what we know', 'everything we know',
     'reaction', 'reacts to', 'internet is losing it', 'fans are',
     
     // Gambling / Lottery
