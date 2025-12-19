@@ -1,7 +1,7 @@
 // jobs/newsFetcher.ts
 import newsService from '../services/newsService';
 import pipelineService from '../services/pipelineService';
-import aiService from '../services/aiService'; // <--- NEW IMPORT
+import aiService from '../services/aiService'; 
 import logger from '../utils/logger'; 
 import { cleanText } from '../utils/helpers';
 
