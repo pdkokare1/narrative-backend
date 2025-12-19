@@ -1,4 +1,5 @@
 // utils/constants.ts
+import config from './config';
 
 export const ONE_MINUTE = 60 * 1000;
 export const FIFTEEN_MINUTES = 15 * 60 * 1000;
@@ -38,9 +39,9 @@ export const CONSTANTS = {
 
   // AI Configuration (Gemini 2.5 Series - Dec 2025 Standard)
   AI_MODELS: {
-    FAST: "gemini-2.5-flash", // For Gatekeeper & Quick Checks
-    QUALITY: "gemini-2.5-pro", // For Deep Analysis
-    EMBEDDING: "text-embedding-004"
+    FAST: config.aiModels.fast,      // Defaults to "gemini-2.5-flash"
+    QUALITY: config.aiModels.pro,    // Defaults to "gemini-2.5-pro"
+    EMBEDDING: config.aiModels.embedding // Defaults to "text-embedding-004"
   },
   
   // Cost Control: Adjusted for Gemini 2.5 Pro's efficiency and 2025 Context Windows
