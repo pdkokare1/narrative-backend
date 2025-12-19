@@ -2,20 +2,23 @@
 import rateLimit, { RateLimitRequestHandler } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
 import { Request, Response, NextFunction } from 'express';
-import { CONSTANTS } from '../utils/constants';
+import config from '../utils/config';
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
 
 const keyGenerator = (req: Request | any): string => {
+    // Check if user is authenticated via authMiddleware
     if (req.user && req.user.uid) {
         return `limiter:${req.user.uid}`;
     }
+    // Fallback to IP address
     return req.ip || 'unknown-ip';
 };
 
+// --- 1. Memory Limiter (Backup) ---
 const createMemoryLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
     return rateLimit({
-        windowMs: CONSTANTS.RATE_LIMIT.WINDOW_MS,
+        windowMs: config.rateLimit.windowMs,
         max: maxRequests,
         standardHeaders: true,
         legacyHeaders: false,
@@ -30,27 +33,26 @@ const createMemoryLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
     });
 };
 
+// --- 2. Redis Limiter (Primary) ---
 const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
     try {
         const store = new RedisStore({
-            // @ts-expect-error - RedisStore expects a slightly different signature but this is valid for Redis v4
+            // @ts-expect-error - RedisStore expects a specific command signature, but we wrap the v4 client safely
             sendCommand: async (...args: string[]) => {
-               try {
+                try {
                    const client = redisClient.getClient();
-                   // Ensure client exists and is open to avoid crashes
+                   // If client is missing or not open, return null to trigger error handling
                    if(!client || !client.isOpen) return null;
                    
-                   // Redis v4 sendCommand returns a Promise<unknown>
                    return await client.sendCommand(args);
-               } catch(e) {
-                   // If Redis fails, fall back silently so API doesn't crash
+                } catch(e) {
                    return null;
-               }
+                }
             },
         });
 
         return rateLimit({
-            windowMs: CONSTANTS.RATE_LIMIT.WINDOW_MS,
+            windowMs: config.rateLimit.windowMs,
             max: maxRequests,
             standardHeaders: true,
             legacyHeaders: false,
@@ -75,33 +77,42 @@ const createRedisLimiter = (maxRequests: number, type: 'API' | 'TTS') => {
 };
 
 // --- Singleton Limiters ---
-const apiLimiterMemory = createMemoryLimiter(CONSTANTS.RATE_LIMIT.API_MAX_REQUESTS, 'API');
-const ttsLimiterMemory = createMemoryLimiter(CONSTANTS.RATE_LIMIT.TTS_MAX_REQUESTS, 'TTS');
+// Always create memory limiters as backup
+const apiLimiterMemory = createMemoryLimiter(config.rateLimit.maxApi, 'API');
+const ttsLimiterMemory = createMemoryLimiter(config.rateLimit.maxTts, 'TTS');
 
+// Redis limiters are created lazily
 let apiLimiterRedis: RateLimitRequestHandler | null = null;
 let ttsLimiterRedis: RateLimitRequestHandler | null = null;
 
-// --- Dynamic Middleware Wrapper ---
+// --- Dynamic Middleware Wrappers ---
+// This logic checks Redis health on EVERY request to decide which limiter to use
 export const apiLimiter = (req: Request, res: Response, next: NextFunction) => {
     if (redisClient.isReady()) {
+        // Init Redis limiter if not exists
         if (!apiLimiterRedis) {
-            apiLimiterRedis = createRedisLimiter(CONSTANTS.RATE_LIMIT.API_MAX_REQUESTS, 'API');
+            apiLimiterRedis = createRedisLimiter(config.rateLimit.maxApi, 'API');
         }
+        // Use Redis limiter if successfully created
         if (apiLimiterRedis) {
             return apiLimiterRedis(req, res, next);
         }
     }
+    // Fallback to Memory
     return apiLimiterMemory(req, res, next);
 };
 
 export const ttsLimiter = (req: Request, res: Response, next: NextFunction) => {
     if (redisClient.isReady()) {
+        // Init Redis limiter if not exists
         if (!ttsLimiterRedis) {
-            ttsLimiterRedis = createRedisLimiter(CONSTANTS.RATE_LIMIT.TTS_MAX_REQUESTS, 'TTS');
+            ttsLimiterRedis = createRedisLimiter(config.rateLimit.maxTts, 'TTS');
         }
+        // Use Redis limiter if successfully created
         if (ttsLimiterRedis) {
             return ttsLimiterRedis(req, res, next);
         }
     }
+    // Fallback to Memory
     return ttsLimiterMemory(req, res, next);
 };
