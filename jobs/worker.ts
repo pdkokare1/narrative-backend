@@ -53,9 +53,9 @@ export const startWorker = () => {
             connection: connectionConfig as ConnectionOptions,
             concurrency: concurrency,
             
-            // CRITICAL CHANGE: Increased to 3 Minutes (180,000ms)
-            // This ensures Gemini has enough time to think without the job timing out.
-            lockDuration: 180000, 
+            // CRITICAL CHANGE: Increased to 5 Minutes (300,000ms)
+            // This ensures Gemini has ample time to think for complex articles without the job timing out.
+            lockDuration: 300000, 
             
             // Limit how many times a "stalled" job is retried to prevent infinite loops
             maxStalledCount: 1, 
@@ -71,6 +71,11 @@ export const startWorker = () => {
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
+            
+            // DEAD LETTER ALERT: If a job has failed all its attempts
+            if (job && job.attemptsMade >= (job.opts.attempts || 0)) {
+                logger.error(`🚨 DEAD LETTER: Job ${job.id} has permanently failed after ${job.attemptsMade} attempts.`);
+            }
         });
         
         newsWorker.on('error', (err) => {
@@ -78,7 +83,7 @@ export const startWorker = () => {
              logger.error(`⚠️ Worker Connection Error: ${err.message}`);
         });
 
-        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency}, Lock: 3mins)`);
+        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency}, Lock: 5mins)`);
 
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
