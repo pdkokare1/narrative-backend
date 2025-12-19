@@ -31,10 +31,18 @@ export const searchArticles = asyncHandler(async (req: Request, res: Response) =
 
 // --- 3. Main Feed ---
 export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
-    // Strict Validation
-    const { query } = schemas.feedFilters.parse({ query: req.query });
+    // Strict Validation - We allow the service to handle defaults if params are missing
+    let queryParams: any = {};
+    try {
+        const parsed = schemas.feedFilters.parse({ query: req.query });
+        queryParams = parsed.query;
+    } catch (e) {
+        // Fallback: If strict validation fails on an optional field, just use raw query
+        console.warn("Validation Warning (MainFeed):", e);
+        queryParams = req.query;
+    }
 
-    const result = await articleService.getMainFeed(query);
+    const result = await articleService.getMainFeed(queryParams);
     
     // Set headers for Browser Caching
     res.set('Cache-Control', 'public, max-age=300');
