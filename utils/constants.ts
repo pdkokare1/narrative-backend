@@ -1,4 +1,7 @@
-// utils/constants.ts
+{
+type: "file",
+fileName: "pdkokare1/narrative-backend/narrative-backend-200417e7ce8ef5718aa5faa40dac94157230de0b/utils/constants.ts",
+fullContent: `// utils/constants.ts
 
 export const ONE_MINUTE = 60 * 1000;
 export const FIFTEEN_MINUTES = 15 * 60 * 1000;
@@ -115,7 +118,7 @@ export const JUNK_KEYWORDS = [
     
     // Gaming Guides
     'wordle', 'connections hint', 'connections answer', 'crossword', 'sudoku', 
-    'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\'s answer', 'quordle',
+    'daily mini', 'spoilers', 'walkthrough', 'guide', 'today\\'s answer', 'quordle',
     'patch notes', 'loadout', 'tier list', 'how to get', 'where to find', 
     'twitch drops', 'codes for',
     
@@ -126,7 +129,7 @@ export const JUNK_KEYWORDS = [
     
     // Clickbait Phrases
     'watch:', 'video:', 'photos:', 'gallery:', 'live:', 'live updates', 
-    'you need to know', 'here\'s why', 'what we know', 'everything we know',
+    'you need to know', 'here\\'s why', 'what we know', 'everything we know',
     'reaction', 'reacts to', 'internet is losing it', 'fans are',
     
     // Gambling / Lottery
@@ -136,4 +139,5 @@ export const JUNK_KEYWORDS = [
     // Administrative / Paywall Trash
     'subscribe now', 'sign up', 'newsletter', 'login', 'register',
     'have an account?', 'exclusive content', 'premium', 'giveaway'
-];
+];`
+}
