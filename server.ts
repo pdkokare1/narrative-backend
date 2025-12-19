@@ -34,9 +34,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     next();
 });
 
-// CHANGED: Use Configurable Trust Proxy Level
-// This prevents Rate Limit bugs when using Cloudflare + Railway
-app.set('trust proxy', config.trustProxyLevel);
+// CRITICAL FIX: Trust Proxy for Railway/Vercel Load Balancers
+// "1" means we trust the first proxy hop (Railway's internal router)
+// This ensures 'req.ip' is the ACTUAL user IP, not Railway's IP.
+app.set('trust proxy', 1);
 
 // --- 2. Security Middleware ---
 app.use(helmet({ 
@@ -122,6 +123,7 @@ const startServer = async () => {
         });
 
         // 3. Initialize Queue (After Redis is definitely ready)
+        // Note: queueManager internally checks if Redis is connected
         await queueManager.initialize();
         logger.info('✨ Infrastructure Fully Initialized');
 
