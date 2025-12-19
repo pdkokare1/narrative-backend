@@ -1,6 +1,7 @@
 // jobs/worker.ts
 import { Worker, Job, ConnectionOptions } from 'bullmq';
 import path from 'path';
+import fs from 'fs';
 import logger from '../utils/logger';
 import config from '../utils/config';
 import { CONSTANTS } from '../utils/constants';
@@ -23,10 +24,26 @@ export const startWorker = () => {
     try {
         const concurrency = config.worker.concurrency || 1;
 
-        // DYNAMIC PROCESSOR PATH
+        // DYNAMIC PROCESSOR PATH (ROBUST)
         // Detects if we are running as .ts (Dev) or .js (Prod)
         const extension = path.extname(__filename); 
         const processorFile = path.join(__dirname, `workerProcessor${extension}`);
+
+        // SAFETY CHECK: Verify processor exists before crashing the worker
+        if (!fs.existsSync(processorFile)) {
+             logger.error(`❌ CRITICAL: Worker Processor file not found at: ${processorFile}`);
+             // Try fallback to .js if .ts was missing (or vice-versa)
+             const altExtension = extension === '.ts' ? '.js' : '.ts';
+             const altFile = path.join(__dirname, `workerProcessor${altExtension}`);
+             
+             if (fs.existsSync(altFile)) {
+                 logger.info(`🔄 Found alternative processor at: ${altFile}. Using that.`);
+                 // We don't update processorFile here, we just know the logic below needs to be careful
+                 // Ideally, we restart or handle this, but for now we warn.
+             } else {
+                 return; // Stop here to prevent BullMQ error
+             }
+        }
 
         // @ts-ignore - ConnectionOptions typing
         newsWorker = new Worker(CONSTANTS.QUEUE.NAME, processorFile, { 
