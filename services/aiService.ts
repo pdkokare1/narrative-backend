@@ -62,7 +62,15 @@ class AIService {
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
-      const prompt = await promptManager.getAnalysisPrompt(article, mode);
+      // OPTIMIZATION: Clean text BEFORE prompting to save tokens
+      const optimizedArticle = {
+          ...article,
+          summary: article.summary ? cleanText(article.summary).substring(0, 15000) : "", // Cap input size
+          headline: article.headline ? cleanText(article.headline) : ""
+      };
+
+      const prompt = await promptManager.getAnalysisPrompt(optimizedArticle, mode);
+      
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
       const response = await apiClient.post<IGeminiResponse>(url, {
@@ -99,7 +107,8 @@ class AIService {
     try {
         const apiKey = await KeyManager.getKey('GEMINI');
         const BATCH_SIZE = 100;
-        const CONCURRENCY_LIMIT = 5; // Run 5 requests in parallel
+        // Load concurrency from Config (Default 5)
+        const CONCURRENCY_LIMIT = config.ai.concurrency || 5; 
         
         const allEmbeddings: number[][] = new Array(texts.length).fill([]);
         const chunks: { text: string; index: number }[][] = [];
@@ -107,7 +116,7 @@ class AIService {
         // 1. Prepare Chunks with original indices
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 2000),
+                 text: cleanText(text).substring(0, 2000), // Enforce clean text limit
                  index: i + idx
              }));
              chunks.push(chunk);
