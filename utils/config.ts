@@ -48,9 +48,9 @@ const envSchema = z.object({
   // Trust Proxy Configuration
   TRUST_PROXY_LVL: z.string().transform(Number).default('1'),
   
-  // AI Model Configuration
+  // AI Model Configuration - STRICT 2.5 DEFAULTS
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
-  AI_MODEL_PRO: z.string().default('gemini-2.5-pro'), // Updated to 2.5 Pro
+  AI_MODEL_PRO: z.string().default('gemini-2.5-pro'), 
 
   // Firebase
   FIREBASE_SERVICE_ACCOUNT: z.string().optional(),
