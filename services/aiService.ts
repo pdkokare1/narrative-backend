@@ -1,7 +1,4 @@
-{
-type: "file",
-fileName: "pdkokare1/narrative-backend/narrative-backend-200417e7ce8ef5718aa5faa40dac94157230de0b/services/aiService.ts",
-fullContent: `// services/aiService.ts
+// services/aiService.ts
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
@@ -365,5 +362,4 @@ class AIService {
   }
 }
 
-export default new AIService();`
-}
+export default new AIService();
