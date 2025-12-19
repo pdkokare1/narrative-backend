@@ -82,6 +82,22 @@ class AIService {
   }
 
   /**
+   * Helper: Strips Markdown code blocks from JSON strings.
+   * Gemini often returns: ```json { ... } ``` which breaks JSON.parse()
+   */
+  private cleanJsonOutput(text: string): string {
+      if (!text) return "{}";
+      
+      // Remove markdown code blocks
+      let clean = text.replace(/```json/g, '').replace(/```/g, '');
+      
+      // Trim whitespace
+      clean = clean.trim();
+      
+      return clean;
+  }
+
+  /**
    * Analyzes an article using the Generative AI Model
    */
   async analyzeArticle(article: Partial<IArticle>, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
@@ -232,7 +248,9 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        const parsedRaw = JSON.parse(rawText);
+        // FIX: Sanitize markdown before parsing
+        const cleanJson = this.cleanJsonOutput(rawText);
+        const parsedRaw = JSON.parse(cleanJson);
 
         let validated;
         if (mode === 'Basic') {
