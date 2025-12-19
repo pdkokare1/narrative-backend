@@ -13,11 +13,11 @@ import { CONSTANTS } from '../utils/constants';
 // Centralized Validation
 import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSchemas';
 
-// Centralized Config from CONSTANTS
+// Centralized Config
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
 const PRO_MODEL = CONSTANTS.AI_MODELS.QUALITY;
 
-// JSON Schema for Gemini (Strict Mode)
+// Strict JSON Schema for Gemini
 const GEMINI_JSON_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -46,26 +46,43 @@ class AIService {
   }
 
   /**
-   * Helper: Strips standard boilerplate to save tokens/money.
+   * Smart Context Truncator
+   * Saves money by ensuring we don't send massive texts.
+   * Prioritizes the "Lead" (First 30%) and "Conclusion" (Last 20%).
    */
   private optimizeTextForTokenLimits(text: string): string {
       let clean = cleanText(text);
-      // Remove common footer/ads text
+
+      // 1. Remove standard boilerplate
       const junkPhrases = [
           "Subscribe to continue reading", "Read more", "Sign up for our newsletter",
-          "Follow us on", "© 2023", "© 2024", "All rights reserved",
-          "Click here", "Advertisement", "Supported by"
+          "Follow us on", "© 2023", "© 2024", "© 2025", "All rights reserved",
+          "Click here", "Advertisement", "Supported by", "Terms of Service"
       ];
       junkPhrases.forEach(phrase => {
           clean = clean.replace(new RegExp(phrase, 'gi'), '');
       });
-      // Cap at 15000 chars (approx 3-4k tokens) to prevent massive billing spikes
-      return clean.substring(0, 15000);
+
+      // 2. Strict Cost Control Check
+      const MAX_CHARS = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 12000;
+      
+      if (clean.length > MAX_CHARS) {
+          // Smart Slice: Keep first 60%, Skip middle, Keep last 20%
+          // This preserves the Intro (Who/What) and the Conclusion (Why/Impact)
+          const keepStart = Math.floor(MAX_CHARS * 0.6);
+          const keepEnd = Math.floor(MAX_CHARS * 0.2);
+          
+          const partA = clean.substring(0, keepStart);
+          const partB = clean.substring(clean.length - keepEnd);
+          
+          return `${partA}\n\n[...Content Truncated for Analysis...]\n\n${partB}`;
+      }
+
+      return clean;
   }
 
   /**
    * Analyzes an article using the Generative AI Model
-   * UPGRADE: Uses Native JSON Mode for 100% reliability.
    */
   async analyzeArticle(article: Partial<IArticle>, targetModel: string = PRO_MODEL, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
@@ -86,6 +103,12 @@ class AIService {
           summary: this.optimizeTextForTokenLimits(article.summary || ""),
           headline: article.headline ? cleanText(article.headline) : ""
       };
+      
+      // If content is too thin, skip analysis (Save Money)
+      if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
+          logger.warn(`Skipping AI analysis: Content too short (${optimizedArticle.summary.length} chars)`);
+          return this.getFallbackAnalysis(article);
+      }
 
       const prompt = await promptManager.getAnalysisPrompt(optimizedArticle, mode);
       
@@ -114,7 +137,6 @@ class AIService {
 
   /**
    * BATCH: Generates Embeddings
-   * OPTIMIZED: Uses Parallel Execution (Concurrency) to speed up large batches
    */
   async createBatchEmbeddings(texts: string[]): Promise<number[][] | null> {
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
@@ -125,22 +147,19 @@ class AIService {
     try {
         const apiKey = await KeyManager.getKey('GEMINI');
         const BATCH_SIZE = 100;
-        // Load concurrency from Config (Default 5)
         const CONCURRENCY_LIMIT = config.ai.concurrency || 5; 
         
         const allEmbeddings: number[][] = new Array(texts.length).fill([]);
         const chunks: { text: string; index: number }[][] = [];
 
-        // 1. Prepare Chunks with original indices
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 2000), // Enforce clean text limit for embeddings
+                 text: cleanText(text).substring(0, 2000), // Enforce strict limit for embeddings
                  index: i + idx
              }));
              chunks.push(chunk);
         }
 
-        // 2. Process Chunks in Parallel Batches
         for (let i = 0; i < chunks.length; i += CONCURRENCY_LIMIT) {
             const parallelBatch = chunks.slice(i, i + CONCURRENCY_LIMIT);
             
@@ -163,7 +182,6 @@ class AIService {
                     }
                 } catch (err: any) {
                     logger.warn(`Partial Batch Failure: ${err.message}`);
-                    // We don't throw here to avoid failing the entire operation, just log missing embeddings
                 }
             }));
         }
@@ -171,7 +189,6 @@ class AIService {
         KeyManager.reportSuccess(apiKey);
         await CircuitBreaker.recordSuccess('GEMINI');
 
-        // Filter out any empty results from failed chunks
         return allEmbeddings.filter(e => e.length > 0);
 
     } catch (error: any) {
@@ -215,10 +232,8 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        // NATIVE JSON: We trust the output because of responseMimeType="application/json"
         const parsedRaw = JSON.parse(rawText);
 
-        // Validate & Transform with Centralized Zod Schemas
         let validated;
         if (mode === 'Basic') {
             validated = BasicAnalysisSchema.parse(parsedRaw);
@@ -231,7 +246,6 @@ class AIService {
         } else {
             validated = FullAnalysisSchema.parse(parsedRaw);
             
-            // Calculate Trust Score
             const trustScore = Math.round(Math.sqrt(validated.credibilityScore * validated.reliabilityScore));
             
             return {
@@ -243,7 +257,6 @@ class AIService {
 
     } catch (error: any) {
         logger.error(`AI Parse/Validation Error: ${error.message}`);
-        // Fallback to basic if full fails, rather than crashing
         if (mode === 'Full') {
              logger.warn("Attempting Basic Fallback due to parsing error...");
              return this.getFallbackAnalysis({ ...data, summary: "Analysis partial due to format error." });
@@ -256,13 +269,11 @@ class AIService {
       const status = error.response?.status || 500;
       const msg = error.message || '';
 
-      // Quota Errors (429) or "Resource Exhausted"
       if (status === 429 || msg.includes('429') || msg.includes('Quota') || msg.includes('RESOURCE_EXHAUSTED')) {
            logger.warn(`🛑 Gemini Quota Exceeded (Key: ...${apiKey.slice(-4)}). Pausing.`);
            throw new AppError('AI Service Quota Exceeded', 429);
       }
       
-      // Retryable errors (Server errors)
       if (status >= 500 || error.code === 'ECONNABORTED') {
           if (apiKey) KeyManager.reportFailure(apiKey, true);
           await CircuitBreaker.recordFailure('GEMINI');
