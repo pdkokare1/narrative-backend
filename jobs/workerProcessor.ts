@@ -9,14 +9,14 @@ import {
 } from './jobHandlers';
 
 /**
- * Sandboxed Worker Processor
- * * This function runs in a separate process (sandbox). 
- * It isolates the CPU-intensive work from the main thread.
+ * Worker Processor (Threaded Mode)
+ * This function runs in the MAIN process now.
+ * It is called directly by the worker, saving memory.
  */
 export default async function workerProcessor(job: Job) {
     // 1. Ensure Database Connection
-    // Since this runs in a separate process, it needs its own connection.
-    // dbLoader handles the "is already connected" check internally.
+    // In threaded mode, this likely recycles the existing connection immediately.
+    // If connection was lost, it reconnects.
     await dbLoader.connect();
 
     // 2. Route Job to Handler
