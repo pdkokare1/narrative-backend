@@ -36,7 +36,7 @@ class GatekeeperService {
             }
             this.localKeywords = keywordsDoc ? keywordsDoc.value : JUNK_KEYWORDS;
             
-            logger.info(\`✅ Gatekeeper Config Loaded: \${this.localKeywords.length} keywords.\`);
+            logger.info(`✅ Gatekeeper Config Loaded: ${this.localKeywords.length} keywords.`);
         } catch (error) {
             logger.error('❌ Gatekeeper Init Failed:', error);
         }
@@ -45,7 +45,7 @@ class GatekeeperService {
     private getDomain(url: string): string | null {
         try {
             const hostname = new URL(url).hostname;
-            return hostname.replace(/^www\\./, '');
+            return hostname.replace(/^www\./, '');
         } catch (e) { return null; }
     }
 
@@ -67,11 +67,11 @@ class GatekeeperService {
         } 
         
         // 2. Keyword Check (Memory)
-        const combinedText = \`\${titleLower} \${desc}\`;
+        const combinedText = `${titleLower} ${desc}`;
         const foundKeyword = this.localKeywords.find(word => combinedText.includes(word));
         
         if (foundKeyword) {
-            return { isJunk: true, reason: \`Keyword Match: "\${foundKeyword}"\` };
+            return { isJunk: true, reason: `Keyword Match: "${foundKeyword}"` };
         }
 
         // 3. Length Check
@@ -88,7 +88,7 @@ class GatekeeperService {
 
         // 5. Excessive Emoji Detector (New)
         // Count typical emoji ranges or surrogate pairs
-        const emojiCount = (title.match(/[\\u{1F300}-\\u{1F9FF}]/gu) || []).length;
+        const emojiCount = (title.match(/[\u{1F300}-\u{1F9FF}]/gu) || []).length;
         if (emojiCount > 2) {
              return { isJunk: true, reason: 'Excessive Emojis' };
         }
@@ -101,13 +101,13 @@ class GatekeeperService {
         if (!domain || !redis.isReady()) return;
 
         try {
-            const key = \`strikes:\${domain}\`;
+            const key = `strikes:${domain}`;
             const strikes = await redis.incr(key);
             
             if (strikes === 1) await redis.expire(key, 86400 * 3); 
 
             if (strikes >= 5) {
-                logger.warn(\`🚫 AUTO-BANNING DOMAIN: \${domain} (5 AI-Confirmed Junk Strikes)\`);
+                logger.warn(`🚫 AUTO-BANNING DOMAIN: ${domain} (5 AI-Confirmed Junk Strikes)`);
                 await redis.sAdd(CONSTANTS.REDIS_KEYS.BANNED_DOMAINS, domain);
                 await SystemConfig.findOneAndUpdate(
                     { key: 'BANNED_DOMAINS' },
@@ -123,7 +123,7 @@ class GatekeeperService {
      * FULL EVALUATION: Uses AI only if local check passes.
      */
     async evaluateArticle(article: any): Promise<{ type: string; isJunk: boolean; category?: string; recommendedModel: string }> {
-        const CACHE_KEY = \`\${CONSTANTS.REDIS_KEYS.GATEKEEPER_CACHE}\${article.url}\`;
+        const CACHE_KEY = `${CONSTANTS.REDIS_KEYS.GATEKEEPER_CACHE}${article.url}`;
         
         // 1. Check Cache
         const cached = await redis.get(CACHE_KEY);
@@ -140,10 +140,10 @@ class GatekeeperService {
         // 3. Run AI Check (Robust)
         try {
             const apiKey = await KeyManager.getKey('GEMINI');
-            const prompt = \`
+            const prompt = `
                 Analyze this news article metadata.
-                Headline: "\${article.title}"
-                Description: "\${article.description}"
+                Headline: "${article.title}"
+                Description: "${article.description}"
                 
                 Classify into one of these types:
                 - "Hard News": Politics, Economy, War, Science, Major Crimes, Policy.
@@ -151,10 +151,10 @@ class GatekeeperService {
                 - "Junk": Shopping, Ads, Game Guides, Horoscopes, pure clickbait.
 
                 Respond ONLY in JSON: { "type": "Hard News" | "Soft News" | "Junk", "category": "String" }
-            \`;
+            `;
 
             // Use apiClient for better stability and timeout handling
-            const url = \`https://generativelanguage.googleapis.com/v1beta/models/\${CONSTANTS.AI_MODELS.FAST}:generateContent?key=\${apiKey}\`;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${CONSTANTS.AI_MODELS.FAST}:generateContent?key=${apiKey}`;
             
             const response = await apiClient.post(url, {
                 contents: [{ parts: [{ text: prompt }] }],
@@ -195,7 +195,7 @@ class GatekeeperService {
                 await KeyManager.reportFailure(currentKey, status === 429);
             } catch (e) { /* ignore */ }
             
-            logger.error(\`Gatekeeper Error: \${error.message}\`);
+            logger.error(`Gatekeeper Error: ${error.message}`);
             // Default to Soft News if AI fails, so we don't crash, but use FAST model next
             return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: CONSTANTS.AI_MODELS.FAST };
         }
