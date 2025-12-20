@@ -16,8 +16,7 @@ import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSche
 // Centralized Config
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
 
-// --- SAFETY SETTINGS (CRITICAL FOR NEWS) ---
-// Prevents Gemini from blocking articles about war, crime, or politics.
+// --- SAFETY SETTINGS ---
 const NEWS_SAFETY_SETTINGS = [
     { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
     { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
@@ -36,8 +35,6 @@ const BASIC_SCHEMA = {
   required: ["summary", "category", "sentiment"]
 };
 
-// Updated: Fully strict schema for Gemini 2.5
-// Making nested fields REQUIRED ensures the model doesn't skip complex analysis.
 const FULL_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -59,7 +56,6 @@ const FULL_SCHEMA = {
     keyFindings: { type: "ARRAY", items: { type: "STRING" } },
     recommendations: { type: "ARRAY", items: { type: "STRING" } },
     
-    // Complex Analysis Objects
     biasComponents: {
       type: "OBJECT",
       properties: {
@@ -101,6 +97,36 @@ const FULL_SCHEMA = {
   ]
 };
 
+// --- NEW: NARRATIVE SCHEMA (Meta-Analysis) ---
+const NARRATIVE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    masterHeadline: { type: "STRING" },
+    executiveSummary: { type: "STRING" },
+    consensusPoints: { type: "ARRAY", items: { type: "STRING" } },
+    divergencePoints: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          point: { type: "STRING" },
+          perspectives: {
+             type: "ARRAY",
+             items: {
+                type: "OBJECT",
+                properties: { source: { type: "STRING" }, stance: { type: "STRING" } },
+                required: ["source", "stance"]
+             }
+          }
+        },
+        required: ["point", "perspectives"]
+      }
+    }
+  },
+  required: ["masterHeadline", "executiveSummary", "consensusPoints", "divergencePoints"]
+};
+
+
 class AIService {
   constructor() {
     if (config.keys?.gemini) {
@@ -112,13 +138,11 @@ class AIService {
   }
 
   /**
-   * ⚡ Smart Context Optimization (GEMINI 2.5 UPDATED)
-   * Removed aggressive text chopping to leverage Gemini 2.5's massive context window.
+   * ⚡ Smart Context Optimization
    */
   private optimizeTextForTokenLimits(text: string, isProMode: boolean = false): string {
       let clean = cleanText(text);
 
-      // 1. Remove standard boilerplate (Marketing/Legal)
       const junkPhrases = [
           "Subscribe to continue reading", "Read more", "Sign up for our newsletter",
           "Follow us on", "© 2023", "© 2024", "© 2025", "All rights reserved",
@@ -128,14 +152,10 @@ class AIService {
           clean = clean.replace(new RegExp(phrase, 'gi'), '');
       });
 
-      // Gemini 2.5 Context Limits (Safe Buffers)
-      // Flash: ~1 Million tokens (~4MB text). We set safe limit at 700k chars.
-      // Pro: ~2 Million tokens. We set safe limit at 1.5M chars.
+      // Gemini 2.5 Context Limits
       const SAFE_LIMIT = isProMode ? 1500000 : 700000;
 
       if (clean.length > SAFE_LIMIT) {
-          // Only if it's truly massive do we truncate from the end.
-          // We no longer chop the middle, preserving narrative flow.
           logger.warn(`⚠️ Article extremely large (${clean.length} chars). Truncating to ${SAFE_LIMIT}.`);
           return clean.substring(0, SAFE_LIMIT) + "\n\n[...Truncated due to extreme length...]";
       }
@@ -144,12 +164,11 @@ class AIService {
   }
 
   /**
-   * Analyzes an article using Generative AI (Strict Mode)
+   * --- 1. SINGLE ARTICLE ANALYSIS ---
    */
   async analyzeArticle(article: Partial<IArticle>, targetModel: string = CONSTANTS.AI_MODELS.QUALITY, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     let apiKey = '';
     
-    // 1. Circuit Breaker Check
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
     if (!isSystemHealthy) {
         logger.warn('⚡ Circuit Breaker OPEN for Gemini. Using Fallback.');
@@ -158,8 +177,6 @@ class AIService {
 
     try {
       apiKey = await KeyManager.getKey('GEMINI');
-      
-      // Check if we are using the PRO model to allow larger context
       const isPro = targetModel.includes('pro');
 
       const optimizedArticle = {
@@ -169,7 +186,6 @@ class AIService {
       };
       
       if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
-          logger.warn(`Skipping AI analysis: Content too short (${optimizedArticle.summary.length} chars)`);
           return this.getFallbackAnalysis(article);
       }
 
@@ -177,15 +193,14 @@ class AIService {
       
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
-      // 2. Call API with Strict Schema & Safety Settings
       const response = await apiClient.post<IGeminiResponse>(url, {
         contents: [{ parts: [{ text: prompt }] }],
         safetySettings: NEWS_SAFETY_SETTINGS, 
         generationConfig: {
           responseMimeType: "application/json", 
           responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
-          temperature: 0.1, // Low temp for factual consistency
-          maxOutputTokens: 8192 // Increased for Gemini 2.5 output capacity
+          temperature: 0.1, 
+          maxOutputTokens: 8192 
         }
       }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API }); 
 
@@ -198,6 +213,68 @@ class AIService {
       await this.handleAIError(error, apiKey);
       return this.getFallbackAnalysis(article);
     }
+  }
+
+  /**
+   * --- 2. MULTI-DOCUMENT NARRATIVE SYNTHESIS (NEW) ---
+   */
+  async generateNarrative(articles: IArticle[]): Promise<any> {
+      if (!articles || articles.length < 2) return null;
+
+      let apiKey = '';
+      try {
+          apiKey = await KeyManager.getKey('GEMINI');
+          
+          // Use PRO model for complex synthesis
+          const targetModel = config.aiModels.pro;
+
+          // Construct the Multi-Doc Prompt
+          let docContext = "";
+          articles.forEach((art, index) => {
+              docContext += `\n--- SOURCE ${index + 1}: ${art.source} ---\n`;
+              docContext += `HEADLINE: ${art.headline}\n`;
+              docContext += `TEXT: ${cleanText(art.summary)}\n`; // Use summary or full content if available
+          });
+
+          const prompt = `
+            You are an expert Chief Editor and Narrative Analyst.
+            Analyze the following ${articles.length} news reports on the same event.
+            
+            Your goal is to synthesize a "Master Narrative" that highlights the consensus facts but also clearly explains the divergence in reporting (bias, framing, spin).
+            
+            OUTPUT REQUIREMENTS:
+            1. Master Headline: A neutral, comprehensive headline.
+            2. Executive Summary: A 2-paragraph synthesis of what actually happened.
+            3. Consensus Points: Facts agreed upon by all sources.
+            4. Divergence Points: Specific topics where sources disagree or frame things differently. For each point, list the perspectives.
+            
+            DOCUMENTS:
+            ${docContext}
+          `;
+
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+
+          const response = await apiClient.post<IGeminiResponse>(url, {
+            contents: [{ parts: [{ text: prompt }] }],
+            safetySettings: NEWS_SAFETY_SETTINGS,
+            generationConfig: {
+              responseMimeType: "application/json",
+              responseSchema: NARRATIVE_SCHEMA,
+              temperature: 0.2, // Slightly higher for synthesis flow
+              maxOutputTokens: 8192
+            }
+          }, { timeout: 120000 }); // Longer timeout for deep analysis
+
+          KeyManager.reportSuccess(apiKey);
+          
+          if (!response.data.candidates || response.data.candidates.length === 0) return null;
+          const rawText = response.data.candidates[0].content.parts[0].text;
+          return JSON.parse(rawText);
+
+      } catch (error: any) {
+          logger.error(`Narrative Generation Failed: ${error.message}`);
+          return null;
+      }
   }
 
   /**
@@ -219,7 +296,7 @@ class AIService {
 
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 3000), // Keep 3000 for embeddings (models usually have lower limits for embedding)
+                 text: cleanText(text).substring(0, 3000), 
                  index: i + idx
              }));
              chunks.push(chunk);
@@ -263,9 +340,6 @@ class AIService {
     }
   }
 
-  /**
-   * SINGLE: Generates Embedding
-   */
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
@@ -311,7 +385,6 @@ class AIService {
         } else {
             validated = FullAnalysisSchema.parse(parsedRaw);
             
-            // Calculate derivative scores
             const trustScore = Math.round(Math.sqrt(validated.credibilityScore * validated.reliabilityScore));
             
             return {
