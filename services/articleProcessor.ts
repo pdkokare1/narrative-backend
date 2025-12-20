@@ -87,7 +87,15 @@ class ArticleProcessor {
      * Uses a similarity threshold of 0.8 (80%).
      */
     private isFuzzyDuplicate(currentTitle: string, existingTitles: string[]): boolean {
+        const currentLen = currentTitle.length;
+        
         for (const existing of existingTitles) {
+            // Optimization: Skip if lengths differ significantly (> 20 chars)
+            // This prevents expensive calculation for obviously different titles.
+            if (Math.abs(currentLen - existing.length) > 20) {
+                continue;
+            }
+
             const score = getSimilarityScore(currentTitle, existing);
             if (score > 0.8) {
                 return true; // It's a duplicate
