@@ -99,8 +99,6 @@ class NewsService {
               await CircuitBreaker.recordSuccess('NEWS_API');
           } catch (err: any) {
               logger.warn(`NewsAPI fallback failed after retries: ${err.message}`);
-              // Note: CircuitBreaker failure recording is now handled inside fetchFromNewsAPI logic if needed,
-              // or we can explicitly record it here if the entire retry loop failed.
               await CircuitBreaker.recordFailure('NEWS_API');
           }
       }
@@ -174,7 +172,6 @@ class NewsService {
   // --- API FETCHERS (REFACTORED) ---
 
   private async fetchFromGNews(params: any): Promise<INewsSourceArticle[]> {
-    // WRAPPER: Automatically retries with next key on 429/Error
     return KeyManager.executeWithRetry<INewsSourceArticle[]>('GNEWS', async (apiKey) => {
         const queryParams = { lang: 'en', sortby: 'publishedAt', max: CONSTANTS.NEWS.FETCH_LIMIT, ...params, apikey: apiKey };
         const url = 'https://gnews.io/api/v4/top-headlines';
@@ -200,9 +197,6 @@ class NewsService {
       const result = NewsApiResponseSchema.safeParse(responseData);
 
       if (!result.success) {
-          // If schema fails, it's a structural issue, not a key issue. 
-          // We throw an Error so KeyManager logs it, but it might not trigger a key rotation unless we want it to.
-          // For now, logging and returning empty is safer to prevent infinite retries on bad data.
           logger.error(`${sourceName} Schema Mismatch: ${JSON.stringify(result.error.format())}`);
           return [];
       }
@@ -215,7 +209,8 @@ class NewsService {
           title: a.title || "", 
           description: a.description || a.content || "", 
           url: normalizeUrl(a.url!), 
-          image: a.image || a.urlToImage, 
+          // FIX: Added '|| undefined' to handle nulls strictly
+          image: a.image || a.urlToImage || undefined, 
           publishedAt: a.publishedAt || new Date().toISOString()
       }));
   }
