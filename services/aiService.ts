@@ -112,8 +112,8 @@ class AIService {
   }
 
   /**
-   * ⚡ Smart Context Optimization (Token Saver)
-   * Adjusted for Gemini 2.5 capabilities
+   * ⚡ Smart Context Optimization (GEMINI 2.5 UPDATED)
+   * Removed aggressive text chopping to leverage Gemini 2.5's massive context window.
    */
   private optimizeTextForTokenLimits(text: string, isProMode: boolean = false): string {
       let clean = cleanText(text);
@@ -128,22 +128,16 @@ class AIService {
           clean = clean.replace(new RegExp(phrase, 'gi'), '');
       });
 
-      // Gemini 2.5 Pro has 2M context, Flash has 1M. 
-      // We set safe limits to avoid timeout/cost issues, not model limits.
-      const BASE_LIMIT = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 300000;
-      const MAX_CHARS = isProMode ? BASE_LIMIT * 3 : BASE_LIMIT; // ~900k chars for Pro (Deep Analysis)
-      
-      if (clean.length > MAX_CHARS) {
-          const keepIntro = Math.floor(MAX_CHARS * 0.25);
-          const keepOutro = Math.floor(MAX_CHARS * 0.20);
-          const keepMiddle = Math.floor(MAX_CHARS * 0.15); 
-          
-          const partA = clean.substring(0, keepIntro);
-          const midPoint = Math.floor(clean.length / 2);
-          const partB = clean.substring(midPoint - (keepMiddle / 2), midPoint + (keepMiddle / 2));
-          const partC = clean.substring(clean.length - keepOutro);
-          
-          return `${partA}\n\n[...Timeline Skipped...]\n\n${partB}\n\n[...Details Skipped...]\n\n${partC}`;
+      // Gemini 2.5 Context Limits (Safe Buffers)
+      // Flash: ~1 Million tokens (~4MB text). We set safe limit at 700k chars.
+      // Pro: ~2 Million tokens. We set safe limit at 1.5M chars.
+      const SAFE_LIMIT = isProMode ? 1500000 : 700000;
+
+      if (clean.length > SAFE_LIMIT) {
+          // Only if it's truly massive do we truncate from the end.
+          // We no longer chop the middle, preserving narrative flow.
+          logger.warn(`⚠️ Article extremely large (${clean.length} chars). Truncating to ${SAFE_LIMIT}.`);
+          return clean.substring(0, SAFE_LIMIT) + "\n\n[...Truncated due to extreme length...]";
       }
 
       return clean;
@@ -186,7 +180,7 @@ class AIService {
       // 2. Call API with Strict Schema & Safety Settings
       const response = await apiClient.post<IGeminiResponse>(url, {
         contents: [{ parts: [{ text: prompt }] }],
-        safetySettings: NEWS_SAFETY_SETTINGS, // Added for News Compliance
+        safetySettings: NEWS_SAFETY_SETTINGS, 
         generationConfig: {
           responseMimeType: "application/json", 
           responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
@@ -225,7 +219,7 @@ class AIService {
 
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 3000), // Increased slightly for better embedding context
+                 text: cleanText(text).substring(0, 3000), // Keep 3000 for embeddings (models usually have lower limits for embedding)
                  index: i + idx
              }));
              chunks.push(chunk);
