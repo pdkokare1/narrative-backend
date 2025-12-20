@@ -113,8 +113,9 @@ class AIService {
 
   /**
    * ⚡ Smart Context Optimization (Token Saver)
+   * Adjusted for Gemini 2.5 capabilities
    */
-  private optimizeTextForTokenLimits(text: string): string {
+  private optimizeTextForTokenLimits(text: string, isProMode: boolean = false): string {
       let clean = cleanText(text);
 
       // 1. Remove standard boilerplate (Marketing/Legal)
@@ -127,8 +128,10 @@ class AIService {
           clean = clean.replace(new RegExp(phrase, 'gi'), '');
       });
 
-      // Updated for Gemini 2.5: Increased fallback limit to 300k chars
-      const MAX_CHARS = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 300000;
+      // Gemini 2.5 Pro has 2M context, Flash has 1M. 
+      // We set safe limits to avoid timeout/cost issues, not model limits.
+      const BASE_LIMIT = CONSTANTS.AI_LIMITS.MAX_INPUT_CHARS || 300000;
+      const MAX_CHARS = isProMode ? BASE_LIMIT * 3 : BASE_LIMIT; // ~900k chars for Pro (Deep Analysis)
       
       if (clean.length > MAX_CHARS) {
           const keepIntro = Math.floor(MAX_CHARS * 0.25);
@@ -162,9 +165,12 @@ class AIService {
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
+      // Check if we are using the PRO model to allow larger context
+      const isPro = targetModel.includes('pro');
+
       const optimizedArticle = {
           ...article,
-          summary: this.optimizeTextForTokenLimits(article.summary || (article as any).content || ""),
+          summary: this.optimizeTextForTokenLimits(article.summary || (article as any).content || "", isPro),
           headline: article.headline ? cleanText(article.headline) : ""
       };
       
@@ -185,7 +191,7 @@ class AIService {
           responseMimeType: "application/json", 
           responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
           temperature: 0.1, // Low temp for factual consistency
-          maxOutputTokens: 4096 
+          maxOutputTokens: 8192 // Increased for Gemini 2.5 output capacity
         }
       }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API }); 
 
@@ -219,7 +225,7 @@ class AIService {
 
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 2000), 
+                 text: cleanText(text).substring(0, 3000), // Increased slightly for better embedding context
                  index: i + idx
              }));
              chunks.push(chunk);
@@ -269,7 +275,7 @@ class AIService {
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
         const apiKey = await KeyManager.getKey('GEMINI'); 
-        const clean = cleanText(text).substring(0, 2000);
+        const clean = cleanText(text).substring(0, 3000);
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
         
         const response = await apiClient.post<{ embedding: { values: number[] } }>(url, {
