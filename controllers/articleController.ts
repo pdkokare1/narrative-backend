@@ -50,6 +50,14 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
         };
     }
 
+    // Double check that limit is a number to support frontend batching changes
+    if (queryParams.limit && typeof queryParams.limit === 'string') {
+        queryParams.limit = parseInt(queryParams.limit, 10);
+    }
+    if (queryParams.offset && typeof queryParams.offset === 'string') {
+        queryParams.offset = parseInt(queryParams.offset, 10);
+    }
+
     const result = await articleService.getMainFeed(queryParams);
     
     // Set headers for Browser Caching
