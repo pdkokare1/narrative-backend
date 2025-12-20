@@ -39,6 +39,9 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 // This ensures 'req.ip' is the ACTUAL user IP, not Railway's IP.
 app.set('trust proxy', 1);
 
+// SECURITY: Hide Express signature
+app.disable('x-powered-by');
+
 // --- 2. Security Middleware ---
 app.use(helmet({ 
   crossOriginResourcePolicy: { policy: "cross-origin" } 
