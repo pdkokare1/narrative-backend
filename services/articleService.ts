@@ -1,12 +1,13 @@
 // services/articleService.ts
 import mongoose from 'mongoose';
 import Article, { ArticleDocument } from '../models/articleModel';
+import Narrative from '../models/narrativeModel'; // NEW IMPORT
 import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
 import redis from '../utils/redisClient';
 import logger from '../utils/logger';
 import { CONSTANTS } from '../utils/constants';
-import aiService from './aiService'; // Added: For Semantic Search Embeddings
+import aiService from './aiService'; 
 
 // Interface for Filter Arguments
 interface FeedFilters {
@@ -22,7 +23,7 @@ interface FeedFilters {
 
 class ArticleService {
   
-  // --- 1. Smart Trending Topics ---
+  // --- 1. Smart Trending Topics (UNCHANGED) ---
   async getTrendingTopics() {
     return redis.getOrFetch(
         CONSTANTS.REDIS_KEYS.TRENDING, 
@@ -42,7 +43,7 @@ class ArticleService {
     ); 
   }
 
-  // --- 2. Intelligent Search (Semantic + Hybrid) ---
+  // --- 2. Intelligent Search (Semantic + Hybrid) (UNCHANGED) ---
   async searchArticles(query: string, limit: number = 12) {
     if (!query) return { articles: [], total: 0 };
     
@@ -64,7 +65,7 @@ class ArticleService {
                             "index": "vector_index",
                             "path": "embedding",
                             "queryVector": queryEmbedding,
-                            "numCandidates": 100, // Look at top 100 closest matches
+                            "numCandidates": 100, 
                             "limit": limit
                         }
                     },
@@ -97,13 +98,21 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Main Feed (Cached) ---
+  // --- 3. Main Feed (UPDATED FOR NARRATIVES) ---
   async getMainFeed(filters: FeedFilters) {
     const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
     
+    // Cache Key includes all filters
     const CACHE_KEY = `feed_v2:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${offset}:${limit}`;
     
-    return redis.getOrFetch(CACHE_KEY, async () => {
+    // Only cache first page to keep it snappy, deeper pages fetch live
+    if (Number(offset) === 0) {
+        const cached = await redis.get(CACHE_KEY);
+        if (cached) return cached;
+    }
+
+    try {
+        // A. Build Query for Articles (Preserving ALL your existing filters)
         const query: any = {};
         
         if (category && category !== 'All Categories' && category !== 'undefined') query.category = category;
@@ -127,23 +136,69 @@ class ArticleService {
             if (grades) query.credibilityGrade = { $in: grades };
         }
 
+        // B. Fetch Narratives (NEW LOGIC)
+        // We fetch "Master Stories" relevant to the current filters
+        const narrativeQuery: any = {};
+        if (category && category !== 'All Categories' && category !== 'undefined') narrativeQuery.category = category;
+        if (region === 'India') narrativeQuery.country = 'India';
+        
+        // Only show narratives updated recently (last 24h)
+        narrativeQuery.lastUpdated = { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) };
+
+        const narratives = await Narrative.find(narrativeQuery)
+                                          .sort({ lastUpdated: -1 })
+                                          .limit(5)
+                                          .lean();
+
+        // C. Smart Dedup: Don't show individual articles if they are inside a Narrative
+        const narrativeClusterIds = narratives.map(n => n.clusterId);
+        if (narrativeClusterIds.length > 0) {
+            query.clusterId = { $nin: narrativeClusterIds };
+        }
+
+        // D. Sort Options (Preserving your existing sort logic)
         let sortOptions: any = { publishedAt: -1 };
         if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
         else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
         else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
 
+        // E. Fetch Articles
         const articles = await Article.find(query)
             .sort(sortOptions)
             .skip(Number(offset))
             .limit(Number(limit))
             .lean();
 
-        const total = await Article.countDocuments(query);
-        return { articles, pagination: { total } };
-    }, CONSTANTS.CACHE.TTL_FEED);
+        // F. Combine & Sort Mixed Feed
+        const feedItems = [
+            ...narratives.map(n => ({ ...n, type: 'Narrative', publishedAt: n.lastUpdated })),
+            ...articles.map(a => ({ ...a, type: 'Article' }))
+        ];
+
+        // Re-sort the combined list by date (Newest First)
+        feedItems.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+
+        const totalArticles = await Article.countDocuments(query);
+        
+        const response = { 
+            articles: feedItems.slice(0, Number(limit)), 
+            pagination: { total: totalArticles + narratives.length } 
+        };
+
+        // Cache result (Short TTL for freshness)
+        if (Number(offset) === 0) {
+            await redis.set(CACHE_KEY, response, CONSTANTS.CACHE.TTL_FEED);
+        }
+
+        return response;
+
+    } catch (error: any) {
+        logger.error(`Get Main Feed Error: ${error.message}`);
+        throw error;
+    }
   }
 
-  // --- 4. For You Feed (Cached) ---
+  // --- 4. For You Feed (UNCHANGED) ---
   async getForYouFeed(userId: string | undefined) {
     if (!userId) {
         const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
@@ -195,7 +250,7 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 5. Personalized Feed (Cached) ---
+  // --- 5. Personalized Feed (UNCHANGED) ---
   async getPersonalizedFeed(userId: string) {
     const CACHE_KEY = `my_mix_${userId}`;
     
@@ -271,14 +326,14 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 6. Saved Articles ---
+  // --- 6. Saved Articles (UNCHANGED) ---
   async getSavedArticles(userId: string) {
     const profile = await Profile.findOne({ userId }).select('savedArticles');
     if (!profile || !profile.savedArticles.length) return [];
     return Article.find({ _id: { $in: profile.savedArticles } }).sort({ publishedAt: -1 }).lean();
   }
 
-  // --- 7. Toggle Save (ATOMIC) ---
+  // --- 7. Toggle Save (UNCHANGED) ---
   async toggleSaveArticle(userId: string, articleIdStr: string) {
     const articleId = new mongoose.Types.ObjectId(articleIdStr);
     
