@@ -34,7 +34,7 @@ export const CONSTANTS = {
   
   // Timeouts (Standardized)
   TIMEOUTS: {
-    EXTERNAL_API: 45000, // Increased to 45s for Gemini 2.5 Pro Deep Analysis
+    EXTERNAL_API: 90000, // Updated: 90s for Gemini 2.5 Pro Deep Analysis
   },
 
   // AI Configuration (Gemini 2.5 Series - Dec 2025 Standard)
@@ -46,7 +46,7 @@ export const CONSTANTS = {
   
   // Cost Control: Adjusted for Gemini 2.5 Pro's efficiency and 2025 Context Windows
   AI_LIMITS: {
-      MAX_INPUT_CHARS: 300000, // Increased to ~75k tokens to utilize 2.5 Pro capabilities
+      MAX_INPUT_CHARS: 300000, // ~75k tokens
       MIN_CONTENT_CHARS: 100, // Skip analysis if content is too thin
   },
 
