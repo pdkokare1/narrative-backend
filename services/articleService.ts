@@ -6,6 +6,7 @@ import Profile from '../models/profileModel';
 import redis from '../utils/redisClient';
 import logger from '../utils/logger';
 import { CONSTANTS } from '../utils/constants';
+import aiService from './aiService'; // Added: For Semantic Search Embeddings
 
 // Interface for Filter Arguments
 interface FeedFilters {
@@ -41,16 +42,57 @@ class ArticleService {
     ); 
   }
 
-  // --- 2. Intelligent Search (Centralized) ---
+  // --- 2. Intelligent Search (Semantic + Hybrid) ---
   async searchArticles(query: string, limit: number = 12) {
     if (!query) return { articles: [], total: 0 };
     
     const safeQuery = query.replace(/[^\w\s\-\.\?]/gi, '');
-    const CACHE_KEY = `search:${safeQuery.toLowerCase().trim()}:${limit}`;
+    const CACHE_KEY = `search:v2:${safeQuery.toLowerCase().trim()}:${limit}`;
 
     return redis.getOrFetch(CACHE_KEY, async () => {
-        // Updated: Delegates logic to Model (DRY Principle)
-        const articles = await Article.smartSearch(safeQuery, limit);
+        let articles: any[] = [];
+        let searchMethod = 'Text';
+
+        try {
+            // A. Try Semantic Search First (AI Powered)
+            const queryEmbedding = await aiService.createEmbedding(safeQuery);
+            
+            if (queryEmbedding && queryEmbedding.length > 0) {
+                const pipeline: any[] = [
+                    {
+                        "$vectorSearch": {
+                            "index": "vector_index",
+                            "path": "embedding",
+                            "queryVector": queryEmbedding,
+                            "numCandidates": 100, // Look at top 100 closest matches
+                            "limit": limit
+                        }
+                    },
+                    {
+                        "$project": {
+                            "headline": 1, "summary": 1, "source": 1, "category": 1,
+                            "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1,
+                            "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1,
+                            "clusterTopic": 1, "audioUrl": 1,
+                            "score": { "$meta": "vectorSearchScore" }
+                        }
+                    }
+                ];
+                
+                articles = await Article.aggregate(pipeline);
+                searchMethod = 'Vector';
+            }
+        } catch (err) {
+            logger.warn(`Semantic Search Failed (Fallback to Text): ${err}`);
+        }
+
+        // B. Fallback to Text Search if Vector returned nothing or failed
+        if (!articles.length) {
+            articles = await Article.smartSearch(safeQuery, limit);
+        }
+
+        logger.info(`🔍 Search: "${safeQuery}" | Method: ${searchMethod} | Results: ${articles.length}`);
+        
         return { articles, total: articles.length };
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
@@ -59,14 +101,11 @@ class ArticleService {
   async getMainFeed(filters: FeedFilters) {
     const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
     
-    // UPDATED: Changed prefix to 'feed_v2' to bust old caches that might be empty
     const CACHE_KEY = `feed_v2:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${offset}:${limit}`;
     
     return redis.getOrFetch(CACHE_KEY, async () => {
-        // Build Query
         const query: any = {};
         
-        // Robust checks to ensure we don't accidentally filter by 'undefined' or empty strings
         if (category && category !== 'All Categories' && category !== 'undefined') query.category = category;
         if (lean && lean !== 'All Leans' && lean !== 'undefined') query.politicalLean = lean;
         
@@ -93,10 +132,6 @@ class ArticleService {
         else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
         else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
 
-        // LOGGING: This will show up in your Railway logs so you can see if the query is correct
-        console.log(`[ArticleService] Main Feed Query:`, JSON.stringify(query), `Offset: ${offset}, Limit: ${limit}`);
-
-        // Database Fetch
         const articles = await Article.find(query)
             .sort(sortOptions)
             .skip(Number(offset))
@@ -110,7 +145,6 @@ class ArticleService {
 
   // --- 4. For You Feed (Cached) ---
   async getForYouFeed(userId: string | undefined) {
-    // Guest User - No cache needed (lightweight)
     if (!userId) {
         const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
         return { articles: standard, meta: { reason: "Guest User" } };
@@ -255,11 +289,9 @@ class ArticleService {
     let message;
     
     if (profile) {
-        // If exists, remove it atomically
         updateOp = { $pull: { savedArticles: articleId } };
         message = 'Article unsaved';
     } else {
-        // If not exists, add it atomically (avoids duplicates)
         updateOp = { $addToSet: { savedArticles: articleId } };
         message = 'Article saved';
     }
