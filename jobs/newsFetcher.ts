@@ -4,6 +4,7 @@ import pipelineService from '../services/pipelineService';
 import aiService from '../services/aiService'; 
 import logger from '../utils/logger'; 
 import { cleanText } from '../utils/helpers';
+import Article from '../models/articleModel'; // Added for deduplication check
 
 // --- 1. Fetch Logic (Producer) ---
 // Fetches news AND pre-calculates AI embeddings in a batch (Massive Speedup)
@@ -18,21 +19,34 @@ async function fetchFeed() {
         return []; 
     }
 
-    logger.info(`📡 Fetched ${rawArticles.length} articles. Running Batch AI Embeddings...`);
+    // --- COST OPTIMIZATION: Deduplication Check ---
+    // Don't pay for embedding if the article already exists in DB
+    const urls = rawArticles.map(a => a.url).filter(Boolean);
+    const existingArticles = await Article.find({ url: { $in: urls } }).select('url').lean();
+    const existingUrls = new Set(existingArticles.map((a: any) => a.url));
+
+    const newArticles = rawArticles.filter(a => !existingUrls.has(a.url));
+
+    if (newArticles.length === 0) {
+        logger.info('✨ All fetched articles already exist in DB. Skipping processing.');
+        return [];
+    }
+
+    logger.info(`📡 Fetched ${rawArticles.length} articles. ${newArticles.length} are new. Running Batch AI Embeddings...`);
 
     // --- BATCH PROCESSING START ---
     // Prepare text for embeddings (Title + Description)
-    const textsToEmbed = rawArticles.map(a => 
+    const textsToEmbed = newArticles.map(a => 
         `${a.title}: ${cleanText(a.description || "")}`
     );
 
     // Get all embeddings in ONE API call (vs 50 separate calls)
     const embeddings = await aiService.createBatchEmbeddings(textsToEmbed);
 
-    if (embeddings && embeddings.length === rawArticles.length) {
+    if (embeddings && embeddings.length === newArticles.length) {
         // Attach embeddings to the articles before dispatching
-        for (let i = 0; i < rawArticles.length; i++) {
-            rawArticles[i].embedding = embeddings[i];
+        for (let i = 0; i < newArticles.length; i++) {
+            newArticles[i].embedding = embeddings[i];
         }
         logger.info(`⚡ Successfully attached ${embeddings.length} batch embeddings.`);
     } else {
@@ -40,7 +54,8 @@ async function fetchFeed() {
     }
     // --- BATCH PROCESSING END ---
 
-    return rawArticles;
+    // Return only new articles to be processed by the pipeline
+    return newArticles;
 
   } catch (error: any) {
     logger.error(`❌ Fetch Job Critical Failure: ${error.message}`);
