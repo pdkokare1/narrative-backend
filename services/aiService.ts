@@ -25,7 +25,7 @@ const NEWS_SAFETY_SETTINGS = [
     { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
 ];
 
-// --- STRICT JSON SCHEMAS ---
+// --- SCHEMAS (Kept same as original) ---
 const BASIC_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -98,7 +98,6 @@ const FULL_SCHEMA = {
   ]
 };
 
-// --- NEW: NARRATIVE SCHEMA (Meta-Analysis) ---
 const NARRATIVE_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -168,73 +167,68 @@ class AIService {
    * --- 1. SINGLE ARTICLE ANALYSIS ---
    */
   async analyzeArticle(article: Partial<IArticle>, targetModel: string = CONSTANTS.AI_MODELS.QUALITY, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
-    let apiKey = '';
-    
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
     if (!isSystemHealthy) {
         logger.warn('⚡ Circuit Breaker OPEN for Gemini. Using Fallback.');
         return this.getFallbackAnalysis(article);
     }
 
+    const isPro = targetModel.includes('pro');
+    const optimizedArticle = {
+        ...article,
+        summary: this.optimizeTextForTokenLimits(article.summary || (article as any).content || "", isPro),
+        headline: article.headline ? cleanText(article.headline) : ""
+    };
+    
+    if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
+        return this.getFallbackAnalysis(article);
+    }
+
     try {
-      apiKey = await KeyManager.getKey('GEMINI');
-      const isPro = targetModel.includes('pro');
+        const prompt = await promptManager.getAnalysisPrompt(optimizedArticle, mode);
+        
+        // Execute with Automatic Retry & Key Rotation
+        const data = await KeyManager.executeWithRetry<IGeminiResponse>('GEMINI', async (apiKey) => {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+            const response = await apiClient.post<IGeminiResponse>(url, {
+                contents: [{ parts: [{ text: prompt }] }],
+                safetySettings: NEWS_SAFETY_SETTINGS, 
+                generationConfig: {
+                  responseMimeType: "application/json", 
+                  responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
+                  temperature: 0.1, 
+                  maxOutputTokens: 8192 
+                }
+            }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API });
+            return response.data;
+        });
 
-      const optimizedArticle = {
-          ...article,
-          summary: this.optimizeTextForTokenLimits(article.summary || (article as any).content || "", isPro),
-          headline: article.headline ? cleanText(article.headline) : ""
-      };
-      
-      if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
-          return this.getFallbackAnalysis(article);
-      }
-
-      const prompt = await promptManager.getAnalysisPrompt(optimizedArticle, mode);
-      
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-
-      const response = await apiClient.post<IGeminiResponse>(url, {
-        contents: [{ parts: [{ text: prompt }] }],
-        safetySettings: NEWS_SAFETY_SETTINGS, 
-        generationConfig: {
-          responseMimeType: "application/json", 
-          responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
-          temperature: 0.1, 
-          maxOutputTokens: 8192 
-        }
-      }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API }); 
-
-      KeyManager.reportSuccess(apiKey);
-      await CircuitBreaker.recordSuccess('GEMINI');
-
-      return this.parseGeminiResponse(response.data, mode, article);
+        await CircuitBreaker.recordSuccess('GEMINI');
+        return this.parseGeminiResponse(data, mode, article);
 
     } catch (error: any) {
-      await this.handleAIError(error, apiKey);
+      // If we are here, KeyManager retries have exhausted
+      await CircuitBreaker.recordFailure('GEMINI');
+      logger.error(`AI Analysis Failed: ${error.message}`);
       return this.getFallbackAnalysis(article);
     }
   }
 
   /**
-   * --- 2. MULTI-DOCUMENT NARRATIVE SYNTHESIS (NEW) ---
+   * --- 2. MULTI-DOCUMENT NARRATIVE SYNTHESIS ---
    */
   async generateNarrative(articles: IArticle[]): Promise<any> {
       if (!articles || articles.length < 2) return null;
 
-      let apiKey = '';
       try {
-          apiKey = await KeyManager.getKey('GEMINI');
-          
           // Use PRO model for complex synthesis
           const targetModel = config.aiModels.pro;
 
-          // Construct the Multi-Doc Prompt
           let docContext = "";
           articles.forEach((art, index) => {
               docContext += `\n--- SOURCE ${index + 1}: ${art.source} ---\n`;
               docContext += `HEADLINE: ${art.headline}\n`;
-              docContext += `TEXT: ${cleanText(art.summary)}\n`; // Use summary or full content if available
+              docContext += `TEXT: ${cleanText(art.summary)}\n`; 
           });
 
           const prompt = `
@@ -253,23 +247,23 @@ class AIService {
             ${docContext}
           `;
 
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-
-          const response = await apiClient.post<IGeminiResponse>(url, {
-            contents: [{ parts: [{ text: prompt }] }],
-            safetySettings: NEWS_SAFETY_SETTINGS,
-            generationConfig: {
-              responseMimeType: "application/json",
-              responseSchema: NARRATIVE_SCHEMA,
-              temperature: 0.2, // Slightly higher for synthesis flow
-              maxOutputTokens: 8192
-            }
-          }, { timeout: 120000 }); // Longer timeout for deep analysis
-
-          KeyManager.reportSuccess(apiKey);
+          const data = await KeyManager.executeWithRetry<IGeminiResponse>('GEMINI', async (apiKey) => {
+              const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+              const response = await apiClient.post<IGeminiResponse>(url, {
+                contents: [{ parts: [{ text: prompt }] }],
+                safetySettings: NEWS_SAFETY_SETTINGS,
+                generationConfig: {
+                  responseMimeType: "application/json",
+                  responseSchema: NARRATIVE_SCHEMA,
+                  temperature: 0.2, 
+                  maxOutputTokens: 8192
+                }
+              }, { timeout: 120000 }); 
+              return response.data;
+          });
           
-          if (!response.data.candidates || response.data.candidates.length === 0) return null;
-          return this.parseGeminiResponse(response.data, 'Narrative', null);
+          if (!data.candidates || data.candidates.length === 0) return null;
+          return this.parseGeminiResponse(data, 'Narrative', null);
 
       } catch (error: any) {
           logger.error(`Narrative Generation Failed: ${error.message}`);
@@ -287,7 +281,6 @@ class AIService {
     if (!texts.length) return [];
 
     try {
-        const apiKey = await KeyManager.getKey('GEMINI');
         const BATCH_SIZE = 100;
         const CONCURRENCY_LIMIT = config.ai.concurrency || 5; 
         
@@ -311,48 +304,49 @@ class AIService {
                     content: { parts: [{ text: item.text }] }
                 }));
 
-                const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
-                
                 try {
-                    const response = await apiClient.post<{ embeddings?: { values: number[] }[] }>(url, { requests }, { timeout: 45000 });
-                    
-                    if (response.data.embeddings) {
-                        response.data.embeddings.forEach((emb, localIdx) => {
-                             const originalIndex = chunk[localIdx].index;
-                             allEmbeddings[originalIndex] = emb.values;
-                        });
-                    }
+                    // Wrap EACH batch request in retry logic!
+                    await KeyManager.executeWithRetry('GEMINI', async (apiKey) => {
+                        const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
+                        const response = await apiClient.post<{ embeddings?: { values: number[] }[] }>(url, { requests }, { timeout: 45000 });
+                        
+                        if (response.data.embeddings) {
+                            response.data.embeddings.forEach((emb, localIdx) => {
+                                const originalIndex = chunk[localIdx].index;
+                                allEmbeddings[originalIndex] = emb.values;
+                            });
+                        }
+                        return response.data;
+                    });
                 } catch (err: any) {
                     logger.warn(`Partial Batch Failure: ${err.message}`);
                 }
             }));
         }
 
-        KeyManager.reportSuccess(apiKey);
         await CircuitBreaker.recordSuccess('GEMINI');
-
         return allEmbeddings.filter(e => e.length > 0);
 
     } catch (error: any) {
         logger.error(`Batch Embedding Error: ${error.message}`);
-        await CircuitBreaker.recordFailure('GEMINI');
         return null;
     }
   }
 
   async createEmbedding(text: string): Promise<number[] | null> {
     try {
-        const apiKey = await KeyManager.getKey('GEMINI'); 
         const clean = cleanText(text).substring(0, 3000);
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
         
-        const response = await apiClient.post<{ embedding: { values: number[] } }>(url, {
-            model: `models/${EMBEDDING_MODEL}`,
-            content: { parts: [{ text: clean }] }
-        }, { timeout: 10000 });
+        const responseData = await KeyManager.executeWithRetry<{ embedding: { values: number[] } }>('GEMINI', async (apiKey) => {
+             const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:embedContent?key=${apiKey}`;
+             const res = await apiClient.post(url, {
+                model: `models/${EMBEDDING_MODEL}`,
+                content: { parts: [{ text: clean }] }
+             }, { timeout: 10000 });
+             return res.data;
+        });
 
-        KeyManager.reportSuccess(apiKey);
-        return response.data.embedding.values;
+        return responseData.embedding.values;
 
     } catch (error: any) {
         logger.error(`Embedding Error: ${error.message}`);
@@ -375,9 +369,8 @@ class AIService {
         const cleanJson = jsonrepair(rawText);
         const parsedRaw = JSON.parse(cleanJson);
 
-        // Special Case: Narrative Generation
         if (mode === 'Narrative') {
-            return parsedRaw; // Removed invalid .parse check
+            return parsedRaw; 
         }
 
         let validated;
@@ -391,44 +384,19 @@ class AIService {
             };
         } else {
             validated = FullAnalysisSchema.parse(parsedRaw);
-            
             const trustScore = Math.round(Math.sqrt(validated.credibilityScore * validated.reliabilityScore));
-            
-            return {
-                ...validated,
-                analysisType: 'Full',
-                trustScore
-            };
+            return { ...validated, analysisType: 'Full', trustScore };
         }
 
     } catch (error: any) {
         logger.error(`AI Parse/Validation Error: ${error.message}`);
         
-        // Only fallback if we have an original article to fall back TO
         if (mode === 'Full' && originalArticle) {
              logger.warn("Attempting Basic Fallback due to parsing error...");
              return this.getFallbackAnalysis(originalArticle);
         }
         throw new AppError(`Failed to parse AI response: ${error.message}`, 502);
     }
-  }
-
-  private async handleAIError(error: any, apiKey: string) {
-      const status = error.response?.status || 500;
-      const msg = error.message || '';
-
-      if (status === 429 || msg.includes('429') || msg.includes('Quota') || msg.includes('RESOURCE_EXHAUSTED')) {
-           logger.warn(`🛑 Gemini Quota Exceeded (Key: ...${apiKey.slice(-4)}). Pausing.`);
-           throw new AppError('AI Service Quota Exceeded', 429);
-      }
-      
-      if (status >= 500 || error.code === 'ECONNABORTED') {
-          if (apiKey) KeyManager.reportFailure(apiKey, true);
-          await CircuitBreaker.recordFailure('GEMINI');
-          throw new AppError('AI Service Unavailable', 503); 
-      }
-
-      logger.error(`❌ AI Critical Failure: ${error.message}`);
   }
 
   private getFallbackAnalysis(article: Partial<IArticle>): Partial<IArticle> {
