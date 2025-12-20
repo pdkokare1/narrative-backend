@@ -13,25 +13,14 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
 
     const CACHE_KEY = 'trending:topics';
     
-    // 1. Try Cache
-    try {
-        const cached = await redisClient.get(CACHE_KEY);
-        if (cached) {
-            // Redis wrapper returns parsed JSON or null
-            return res.status(200).json({ topics: cached });
-        }
-    } catch (err) {
-        console.warn("Redis Cache Error (Trending):", err);
-    }
-
-    // 2. Fetch Fresh
-    const topics = await articleService.getTrendingTopics();
-
-    // 3. Save to Cache (10 minutes = 600s)
-    // FIX: Use .set(key, value, ttl) matching your wrapper
-    try {
-        await redisClient.set(CACHE_KEY, topics, 600);
-    } catch (err) { /* ignore cache write errors */ }
+    // REFACTOR: Use centralized getOrFetch logic
+    // Automatically handles: Cache Hit -> Return, Cache Miss -> Fetch -> Cache -> Return
+    // Also handles anti-stampede (multiple users hitting same endpoint simultaneously)
+    const topics = await redisClient.getOrFetch(
+        CACHE_KEY, 
+        async () => await articleService.getTrendingTopics(), 
+        600 // 10 minutes
+    );
 
     // Cache-Control Header for Browser/CDN
     res.set('Cache-Control', 'public, max-age=300'); 
@@ -55,7 +44,7 @@ export const searchArticles = asyncHandler(async (req: Request, res: Response) =
 export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     let queryParams: any = {};
     
-    // STRICT VALIDATION FIX
+    // STRICT VALIDATION
     try {
         const parsed = schemas.feedFilters.parse({ query: req.query });
         queryParams = parsed.query;
@@ -79,26 +68,20 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     
     const CACHE_KEY = 'feed:default:page0';
 
-    if (isDefaultPage) {
-        try {
-            const cached = await redisClient.get(CACHE_KEY);
-            if (cached) {
-                res.set('X-Cache', 'HIT');
-                // Wrapper returns parsed object
-                return res.status(200).json(cached);
-            }
-        } catch (err) { console.warn("Redis Error:", err); }
-    }
+    let result;
 
-    // Fetch Fresh Data
-    const result = await articleService.getMainFeed(queryParams);
-    
-    // Save to Cache if default page (5 minutes = 300s)
-    // FIX: Use .set(key, value, ttl)
     if (isDefaultPage) {
-        try {
-            await redisClient.set(CACHE_KEY, result, 300);
-        } catch (err) { /* ignore */ }
+        // REFACTOR: Use getOrFetch only for the default page
+        result = await redisClient.getOrFetch(
+            CACHE_KEY,
+            async () => await articleService.getMainFeed(queryParams),
+            300 // 5 minutes
+        );
+        // Add Hit/Miss header if needed, though getOrFetch abstracts the "Hit" logic away.
+        // We assume freshness here.
+    } else {
+        // Dynamic filters (not cached)
+        result = await articleService.getMainFeed(queryParams);
     }
     
     // Set headers for Browser Caching
@@ -110,7 +93,6 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
 export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
     const userId = req.user?.uid;
     
-    // FIX: Ensure User ID is present before calling service
     if (!userId) {
         throw new AppError('User not authenticated for personalized feed', 401);
     }
@@ -119,8 +101,10 @@ export const getForYouFeed = asyncHandler(async (req: Request, res: Response) =>
         const result = await articleService.getForYouFeed(userId);
         res.status(200).json(result);
     } catch (error: any) {
-        console.error("For You Feed Error:", error);
-        // Fallback to avoid crushing the app if personalization fails
+        // Log specifically for monitoring
+        console.error(`[PERSONALIZATION_FAILURE] User: ${userId} - ${error.message}`);
+        
+        // Fallback to avoid crushing the app
         res.status(200).json({ 
             articles: [], 
             meta: { basedOnCategory: 'General', usualLean: 'Neutral' } 
@@ -130,7 +114,6 @@ export const getForYouFeed = asyncHandler(async (req: Request, res: Response) =>
 
 // --- 5. Personalized "My Mix" Feed ---
 export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Response) => {
-    // FIX: Safely access uid instead of force unwrap (!)
     const userId = req.user?.uid;
     
     if (!userId) {
@@ -141,7 +124,7 @@ export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Respon
         const result = await articleService.getPersonalizedFeed(userId);
         res.status(200).json(result);
     } catch (error: any) {
-         console.error("Personalized Feed Error:", error);
+         console.error(`[PERSONALIZATION_FAILURE] User: ${userId} - ${error.message}`);
          // Graceful fallback
          res.status(200).json({ articles: [], meta: { topCategories: [] } });
     }
