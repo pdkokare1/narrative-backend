@@ -16,10 +16,16 @@ import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSche
 // Centralized Config
 const EMBEDDING_MODEL = CONSTANTS.AI_MODELS.EMBEDDING;
 
-// --- STRICT JSON SCHEMAS ---
-// These define exactly what Gemini MUST return. 
-// This replaces the old method of "hoping" it returns valid JSON.
+// --- SAFETY SETTINGS (CRITICAL FOR NEWS) ---
+// Prevents Gemini from blocking articles about war, crime, or politics.
+const NEWS_SAFETY_SETTINGS = [
+    { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_ONLY_HIGH" },
+    { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_ONLY_HIGH" },
+    { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_ONLY_HIGH" },
+    { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_ONLY_HIGH" }
+];
 
+// --- STRICT JSON SCHEMAS ---
 const BASIC_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -30,7 +36,8 @@ const BASIC_SCHEMA = {
   required: ["summary", "category", "sentiment"]
 };
 
-// Updated: Expanded Schema to match Gemini 2.5 Pro's capabilities and your Prompt structure
+// Updated: Fully strict schema for Gemini 2.5
+// Making nested fields REQUIRED ensures the model doesn't skip complex analysis.
 const FULL_SCHEMA = {
   type: "OBJECT",
   properties: {
@@ -56,11 +63,12 @@ const FULL_SCHEMA = {
     biasComponents: {
       type: "OBJECT",
       properties: {
-        linguistic: { type: "OBJECT", properties: { sentimentPolarity: { type: "NUMBER" }, emotionalLanguage: { type: "NUMBER" }, loadedTerms: { type: "NUMBER" }, complexityBias: { type: "NUMBER" } } },
-        sourceSelection: { type: "OBJECT", properties: { sourceDiversity: { type: "NUMBER" }, expertBalance: { type: "NUMBER" }, attributionTransparency: { type: "NUMBER" } } },
-        demographic: { type: "OBJECT", properties: { genderBalance: { type: "NUMBER" }, racialBalance: { type: "NUMBER" }, ageRepresentation: { type: "NUMBER" } } },
-        framing: { type: "OBJECT", properties: { headlineFraming: { type: "NUMBER" }, storySelection: { type: "NUMBER" }, omissionBias: { type: "NUMBER" } } }
-      }
+        linguistic: { type: "OBJECT", properties: { sentimentPolarity: { type: "NUMBER" }, emotionalLanguage: { type: "NUMBER" }, loadedTerms: { type: "NUMBER" }, complexityBias: { type: "NUMBER" } }, required: ["sentimentPolarity", "emotionalLanguage", "loadedTerms", "complexityBias"] },
+        sourceSelection: { type: "OBJECT", properties: { sourceDiversity: { type: "NUMBER" }, expertBalance: { type: "NUMBER" }, attributionTransparency: { type: "NUMBER" } }, required: ["sourceDiversity", "expertBalance", "attributionTransparency"] },
+        demographic: { type: "OBJECT", properties: { genderBalance: { type: "NUMBER" }, racialBalance: { type: "NUMBER" }, ageRepresentation: { type: "NUMBER" } }, required: ["genderBalance", "racialBalance", "ageRepresentation"] },
+        framing: { type: "OBJECT", properties: { headlineFraming: { type: "NUMBER" }, storySelection: { type: "NUMBER" }, omissionBias: { type: "NUMBER" } }, required: ["headlineFraming", "storySelection", "omissionBias"] }
+      },
+      required: ["linguistic", "sourceSelection", "demographic", "framing"]
     },
     credibilityComponents: {
       type: "OBJECT",
@@ -71,7 +79,8 @@ const FULL_SCHEMA = {
         evidenceQuality: { type: "NUMBER" },
         transparency: { type: "NUMBER" },
         audienceTrust: { type: "NUMBER" }
-      }
+      },
+      required: ["sourceCredibility", "factVerification", "professionalism", "evidenceQuality", "transparency", "audienceTrust"]
     },
     reliabilityComponents: {
       type: "OBJECT",
@@ -82,12 +91,13 @@ const FULL_SCHEMA = {
         publicationStandards: { type: "NUMBER" },
         correctionsPolicy: { type: "NUMBER" },
         updateMaintenance: { type: "NUMBER" }
-      }
+      },
+      required: ["consistency", "temporalStability", "qualityControl", "publicationStandards", "correctionsPolicy", "updateMaintenance"]
     }
   },
   required: [
     "summary", "category", "politicalLean", "sentiment", "biasScore", "credibilityScore", 
-    "reliabilityScore", "trustLevel", "keyFindings"
+    "reliabilityScore", "trustLevel", "keyFindings", "biasComponents", "credibilityComponents", "reliabilityComponents"
   ]
 };
 
@@ -103,10 +113,6 @@ class AIService {
 
   /**
    * ⚡ Smart Context Optimization (Token Saver)
-   * Instead of blindly cutting the middle, this preserves the structure:
-   * 1. Intro (First 25%): Essential for context/who/what.
-   * 2. Middle (Sampled): Takes a slice from the exact middle to catch developments.
-   * 3. Outro (Last 20%): Essential for conclusion/impact.
    */
   private optimizeTextForTokenLimits(text: string): string {
       let clean = cleanText(text);
@@ -127,14 +133,11 @@ class AIService {
       if (clean.length > MAX_CHARS) {
           const keepIntro = Math.floor(MAX_CHARS * 0.25);
           const keepOutro = Math.floor(MAX_CHARS * 0.20);
-          const keepMiddle = Math.floor(MAX_CHARS * 0.15); // Sample a core section
+          const keepMiddle = Math.floor(MAX_CHARS * 0.15); 
           
           const partA = clean.substring(0, keepIntro);
-          
-          // Smart Middle Sample: Grab a chunk from the mathematical center of the text
           const midPoint = Math.floor(clean.length / 2);
           const partB = clean.substring(midPoint - (keepMiddle / 2), midPoint + (keepMiddle / 2));
-          
           const partC = clean.substring(clean.length - keepOutro);
           
           return `${partA}\n\n[...Timeline Skipped...]\n\n${partB}\n\n[...Details Skipped...]\n\n${partC}`;
@@ -159,16 +162,12 @@ class AIService {
     try {
       apiKey = await KeyManager.getKey('GEMINI');
       
-      // OPTIMIZATION: Clean text BEFORE prompting to save tokens
-      // We pass the full summary/content here to be processed by promptManager
       const optimizedArticle = {
           ...article,
-          // FIX: Access content securely with fallback
           summary: this.optimizeTextForTokenLimits(article.summary || (article as any).content || ""),
           headline: article.headline ? cleanText(article.headline) : ""
       };
       
-      // Cost Control: Skip if content is ghost-thin
       if (optimizedArticle.summary.length < CONSTANTS.AI_LIMITS.MIN_CONTENT_CHARS) {
           logger.warn(`Skipping AI analysis: Content too short (${optimizedArticle.summary.length} chars)`);
           return this.getFallbackAnalysis(article);
@@ -178,21 +177,21 @@ class AIService {
       
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
 
-      // 2. Call API with Strict Schema
+      // 2. Call API with Strict Schema & Safety Settings
       const response = await apiClient.post<IGeminiResponse>(url, {
         contents: [{ parts: [{ text: prompt }] }],
+        safetySettings: NEWS_SAFETY_SETTINGS, // Added for News Compliance
         generationConfig: {
           responseMimeType: "application/json", 
           responseSchema: mode === 'Basic' ? BASIC_SCHEMA : FULL_SCHEMA,
           temperature: 0.1, // Low temp for factual consistency
           maxOutputTokens: 4096 
         }
-      }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API }); // Use centralized timeout
+      }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API }); 
 
       KeyManager.reportSuccess(apiKey);
       await CircuitBreaker.recordSuccess('GEMINI');
 
-      // Pass the *original* article for safer fallback
       return this.parseGeminiResponse(response.data, mode, article);
 
     } catch (error: any) {
@@ -220,7 +219,7 @@ class AIService {
 
         for (let i = 0; i < texts.length; i += BATCH_SIZE) {
              const chunk = texts.slice(i, i + BATCH_SIZE).map((text, idx) => ({
-                 text: cleanText(text).substring(0, 2000), // Enforce strict limit for embeddings
+                 text: cleanText(text).substring(0, 2000), 
                  index: i + idx
              }));
              chunks.push(chunk);
@@ -295,7 +294,6 @@ class AIService {
             throw new AppError('AI returned no candidates', 502);
         }
         
-        // Gemini 2.5 + Structured Output returns clean JSON text directly.
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
@@ -327,7 +325,6 @@ class AIService {
         logger.error(`AI Parse/Validation Error: ${error.message}`);
         if (mode === 'Full') {
              logger.warn("Attempting Basic Fallback due to parsing error...");
-             // Updated: Pass original article so we don't lose the summary in the fallback
              return this.getFallbackAnalysis(originalArticle);
         }
         throw new AppError(`Failed to parse AI response: ${error.message}`, 502);
