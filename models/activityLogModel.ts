@@ -14,7 +14,8 @@ const activityLogSchema = new Schema<ActivityLogDocument>({
   },
   articleId: {
     type: String, // Stored as string ID to match interface
-    required: true
+    required: true,
+    index: true // Optimized for Article Stats Queries
   },
   action: {
     type: String,
