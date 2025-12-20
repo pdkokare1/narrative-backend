@@ -1,8 +1,11 @@
-// types/index.ts
+// narrative-backend/types/index.ts
 
 // --- 1. Article Interface ---
 export interface IArticle {
   _id?: string;
+  type?: 'Article'; 
+  
+  // Core Content
   headline: string;
   summary: string;
   content?: string; 
@@ -11,15 +14,13 @@ export interface IArticle {
   politicalLean: string;
   url: string;
   imageUrl?: string;
-  
-  // Audio
   audioUrl?: string | null;
-  
   publishedAt: Date;
   
   // Analysis Data
   analysisType: 'Full' | 'SentimentOnly';
   sentiment: 'Positive' | 'Negative' | 'Neutral';
+  analysisVersion?: string;
   
   // Scores
   biasScore: number; // 0-100
@@ -44,6 +45,7 @@ export interface IArticle {
   
   // Clustering
   clusterId?: number;
+  clusterCount?: number;
   clusterTopic?: string;
   country: string;
   primaryNoun?: string;
@@ -52,17 +54,19 @@ export interface IArticle {
   // AI Vector
   embedding?: number[];
   
+  // Insights
   keyFindings?: string[];
   recommendations?: string[];
-  analysisVersion?: string;
+  suggestionType?: 'Comfort' | 'Challenge';
   
   createdAt?: Date;
   updatedAt?: Date;
 }
 
-// --- NEW: Narrative Interface (The Meta-Summary) ---
+// --- 2. Narrative Interface (The Meta-Summary) ---
 export interface INarrative {
   _id?: string;
+  type?: 'Narrative';
   clusterId: number;
   lastUpdated: Date;
   
@@ -89,7 +93,7 @@ export interface INarrative {
   country: string;
 }
 
-// --- 2. External News API Interfaces ---
+// --- 3. External News API Interfaces ---
 export interface INewsSourceArticle {
   source: { id?: string; name: string };
   title: string;
@@ -108,7 +112,7 @@ export interface INewsAPIResponse {
   articles: INewsSourceArticle[];
 }
 
-// --- 3. Google Gemini Interfaces ---
+// --- 4. Google Gemini Interfaces ---
 export interface IGeminiPart {
   text: string;
 }
@@ -133,7 +137,7 @@ export interface IGeminiBatchResponse {
   embeddings: { values: number[] }[];
 }
 
-// --- 4. Gamification Interfaces ---
+// --- 5. Gamification Interfaces ---
 export interface IBadge {
   id: string;
   label: string;
@@ -142,7 +146,7 @@ export interface IBadge {
   earnedAt: Date;
 }
 
-// --- 5. User Profile Interface ---
+// --- 6. User Profile Interface ---
 export interface IUserProfile {
   userId: string;
   email: string;
@@ -163,7 +167,7 @@ export interface IUserProfile {
   notificationsEnabled: boolean;
 }
 
-// --- 6. Activity Log Interface ---
+// --- 7. Activity Log Interface ---
 export interface IActivityLog {
   userId: string;
   articleId: string;
@@ -171,7 +175,7 @@ export interface IActivityLog {
   timestamp?: Date;
 }
 
-// --- 7. Emergency Contact Interface ---
+// --- 8. Emergency Contact Interface ---
 export interface IEmergencyContact {
   category: string;
   serviceName: string;
@@ -183,7 +187,7 @@ export interface IEmergencyContact {
   isGlobal: boolean;
 }
 
-// --- 8. AI Prompt Interface ---
+// --- 9. AI Prompt Interface ---
 export interface IAIPrompt {
   type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION';
   text: string;
