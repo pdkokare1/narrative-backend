@@ -4,13 +4,32 @@ import asyncHandler from '../utils/asyncHandler';
 import articleService from '../services/articleService';
 import schemas from '../utils/validationSchemas';
 import AppError from '../utils/AppError';
+import redisClient from '../utils/redisClient'; // Import Redis
 
 // --- 1. Smart Trending Topics ---
 export const getTrendingTopics = asyncHandler(async (req: Request, res: Response) => {
     // Validate
     schemas.trending.parse({ query: req.query });
 
+    const CACHE_KEY = 'trending:topics';
+    
+    // 1. Try Cache
+    try {
+        const cached = await redisClient.get(CACHE_KEY);
+        if (cached) {
+            return res.status(200).json({ topics: JSON.parse(cached) });
+        }
+    } catch (err) {
+        console.warn("Redis Cache Error (Trending):", err);
+    }
+
+    // 2. Fetch Fresh
     const topics = await articleService.getTrendingTopics();
+
+    // 3. Save to Cache (10 minutes)
+    try {
+        await redisClient.setEx(CACHE_KEY, 600, JSON.stringify(topics));
+    } catch (err) { /* ignore cache write errors */ }
 
     // Cache-Control Header for Browser/CDN
     res.set('Cache-Control', 'public, max-age=300'); 
@@ -35,8 +54,6 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     let queryParams: any = {};
     
     // STRICT VALIDATION FIX
-    // If validation fails, we do NOT fallback to unsafe req.query. 
-    // We default to safe values to prevent crashes.
     try {
         const parsed = schemas.feedFilters.parse({ query: req.query });
         queryParams = parsed.query;
@@ -53,7 +70,33 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     if (queryParams.limit) queryParams.limit = Number(queryParams.limit) || 20;
     if (queryParams.offset) queryParams.offset = Number(queryParams.offset) || 0;
 
+    // CACHE LOGIC for Default Feed (Page 0 only)
+    const isDefaultPage = queryParams.offset === 0 && 
+                          queryParams.category === 'All Categories' && 
+                          (!queryParams.lean || queryParams.lean === 'All Leans');
+    
+    const CACHE_KEY = 'feed:default:page0';
+
+    if (isDefaultPage) {
+        try {
+            const cached = await redisClient.get(CACHE_KEY);
+            if (cached) {
+                // Return cached feed
+                res.set('X-Cache', 'HIT');
+                return res.status(200).json(JSON.parse(cached));
+            }
+        } catch (err) { console.warn("Redis Error:", err); }
+    }
+
+    // Fetch Fresh Data
     const result = await articleService.getMainFeed(queryParams);
+    
+    // Save to Cache if default page (5 minutes)
+    if (isDefaultPage) {
+        try {
+            await redisClient.setEx(CACHE_KEY, 300, JSON.stringify(result));
+        } catch (err) { /* ignore */ }
+    }
     
     // Set headers for Browser Caching
     res.set('Cache-Control', 'public, max-age=300');
