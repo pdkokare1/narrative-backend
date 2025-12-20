@@ -57,8 +57,8 @@ class NewsService {
               // Atomic Increment: Returns the NEW value immediately
               const newValue = await redisClient.incr(redisKey);
               
-              // Wrap around using modulo
-              const index = (newValue - 1) % FETCH_CYCLES.length;
+              // Wrap around using modulo. Added Math.abs to prevent negative indexing safety.
+              const index = Math.abs((newValue - 1) % FETCH_CYCLES.length);
               return index;
           } catch (e) { 
               logger.warn(`Redis Cycle Error: ${e}. Defaulting to 0.`);
@@ -155,9 +155,10 @@ class NewsService {
         
         try {
             // SET key "processing" Only If Not Exists (NX)
+            // OPTIMIZATION: Reduced lock from 600s to 180s (3 mins) to recover faster from crashes
             const result = await client.set(key, 'processing', { 
                 NX: true, 
-                EX: 600 // 10 mins lock
+                EX: 180 
             });
 
             if (result === 'OK') {
