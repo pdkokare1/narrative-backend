@@ -5,12 +5,12 @@ import config from '../utils/config';
 import logger from '../utils/logger';
 import KeyManager from '../utils/KeyManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
+import Article from '../models/articleModel'; // Added: To check for existing audio
 
 const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
 class TTSService {
     constructor() {
-        // CHANGED: Register Keys with KeyManager instead of holding a single string
         KeyManager.registerProviderKeys('ELEVENLABS', config.keys.elevenLabs);
         
         logger.info(`🎙️ TTS Service Initialized | Keys: ${config.keys.elevenLabs.length}`);
@@ -50,6 +50,21 @@ class TTSService {
     }
 
     async generateAndUpload(text: string, voiceId: string, articleId: string | null, customFilename: string | null = null): Promise<string> {
+        // --- IMPROVEMENT: DB CACHE CHECK ---
+        // If we have an article ID, check if audio already exists.
+        if (articleId) {
+            try {
+                const existingArticle = await Article.findById(articleId).select('audioUrl').lean();
+                if (existingArticle && existingArticle.audioUrl) {
+                    logger.info(`🎙️ Audio Cache Hit: Returning existing URL for ${articleId}`);
+                    return existingArticle.audioUrl;
+                }
+            } catch (err) {
+                logger.warn(`Audio Cache Check Failed (Non-fatal): ${err}`);
+                // Continue to generation if DB check fails
+            }
+        }
+
         // 1. Check Circuit Breaker
         const isOpen = await CircuitBreaker.isOpen('ELEVENLABS');
         if (!isOpen) {
@@ -72,7 +87,7 @@ class TTSService {
         try {
             const response = await axios.post(url, {
                 text: safeText,
-                model_id: "eleven_turbo_v2_5", // Updated to v2.5 for lower latency & better quality
+                model_id: "eleven_turbo_v2_5", // Keep v2.5 for speed/quality balance
                 voice_settings: {
                     stability: 0.50,       
                     similarity_boost: 0.75, 
