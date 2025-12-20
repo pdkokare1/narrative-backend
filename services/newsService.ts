@@ -1,5 +1,6 @@
-// services/newsService.ts
+// narrative-backend/services/newsService.ts
 import crypto from 'crypto';
+import { z } from 'zod'; // Security: Input Validation
 import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
 import apiClient from '../utils/apiClient';
@@ -13,6 +14,29 @@ import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
 
 // Centralized processor
 import articleProcessor from './articleProcessor';
+
+// --- ZOD SCHEMAS FOR API VALIDATION ---
+const SourceSchema = z.object({
+  name: z.string().optional(),
+  id: z.string().nullable().optional()
+});
+
+const ArticleSchema = z.object({
+  source: SourceSchema.optional(),
+  title: z.string().optional(),
+  description: z.string().nullable().optional(),
+  content: z.string().nullable().optional(),
+  url: z.string().url(),
+  image: z.string().nullable().optional(),
+  urlToImage: z.string().nullable().optional(), // NewsAPI variant
+  publishedAt: z.string().optional()
+});
+
+const NewsApiResponseSchema = z.object({
+  status: z.string().optional(),
+  totalResults: z.number().optional(),
+  articles: z.array(ArticleSchema).optional()
+});
 
 class NewsService {
   constructor() {
@@ -71,8 +95,6 @@ class NewsService {
     } catch (err: any) {
         logger.warn(`GNews fetch failed: ${err.message}`);
         gnewsFailed = true;
-        
-        // Note: We don't manually "advance" anymore because INCR handled it upfront.
     }
 
     // 3. Fallback to NewsAPI (Triggered on Error OR Low Yield)
@@ -204,10 +226,22 @@ class NewsService {
 
   private async fetchExternal(url: string, params: any, apiKey: string, sourceName: string): Promise<INewsSourceArticle[]> {
       try {
-          const response = await apiClient.get<INewsAPIResponse>(url, { params });
+          const response = await apiClient.get<unknown>(url, { params });
           KeyManager.reportSuccess(apiKey);
-          if (!response.data?.articles?.length) return [];
-          return this.normalizeArticles(response.data.articles, sourceName);
+
+          // ZOD VALIDATION: Ensure response is valid structure
+          const result = NewsApiResponseSchema.safeParse(response.data);
+
+          if (!result.success) {
+              logger.error(`${sourceName} Schema Mismatch: ${JSON.stringify(result.error.format())}`);
+              return [];
+          }
+          
+          const rawArticles = result.data.articles || [];
+          if (rawArticles.length === 0) return [];
+
+          return this.normalizeArticles(rawArticles, sourceName);
+
       } catch (error: any) {
           const status = error.response?.status;
           await KeyManager.reportFailure(apiKey, status === 429 || status === 403);
@@ -216,11 +250,13 @@ class NewsService {
   }
 
   private normalizeArticles(articles: any[], sourceName: string): INewsSourceArticle[] {
-      return articles.map(a => ({
+      return articles
+        .filter(a => a.url) // Basic check: must have URL
+        .map(a => ({
           source: { name: a.source?.name || sourceName },
           title: a.title || "", 
           description: a.description || a.content || "", 
-          url: normalizeUrl(a.url), 
+          url: normalizeUrl(a.url!), // ! used because we filtered above 
           image: a.image || a.urlToImage, 
           publishedAt: a.publishedAt || new Date().toISOString()
       }));
