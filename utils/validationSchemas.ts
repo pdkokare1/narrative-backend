@@ -19,7 +19,7 @@ const rules = {
     // Pagination & Limits
     limit: z.coerce.number().min(1).max(100).default(12),
     page: z.coerce.number().min(1).default(1),
-    offset: z.coerce.number().min(0).default(0), // Added offset support
+    offset: z.coerce.number().min(0).default(0), 
 };
 
 /**
@@ -114,6 +114,20 @@ export const FullAnalysisSchema = z.object({
   }).optional()
 });
 
+// Narrative Synthesis Schema
+export const NarrativeSchema = z.object({
+    masterHeadline: z.string(),
+    executiveSummary: z.string(),
+    consensusPoints: z.array(z.string()),
+    divergencePoints: z.array(z.object({
+        point: z.string(),
+        perspectives: z.array(z.object({
+            source: z.string(),
+            stance: z.string()
+        }))
+    }))
+});
+
 /**
  * Route Schemas
  */
@@ -158,7 +172,7 @@ const schemas = {
         query: z.object({
             q: z.string().trim().optional(),
             limit: rules.limit,
-            offset: rules.offset, // Added offset
+            offset: rules.offset, 
             // Filters
             category: z.string().optional(),
             politicalLean: z.string().optional()
@@ -169,7 +183,7 @@ const schemas = {
     feedFilters: z.object({
         query: z.object({
             limit: rules.limit,
-            offset: rules.offset, // Added offset
+            offset: rules.offset, 
             cursor: z.string().optional(),
             category: z.string().optional(),
             politicalLean: z.string().optional(),
