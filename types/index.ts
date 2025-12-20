@@ -5,7 +5,7 @@ export interface IArticle {
   _id?: string;
   headline: string;
   summary: string;
-  content?: string; // Added to support AI analysis of full text
+  content?: string; 
   source: string;
   category: string;
   politicalLean: string;
@@ -60,6 +60,35 @@ export interface IArticle {
   updatedAt?: Date;
 }
 
+// --- NEW: Narrative Interface (The Meta-Summary) ---
+export interface INarrative {
+  _id?: string;
+  clusterId: number;
+  lastUpdated: Date;
+  
+  // The "Meta" Content
+  masterHeadline: string;
+  executiveSummary: string; 
+  
+  // Stats
+  sourceCount: number;
+  sources: string[]; // ["CNN", "Fox", "Reuters"]
+  
+  // The Deep Analysis
+  consensusPoints: string[]; 
+  divergencePoints: {
+    point: string; // "Economic Impact"
+    perspectives: {
+      source: string;
+      stance: string; // "Claims it will cause inflation"
+    }[];
+  }[];
+
+  // Metadata
+  category: string;
+  country: string;
+}
+
 // --- 2. External News API Interfaces ---
 export interface INewsSourceArticle {
   source: { id?: string; name: string };
@@ -67,10 +96,10 @@ export interface INewsSourceArticle {
   description: string;
   content?: string;
   url: string;
-  image?: string;      // GNews style
-  urlToImage?: string; // NewsAPI style
+  image?: string;      
+  urlToImage?: string; 
   publishedAt: string;
-  score?: number;      // Internal ranking score
+  score?: number;      
 }
 
 export interface INewsAPIResponse {
@@ -79,7 +108,7 @@ export interface INewsAPIResponse {
   articles: INewsSourceArticle[];
 }
 
-// --- 3. Google Gemini Interfaces (NEW) ---
+// --- 3. Google Gemini Interfaces ---
 export interface IGeminiPart {
   text: string;
 }
