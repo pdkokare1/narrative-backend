@@ -4,7 +4,7 @@ import asyncHandler from '../utils/asyncHandler';
 import articleService from '../services/articleService';
 import schemas from '../utils/validationSchemas';
 import AppError from '../utils/AppError';
-import redisClient from '../utils/redisClient'; // Import Redis
+import redisClient from '../utils/redisClient'; 
 
 // --- 1. Smart Trending Topics ---
 export const getTrendingTopics = asyncHandler(async (req: Request, res: Response) => {
@@ -17,7 +17,8 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
     try {
         const cached = await redisClient.get(CACHE_KEY);
         if (cached) {
-            return res.status(200).json({ topics: JSON.parse(cached) });
+            // Redis wrapper returns parsed JSON or null
+            return res.status(200).json({ topics: cached });
         }
     } catch (err) {
         console.warn("Redis Cache Error (Trending):", err);
@@ -26,9 +27,10 @@ export const getTrendingTopics = asyncHandler(async (req: Request, res: Response
     // 2. Fetch Fresh
     const topics = await articleService.getTrendingTopics();
 
-    // 3. Save to Cache (10 minutes)
+    // 3. Save to Cache (10 minutes = 600s)
+    // FIX: Use .set(key, value, ttl) matching your wrapper
     try {
-        await redisClient.setEx(CACHE_KEY, 600, JSON.stringify(topics));
+        await redisClient.set(CACHE_KEY, topics, 600);
     } catch (err) { /* ignore cache write errors */ }
 
     // Cache-Control Header for Browser/CDN
@@ -81,9 +83,9 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
         try {
             const cached = await redisClient.get(CACHE_KEY);
             if (cached) {
-                // Return cached feed
                 res.set('X-Cache', 'HIT');
-                return res.status(200).json(JSON.parse(cached));
+                // Wrapper returns parsed object
+                return res.status(200).json(cached);
             }
         } catch (err) { console.warn("Redis Error:", err); }
     }
@@ -91,10 +93,11 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     // Fetch Fresh Data
     const result = await articleService.getMainFeed(queryParams);
     
-    // Save to Cache if default page (5 minutes)
+    // Save to Cache if default page (5 minutes = 300s)
+    // FIX: Use .set(key, value, ttl)
     if (isDefaultPage) {
         try {
-            await redisClient.setEx(CACHE_KEY, 300, JSON.stringify(result));
+            await redisClient.set(CACHE_KEY, result, 300);
         } catch (err) { /* ignore */ }
     }
     
