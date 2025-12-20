@@ -269,7 +269,6 @@ class AIService {
           KeyManager.reportSuccess(apiKey);
           
           if (!response.data.candidates || response.data.candidates.length === 0) return null;
-          const rawText = response.data.candidates[0].content.parts[0].text;
           return this.parseGeminiResponse(response.data, 'Narrative', null);
 
       } catch (error: any) {
@@ -378,7 +377,7 @@ class AIService {
 
         // Special Case: Narrative Generation
         if (mode === 'Narrative') {
-            return NARRATIVE_SCHEMA.parse ? parsedRaw : parsedRaw; // Add Zod validation for narrative if needed
+            return parsedRaw; // Removed invalid .parse check
         }
 
         let validated;
