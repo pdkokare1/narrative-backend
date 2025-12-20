@@ -145,6 +145,45 @@ class KeyManager {
         // For individual keys, we reset their error count on success
         await redisClient.del(`${this.REDIS_PREFIX_ERROR}${key}`);
     }
+
+    /**
+     * CENTRALIZED RETRY LOGIC (New Feature)
+     * Executes a function using available keys, rotating automatically on failure.
+     * @param provider The provider name (e.g., 'GEMINI', 'NEWS_API')
+     * @param operation The async function that uses the key
+     */
+    public async executeWithRetry<T>(
+        provider: string, 
+        operation: (key: string) => Promise<T>
+    ): Promise<T> {
+        const errors: any[] = [];
+        // Try up to 3 distinct keys/attempts before giving up
+        const MAX_ATTEMPTS = 3; 
+
+        for (let i = 0; i < MAX_ATTEMPTS; i++) {
+            let currentKey = '';
+            try {
+                currentKey = await this.getKey(provider);
+                const result = await operation(currentKey);
+                
+                // If we reach here, the operation succeeded
+                await this.reportSuccess(currentKey);
+                return result;
+            } catch (err: any) {
+                errors.push(err);
+                
+                // If we got a key and failed, report it so it might be rotated next time
+                if (currentKey) {
+                    const isRateLimit = err.status === 429 || err?.response?.status === 429;
+                    await this.reportFailure(currentKey, isRateLimit);
+                }
+
+                logger.warn(`🔄 Retry attempt ${i+1}/${MAX_ATTEMPTS} for ${provider} failed. Moving to next key.`);
+            }
+        }
+        
+        throw new Error(`Failed to execute ${provider} operation after ${MAX_ATTEMPTS} attempts. Last error: ${errors.pop()?.message}`);
+    }
 }
 
 export default new KeyManager();
