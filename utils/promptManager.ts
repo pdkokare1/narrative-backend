@@ -144,14 +144,14 @@ class PromptManager {
         const templateType = mode === 'Basic' ? 'SUMMARY_ONLY' : 'ANALYSIS';
         const template = await this.getTemplate(templateType);
         
-        // Use the optimized summary created in aiService, or fallback to full content
-        // CRITICAL FIX: Removed .substring(0, 500) limit to allow Gemini 2.5 Pro to read the full context.
+        // Use the optimized summary created in aiService
+        // Removed .replace(/\n/g, " ") to allow Gemini 2.5 to see paragraph structure
         const articleContent = article.summary || article.content || "";
         
         const data = {
             headline: article.title || "No Title",
             description: article.description || "No Description",
-            content: articleContent.replace(/\n/g, " "),
+            content: articleContent, // Preserving newlines for better context
             date: new Date().toISOString().split('T')[0]
         };
 
