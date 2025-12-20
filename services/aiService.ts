@@ -9,6 +9,7 @@ import { IArticle, IGeminiResponse } from '../types';
 import promptManager from '../utils/promptManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
 import { CONSTANTS } from '../utils/constants';
+import { jsonrepair } from 'jsonrepair';
 
 // Centralized Validation
 import { BasicAnalysisSchema, FullAnalysisSchema } from '../utils/validationSchemas';
@@ -268,8 +269,7 @@ class AIService {
           KeyManager.reportSuccess(apiKey);
           
           if (!response.data.candidates || response.data.candidates.length === 0) return null;
-          const rawText = response.data.candidates[0].content.parts[0].text;
-          return JSON.parse(rawText);
+          return this.parseGeminiResponse(response.data, 'Narrative', null);
 
       } catch (error: any) {
           logger.error(`Narrative Generation Failed: ${error.message}`);
@@ -362,7 +362,7 @@ class AIService {
 
   // --- Private Helpers ---
 
-  private parseGeminiResponse(data: IGeminiResponse, mode: 'Full' | 'Basic', originalArticle: Partial<IArticle>): Partial<IArticle> {
+  private parseGeminiResponse(data: IGeminiResponse, mode: 'Full' | 'Basic' | 'Narrative', originalArticle: Partial<IArticle> | null): any {
     try {
         if (!data.candidates || data.candidates.length === 0) {
             throw new AppError('AI returned no candidates', 502);
@@ -371,7 +371,14 @@ class AIService {
         const rawText = data.candidates[0].content.parts[0].text;
         if (!rawText) throw new AppError('AI returned empty content', 502);
 
-        const parsedRaw = JSON.parse(rawText);
+        // FIX: Use jsonrepair to handle Markdown blocks or syntax errors from LLM
+        const cleanJson = jsonrepair(rawText);
+        const parsedRaw = JSON.parse(cleanJson);
+
+        // Special Case: Narrative Generation
+        if (mode === 'Narrative') {
+            return NARRATIVE_SCHEMA.parse ? parsedRaw : parsedRaw; // Add Zod validation for narrative if needed
+        }
 
         let validated;
         if (mode === 'Basic') {
@@ -396,7 +403,9 @@ class AIService {
 
     } catch (error: any) {
         logger.error(`AI Parse/Validation Error: ${error.message}`);
-        if (mode === 'Full') {
+        
+        // Only fallback if we have an original article to fall back TO
+        if (mode === 'Full' && originalArticle) {
              logger.warn("Attempting Basic Fallback due to parsing error...");
              return this.getFallbackAnalysis(originalArticle);
         }
