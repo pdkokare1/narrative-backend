@@ -1,13 +1,8 @@
 // narrative-backend/services/newsService.ts
 import crypto from 'crypto';
-import { z } from 'zod';
-import KeyManager from '../utils/KeyManager';
 import logger from '../utils/logger';
-import apiClient from '../utils/apiClient';
 import redisClient from '../utils/redisClient';
-import config from '../utils/config';
 import CircuitBreaker from '../utils/CircuitBreaker'; 
-import { normalizeUrl } from '../utils/helpers';
 import { INewsSourceArticle } from '../types';
 import Article from '../models/articleModel';
 import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
@@ -15,34 +10,18 @@ import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
 // Centralized processor
 import articleProcessor from './articleProcessor';
 
-// --- ZOD SCHEMAS FOR API VALIDATION ---
-const SourceSchema = z.object({
-  name: z.string().optional(),
-  id: z.string().nullable().optional()
-});
-
-const ArticleSchema = z.object({
-  source: SourceSchema.optional(),
-  title: z.string().optional(),
-  description: z.string().nullable().optional(),
-  content: z.string().nullable().optional(),
-  url: z.string().url(),
-  image: z.string().nullable().optional(),
-  urlToImage: z.string().nullable().optional(),
-  publishedAt: z.string().optional()
-});
-
-const NewsApiResponseSchema = z.object({
-  status: z.string().optional(),
-  totalResults: z.number().optional(),
-  articles: z.array(ArticleSchema).optional()
-});
+// Strategies
+import { GNewsProvider } from './news/GNewsProvider';
+import { NewsApiProvider } from './news/NewsApiProvider';
 
 class NewsService {
+  private gnews: GNewsProvider;
+  private newsapi: NewsApiProvider;
+
   constructor() {
-    KeyManager.registerProviderKeys('GNEWS', config.keys.gnews);
-    KeyManager.registerProviderKeys('NEWS_API', config.keys.newsApi);
-    logger.info(`📰 News Service Initialized`);
+    this.gnews = new GNewsProvider();
+    this.newsapi = new NewsApiProvider();
+    logger.info(`📰 News Service Initialized with [GNews, NewsAPI]`);
   }
 
   /**
@@ -54,6 +33,10 @@ class NewsService {
       if (redisClient.isReady()) {
           try {
               const newValue = await redisClient.incr(redisKey);
+              // Reset periodically to prevent overflow (though unlikely in Redis)
+              if (newValue > 1000000) { 
+                  await redisClient.set(redisKey, '0');
+              }
               const index = Math.abs((newValue - 1) % FETCH_CYCLES.length);
               return index;
           } catch (e) { 
@@ -73,9 +56,9 @@ class NewsService {
 
     let gnewsFailed = false;
 
-    // 2. Try GNews First (With Auto-Retry)
+    // 1. Try GNews Strategy
     try {
-        const gnewsArticles = await this.fetchFromGNews(currentCycle.gnews);
+        const gnewsArticles = await this.gnews.fetchArticles(currentCycle.gnews);
         allArticles.push(...gnewsArticles);
         
         if (gnewsArticles.length < 2) {
@@ -83,28 +66,30 @@ class NewsService {
             gnewsFailed = true;
         }
     } catch (err: any) {
-        logger.warn(`GNews fetch failed after retries: ${err.message}`);
+        logger.warn(`GNews fetch failed: ${err.message}`);
         gnewsFailed = true;
     }
 
-    // 3. Fallback to NewsAPI
+    // 2. Fallback to NewsAPI Strategy
+    // Business Rule: Use fallback if GNews failed OR yields were low
     if (allArticles.length < 5 || gnewsFailed) {
       const isNewsApiOpen = await CircuitBreaker.isOpen('NEWS_API');
       
       if (isNewsApiOpen) {
           logger.info('⚠️ Low yield/Error, triggering NewsAPI fallback...');
           try {
-              const newsApiArticles = await this.fetchFromNewsAPI(currentCycle.newsapi);
+              const newsApiArticles = await this.newsapi.fetchArticles(currentCycle.newsapi);
               allArticles.push(...newsApiArticles);
               await CircuitBreaker.recordSuccess('NEWS_API');
           } catch (err: any) {
-              logger.warn(`NewsAPI fallback failed after retries: ${err.message}`);
+              logger.warn(`NewsAPI fallback failed: ${err.message}`);
               await CircuitBreaker.recordFailure('NEWS_API');
           }
       }
     }
 
-    // 4. Processing Pipeline
+    // 3. Processing Pipeline
+    // Filter -> Check DB -> Process -> Cache
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
     const finalUnique = articleProcessor.processBatch(dbUnseenArticles);
@@ -133,9 +118,11 @@ class NewsService {
     for (const article of articles) {
         const key = this.getRedisKey(article.url);
         try {
+            // Set NX (Only if Not Exists) with 3 minute expiry (processing lock)
             const result = await client.set(key, 'processing', { NX: true, EX: 180 });
             if (result === 'OK') unique.push(article);
         } catch (e) {
+            // In case of Redis error, process it anyway to be safe
             unique.push(article);
         }
     }
@@ -150,6 +137,7 @@ class NewsService {
               const multi = client.multi();
               for (const article of articles) {
                   const key = this.getRedisKey(article.url);
+                  // Mark as seen for 48 hours
                   multi.set(key, '1', { EX: 172800 }); 
               }
               await multi.exec();
@@ -164,55 +152,12 @@ class NewsService {
   private async filterExistingInDB(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
       if (articles.length === 0) return [];
       const urls = articles.map(a => a.url);
+      
+      // Optimization: Only select the _id field (implicit) or url to save bandwidth
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
       const existingUrls = new Set(existingDocs.map((d: any) => d.url));
+      
       return articles.filter(a => !existingUrls.has(a.url));
-  }
-
-  // --- API FETCHERS (REFACTORED) ---
-
-  private async fetchFromGNews(params: any): Promise<INewsSourceArticle[]> {
-    return KeyManager.executeWithRetry<INewsSourceArticle[]>('GNEWS', async (apiKey) => {
-        const queryParams = { lang: 'en', sortby: 'publishedAt', max: CONSTANTS.NEWS.FETCH_LIMIT, ...params, apikey: apiKey };
-        const url = 'https://gnews.io/api/v4/top-headlines';
-        
-        const response = await apiClient.get<unknown>(url, { params: queryParams });
-        return this.validateAndNormalize(response.data, 'GNews');
-    });
-  }
-
-  private async fetchFromNewsAPI(params: any): Promise<INewsSourceArticle[]> {
-    return KeyManager.executeWithRetry<INewsSourceArticle[]>('NEWS_API', async (apiKey) => {
-        const endpoint = params.q ? 'everything' : 'top-headlines';
-        const queryParams = { pageSize: CONSTANTS.NEWS.FETCH_LIMIT, ...params, apiKey: apiKey };
-        const url = `https://newsapi.org/v2/${endpoint}`;
-        
-        const response = await apiClient.get<unknown>(url, { params: queryParams });
-        return this.validateAndNormalize(response.data, 'NewsAPI');
-    });
-  }
-
-  // Pure Helper: No network logic, just parsing
-  private validateAndNormalize(responseData: any, sourceName: string): INewsSourceArticle[] {
-      const result = NewsApiResponseSchema.safeParse(responseData);
-
-      if (!result.success) {
-          logger.error(`${sourceName} Schema Mismatch: ${JSON.stringify(result.error.format())}`);
-          return [];
-      }
-
-      const rawArticles = result.data.articles || [];
-      return rawArticles
-        .filter(a => a.url)
-        .map(a => ({
-          source: { name: a.source?.name || sourceName },
-          title: a.title || "", 
-          description: a.description || a.content || "", 
-          url: normalizeUrl(a.url!), 
-          // FIX: Added '|| undefined' to handle nulls strictly
-          image: a.image || a.urlToImage || undefined, 
-          publishedAt: a.publishedAt || new Date().toISOString()
-      }));
   }
 }
 
