@@ -32,31 +32,26 @@ export const searchArticles = asyncHandler(async (req: Request, res: Response) =
 
 // --- 3. Main Feed ---
 export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
-    // Strict Validation - We allow the service to handle defaults if params are missing
     let queryParams: any = {};
+    
+    // STRICT VALIDATION FIX
+    // If validation fails, we do NOT fallback to unsafe req.query. 
+    // We default to safe values to prevent crashes.
     try {
         const parsed = schemas.feedFilters.parse({ query: req.query });
         queryParams = parsed.query;
     } catch (e) {
-        // Fallback: If strict validation fails on an optional field, just use raw query
-        console.warn("Validation Warning (MainFeed):", e);
-        
-        // FIX: Ensure limit and offset are NUMBERS if we fallback to raw query
-        const raw = req.query as any;
+        console.warn("⚠️ Feed Validation Failed. Using Defaults.");
         queryParams = {
-            ...raw,
-            limit: raw.limit ? parseInt(raw.limit as string, 10) : 20,
-            offset: raw.offset ? parseInt(raw.offset as string, 10) : 0
+            limit: 20,
+            offset: 0,
+            category: 'All Categories'
         };
     }
 
-    // Double check that limit is a number to support frontend batching changes
-    if (queryParams.limit && typeof queryParams.limit === 'string') {
-        queryParams.limit = parseInt(queryParams.limit, 10);
-    }
-    if (queryParams.offset && typeof queryParams.offset === 'string') {
-        queryParams.offset = parseInt(queryParams.offset, 10);
-    }
+    // Ensure numeric types for pagination
+    if (queryParams.limit) queryParams.limit = Number(queryParams.limit) || 20;
+    if (queryParams.offset) queryParams.offset = Number(queryParams.offset) || 0;
 
     const result = await articleService.getMainFeed(queryParams);
     
