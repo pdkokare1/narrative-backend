@@ -37,7 +37,9 @@ class NewsService {
               if (newValue > 1000000) { 
                   await redisClient.set(redisKey, '0');
               }
-              const index = Math.abs((newValue - 1) % FETCH_CYCLES.length);
+              // Safety: Ensure FETCH_CYCLES has length to avoid division by zero
+              const length = FETCH_CYCLES.length || 1; 
+              const index = Math.abs((newValue - 1) % length);
               return index;
           } catch (e) { 
               logger.warn(`Redis Cycle Error: ${e}. Defaulting to 0.`);
@@ -113,20 +115,21 @@ class NewsService {
     const client = redisClient.getClient();
     if (!client) return articles;
 
-    const unique: INewsSourceArticle[] = [];
-    
-    for (const article of articles) {
+    // Optimization: Run Redis checks in parallel instead of sequential await
+    const checks = articles.map(async (article) => {
         const key = this.getRedisKey(article.url);
         try {
             // Set NX (Only if Not Exists) with 3 minute expiry (processing lock)
             const result = await client.set(key, 'processing', { NX: true, EX: 180 });
-            if (result === 'OK') unique.push(article);
+            return result === 'OK' ? article : null;
         } catch (e) {
             // In case of Redis error, process it anyway to be safe
-            unique.push(article);
+            return article;
         }
-    }
-    return unique;
+    });
+
+    const results = await Promise.all(checks);
+    return results.filter((a): a is INewsSourceArticle => a !== null);
   }
 
   private async markAsSeenInRedis(articles: INewsSourceArticle[]) {
