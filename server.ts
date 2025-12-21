@@ -29,6 +29,7 @@ const app = express();
 // --- 1. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.url !== '/health' && req.url !== '/ping') {
+        // This now uses Pino's custom 'http' level
         logger.http(`${req.method} ${req.url}`);
     }
     next();
