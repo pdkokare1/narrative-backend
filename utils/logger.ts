@@ -1,44 +1,40 @@
 // utils/logger.ts
-import winston from 'winston';
+import pino from 'pino';
 
-const levels = {
-  error: 0,
-  warn: 1,
-  info: 2,
-  http: 3,
-  debug: 4,
+// Define custom levels to match your previous Winston setup
+// Pino default levels: trace:10, debug:20, info:30, warn:40, error:50, fatal:60
+const customLevels = {
+  http: 25, // Positioned between debug and info
 };
 
-const colors = {
-  error: 'red',
-  warn: 'yellow',
-  info: 'green',
-  http: 'magenta',
-  debug: 'white',
-};
+// Development: Pretty printing (Colors, readable timestamp)
+// Production: JSON (Best for Railway/Cloud tools)
+const transport = process.env.NODE_ENV === 'development' 
+  ? {
+      target: 'pino-pretty',
+      options: {
+        colorize: true,
+        translateTime: 'SYS:standard', // YYYY-mm-dd HH:MM:ss
+        ignore: 'pid,hostname',
+      },
+    }
+  : undefined;
 
-winston.addColors(colors);
-
-// In production, we want pure JSON without the custom printf timestamp prefix
-// because structured logging tools handle timestamps automatically.
-const productionFormat = winston.format.json();
-
-const developmentFormat = winston.format.combine(
-  winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
-  winston.format.colorize({ all: true }),
-  winston.format.printf(
-    (info) => `${info.timestamp} ${info.level}: ${info.message}`
-  )
-);
-
-const logger = winston.createLogger({
+const logger = pino({
   level: process.env.NODE_ENV === 'development' ? 'debug' : 'info',
-  levels,
-  transports: [
-    new winston.transports.Console({
-      format: process.env.NODE_ENV === 'production' ? productionFormat : developmentFormat,
-    }),
-  ],
-});
+  customLevels,
+  // Mixin adds the level label string (e.g., "level": "info") instead of just number
+  formatters: {
+    level: (label) => {
+      return { level: label };
+    },
+  },
+  // Ensure we capture timestamps
+  timestamp: pino.stdTimeFunctions.isoTime,
+}, transport as any); 
 
-export default logger;
+// Extend type definition locally to allow .http() usage without TS errors
+// (In a strict setup, we might declare this globally, but this works for direct usage)
+const typedLogger = logger as typeof logger & { http: (msg: string, ...args: any[]) => void };
+
+export default typedLogger;
