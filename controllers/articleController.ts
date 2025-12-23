@@ -62,7 +62,9 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     if (queryParams.offset) queryParams.offset = Number(queryParams.offset) || 0;
 
     // CACHE LOGIC for Default Feed (Page 0 only)
+    // FIX: Added limit check (must be 20) so polling requests (limit=1) don't poison the cache
     const isDefaultPage = queryParams.offset === 0 && 
+                          queryParams.limit === 20 && 
                           queryParams.category === 'All Categories' && 
                           (!queryParams.lean || queryParams.lean === 'All Leans');
     
