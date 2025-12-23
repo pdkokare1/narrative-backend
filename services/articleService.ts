@@ -98,7 +98,7 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Main Feed (UPDATED FOR NARRATIVES) ---
+  // --- 3. Main Feed (UPDATED FOR NARRATIVES & 'ALL' FILTER) ---
   async getMainFeed(filters: FeedFilters) {
     const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
     
@@ -115,7 +115,11 @@ class ArticleService {
         // A. Build Query for Articles (Preserving ALL your existing filters)
         const query: any = {};
         
-        if (category && category !== 'All Categories' && category !== 'undefined') query.category = category;
+        // FIX: Treat 'All' same as 'All Categories' (No filter)
+        if (category && category !== 'All Categories' && category !== 'All' && category !== 'undefined') {
+            query.category = category;
+        }
+
         if (lean && lean !== 'All Leans' && lean !== 'undefined') query.politicalLean = lean;
         
         if (region === 'India') query.country = 'India';
@@ -139,7 +143,12 @@ class ArticleService {
         // B. Fetch Narratives (NEW LOGIC)
         // We fetch "Master Stories" relevant to the current filters
         const narrativeQuery: any = {};
-        if (category && category !== 'All Categories' && category !== 'undefined') narrativeQuery.category = category;
+        
+        // FIX: Apply same 'All' fix for Narratives
+        if (category && category !== 'All Categories' && category !== 'All' && category !== 'undefined') {
+            narrativeQuery.category = category;
+        }
+
         if (region === 'India') narrativeQuery.country = 'India';
         
         // Only show narratives updated recently (last 24h)
