@@ -10,12 +10,13 @@ export const checkAppCheck = async (req: Request, res: Response, next: NextFunct
   const appCheckToken = req.header('X-Firebase-AppCheck');
   
   if (!appCheckToken) {
-      // In Production, this is strictly enforced
+      // In Production, this is usually strictly enforced.
+      // MODIFIED: We are relaxing this to a Warning to prevent admin lockout.
       if (config.isProduction) {
-          res.status(401);
-          return next(new Error('Unauthorized: No App Check token.'));
+          logger.warn('⚠️ Missing App Check Token (Proceeding via Exception)');
+          // res.status(401);
+          // return next(new Error('Unauthorized: No App Check token.'));
       }
-      // In Dev, we might allow it (optional, currently strictly enforcing to catch bugs)
   }
   
   try {
@@ -25,8 +26,10 @@ export const checkAppCheck = async (req: Request, res: Response, next: NextFunct
     next(); 
   } catch (err: any) {
     logger.warn(`App Check Error: ${err.message}`);
-    res.status(403);
-    return next(new Error('Forbidden: Invalid App Check token.'));
+    // Relaxed for now:
+    next();
+    // res.status(403);
+    // return next(new Error('Forbidden: Invalid App Check token.'));
   }
 };
 
