@@ -49,5 +49,14 @@ export const handleFetchFeed = async (job: Job) => {
  */
 export const handleProcessArticle = async (job: Job) => {
     // This calls the pipeline service (which handles deduplication & analysis)
-    return await newsFetcher.processArticleJob(job.data);
+    const result = await newsFetcher.processArticleJob(job.data);
+    
+    // LOGGING: Explicitly log the result since the Worker suppresses completion logs
+    if (result === 'SAVED_FRESH' || result === 'SAVED_INHERITED') {
+        // Success is logged in Pipeline, no need to duplicate spam
+    } else {
+        logger.info(`⚠️ Article Result [${job.id}]: ${result}`);
+    }
+    
+    return result;
 };
