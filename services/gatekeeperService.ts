@@ -66,13 +66,9 @@ class GatekeeperService {
         } 
         
         // 2. Keyword Check (Memory)
-        // We use word boundaries to avoid false positives (e.g., "her" inside "where")
         const combinedText = `${titleLower} ${desc}`;
         const foundKeyword = this.localKeywords.find(word => {
-            // Simple check first for performance
             if (!combinedText.includes(word)) return false;
-            // Strict check: Ensure it's not part of another valid word if needed
-            // For now, simple inclusion is fast, but we rely on a clean JUNK_KEYWORDS list.
             return true;
         });
         
@@ -89,12 +85,6 @@ class GatekeeperService {
         const upperCount = title.replace(/[^A-Z]/g, "").length;
         if (title.length > 20 && (upperCount / title.length) > 0.75) {
              return { isJunk: true, reason: 'ALL CAPS TITLE' };
-        }
-
-        // 5. Excessive Emoji Detector
-        const emojiCount = (title.match(/[\u{1F300}-\u{1F9FF}]/gu) || []).length;
-        if (emojiCount > 2) {
-             return { isJunk: true, reason: 'Excessive Emojis' };
         }
 
         return { isJunk: false };
