@@ -15,7 +15,7 @@ async function fetchFeed() {
     const rawArticles: any[] = await newsService.fetchNews(); 
     
     if (!rawArticles || rawArticles.length === 0) {
-        logger.warn('Job: No new articles found.');
+        logger.warn('Job: No new articles found from Service (All filtered or API empty).');
         return []; 
     }
 
@@ -28,7 +28,7 @@ async function fetchFeed() {
     const newArticles = rawArticles.filter(a => !existingUrls.has(a.url));
 
     if (newArticles.length === 0) {
-        logger.info('✨ All fetched articles already exist in DB. Skipping processing.');
+        logger.info(`✨ Skipped ${rawArticles.length} articles (Already exist in DB).`);
         return [];
     }
 
