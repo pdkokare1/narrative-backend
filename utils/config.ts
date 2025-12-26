@@ -183,7 +183,11 @@ const config = {
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
-  adminUids: env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : [],
+  // ADDED: Your UID is now strictly added to the Admin list
+  adminUids: [
+    ...(env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : []),
+    'z5uKireLhcffRWvocrrYMZaLbZw1'
+  ],
   corsOrigins: getCorsOrigins(),
   trustProxyLevel: env.TRUST_PROXY_LVL, 
   
