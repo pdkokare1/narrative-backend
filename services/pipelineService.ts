@@ -162,6 +162,16 @@ class PipelineService {
             // CRITICAL: Handle Race Condition at the Database Level
             try {
                 await Article.create(newArticleData);
+
+                // --- CRITICAL FIX START ---
+                // Invalidate the Main Feed Cache ('feed:default:page0') immediately.
+                // This ensures the user sees this new article the next time they refresh.
+                const client = redisClient.getClient();
+                if (client && redisClient.isReady()) {
+                    await client.del('feed:default:page0');
+                }
+                // --- CRITICAL FIX END ---
+
             } catch (dbError: any) {
                 // Error 11000 is MongoDB's Duplicate Key Error
                 if (dbError.code === 11000) {
