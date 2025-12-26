@@ -24,7 +24,10 @@ export default async function workerProcessor(job: Job) {
         case 'update-trending':
             return await handleUpdateTrending(job);
 
-        case 'fetch-feed':
+        // Updated: Handle both Day and Night schedule names
+        case 'fetch-feed': // Legacy support
+        case 'fetch-feed-day':
+        case 'fetch-feed-night':
         case 'scheduled-news-fetch':
         case 'manual-fetch':
             return await handleFetchFeed(job);
