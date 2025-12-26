@@ -32,6 +32,7 @@ const createMemoryLimiter = (maxRequests: number, windowMs: number, type: string
 };
 
 // --- Factory: Create Redis Limiter (Primary) ---
+// Note: This must NOT be called inside a request handler to avoid validation errors
 const createRedisLimiter = (maxRequests: number, windowMs: number, type: string): RateLimitRequestHandler | null => {
     const client = redisClient.getClient();
     
@@ -74,50 +75,68 @@ const createRedisLimiter = (maxRequests: number, windowMs: number, type: string)
 const API_WINDOW = CONSTANTS.RATE_LIMIT.WINDOW_MS;
 const API_MAX = CONSTANTS.RATE_LIMIT.API_MAX_REQUESTS;
 
-// Search: 1 Minute Window (Strict)
 const SEARCH_WINDOW = 60 * 1000; 
 const SEARCH_MAX = 30;
 
-// TTS: Expensive
 const TTS_WINDOW = CONSTANTS.RATE_LIMIT.WINDOW_MS;
 const TTS_MAX = CONSTANTS.RATE_LIMIT.TTS_MAX_REQUESTS;
 
-// --- SINGLETON INITIALIZATION ---
+// --- INITIALIZATION ---
 
-// Memory Backups (Always created)
+// 1. Create Memory Backups (Always available)
 const apiLimiterMemory = createMemoryLimiter(API_MAX, API_WINDOW, 'API');
 const searchLimiterMemory = createMemoryLimiter(SEARCH_MAX, SEARCH_WINDOW, 'Search');
 const ttsLimiterMemory = createMemoryLimiter(TTS_MAX, TTS_WINDOW, 'Audio');
 
-// Redis Placeholders
+// 2. Redis Limiters (Initially null)
 let apiLimiterRedis: RateLimitRequestHandler | null = null;
 let searchLimiterRedis: RateLimitRequestHandler | null = null;
 let ttsLimiterRedis: RateLimitRequestHandler | null = null;
 
+// 3. Background Initializer
+// We check periodically until Redis is ready, then create the limiters ONCE.
+// This prevents creating them "inside a request handler", which causes the crash.
+const initRedisLimiters = () => {
+    if (apiLimiterRedis) return; // Already initialized
+
+    if (redisClient.isReady()) {
+        try {
+            apiLimiterRedis = createRedisLimiter(API_MAX, API_WINDOW, 'API');
+            searchLimiterRedis = createRedisLimiter(SEARCH_MAX, SEARCH_WINDOW, 'Search');
+            ttsLimiterRedis = createRedisLimiter(TTS_MAX, TTS_WINDOW, 'Audio');
+            
+            if (apiLimiterRedis) {
+                logger.info("✅ Redis Rate Limiters Initialized (Background)");
+            }
+        } catch (e) {
+            // Keep trying on next interval
+        }
+    }
+};
+
+// Start checking for Redis readiness
+const initInterval = setInterval(() => {
+    if (redisClient.isReady()) {
+        initRedisLimiters();
+        // Once initialized, stop checking
+        if (apiLimiterRedis) clearInterval(initInterval);
+    }
+}, 5000); // Check every 5 seconds
+
 // --- EXPORTED MIDDLEWARE ---
+// These functions delegate to the active limiter (Redis or Memory)
 
 export const apiLimiter = (req: Request, res: Response, next: NextFunction) => {
-    if (redisClient.isReady()) {
-        // Lazy Instantiation: Create only when needed and Redis is up
-        if (!apiLimiterRedis) apiLimiterRedis = createRedisLimiter(API_MAX, API_WINDOW, 'API');
-        if (apiLimiterRedis) return apiLimiterRedis(req, res, next);
-    }
-    // Fallback
+    if (apiLimiterRedis) return apiLimiterRedis(req, res, next);
     return apiLimiterMemory(req, res, next);
 };
 
 export const searchLimiter = (req: Request, res: Response, next: NextFunction) => {
-    if (redisClient.isReady()) {
-        if (!searchLimiterRedis) searchLimiterRedis = createRedisLimiter(SEARCH_MAX, SEARCH_WINDOW, 'Search');
-        if (searchLimiterRedis) return searchLimiterRedis(req, res, next);
-    }
+    if (searchLimiterRedis) return searchLimiterRedis(req, res, next);
     return searchLimiterMemory(req, res, next);
 };
 
 export const ttsLimiter = (req: Request, res: Response, next: NextFunction) => {
-    if (redisClient.isReady()) {
-        if (!ttsLimiterRedis) ttsLimiterRedis = createRedisLimiter(TTS_MAX, TTS_WINDOW, 'Audio');
-        if (ttsLimiterRedis) return ttsLimiterRedis(req, res, next);
-    }
+    if (ttsLimiterRedis) return ttsLimiterRedis(req, res, next);
     return ttsLimiterMemory(req, res, next);
 };
