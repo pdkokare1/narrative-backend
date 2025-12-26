@@ -44,13 +44,13 @@ export const CONSTANTS = {
     EMBEDDING: config.aiModels.embedding // Defaults to "text-embedding-004"
   },
   
-  // Cost Control: Adjusted for Gemini 2.5 Pro's efficiency and 2025 Context Windows
+  // Cost Control
   AI_LIMITS: {
       MAX_INPUT_CHARS: 300000, // ~75k tokens
       MIN_CONTENT_CHARS: 100, // Skip analysis if content is too thin
   },
 
-  // Queue Configuration (Centralized)
+  // Queue Configuration
   QUEUE: {
     NAME: 'news-fetch-queue',
   },
@@ -58,7 +58,9 @@ export const CONSTANTS = {
   // Redis Keys (Prevent typos)
   REDIS_KEYS: {
     BANNED_DOMAINS: 'GATEKEEPER:BANNED_DOMAINS',
-    GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_',
+    // CHANGED TO V2: This forces the system to ignore old strict "Junk" decisions
+    // and re-evaluate news using the new, relaxed rules.
+    GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_V2_', 
     TRENDING: 'trending_topics_smart',
     NEWS_CYCLE: 'news:fetch_cycle',
     NEWS_SEEN_PREFIX: 'news:seen:',
@@ -72,17 +74,12 @@ export const FETCH_CYCLES = [
     { name: 'World-Focus', gnews: { topic: 'world' }, newsapi: { q: 'international', language: 'en' } }
 ];
 
-// --- TRUSTED SOURCES (Boost Score) ---
+// --- TRUSTED SOURCES ---
 export const TRUSTED_SOURCES = [
-    // Wires & Global
     'reuters', 'associated press', 'bloomberg', 'bbc', 'npr', 'pbs', 
     'the wall street journal', 'financial times', 'deutsche welle', 
     'al jazeera', 'the economist', 'nature', 'science',
-    
-    // India
     'the indian express', 'the hindu', 'livemint', 'ndtv', 'business standard',
-    
-    // Tech & Specific
     'techcrunch', 'wired', 'ars technica', 'the verge', 'nasa'
 ];
 
@@ -104,9 +101,11 @@ export const DEFAULT_BANNED_DOMAINS = [
     
     // Shopping / PR Wires
     'prweb.com', 'businesswire.com', 'prnewswire.com', 'globenewswire.com',
-    'marketwatch.com' // Often acts as a PR wire
+    'marketwatch.com'
 ];
 
+// --- JUNK KEYWORDS (Safe List) ---
+// Note: "Live", "Watch", "Video" are REMOVED to allow breaking news.
 export const JUNK_KEYWORDS = [
     // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
@@ -125,11 +124,11 @@ export const JUNK_KEYWORDS = [
     'celeb look', 'red carpet', 'outfit', 'dress', 'fashion', 'makeup',
     'royal family', 'kardashian', 'jenner', 'relationship timeline', 'net worth',
     
-    // Gambling / Lottery
+    // Gambling
     'powerball', 'mega millions', 'lottery results', 'winning numbers', 
     'betting odds', 'prediction', 'parlay', 'gambling',
     
-    // Administrative / Paywall Trash
+    // Admin / Paywall
     'subscribe now', 'sign up', 'newsletter', 'login', 'register',
     'have an account?', 'exclusive content', 'premium', 'giveaway'
 ];
