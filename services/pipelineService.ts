@@ -14,13 +14,17 @@ const SEMANTIC_SIMILARITY_MAX_AGE_HOURS = 24;
 class PipelineService {
     
     /**
-     * Checks if the URL has already been processed using Redis Set ONLY.
-     * We defer the Database check to the final save (Atomic Safety).
+     * Checks if the URL has already been processed using Redis Set.
+     * NOTE: We now rely primarily on MongoDB unique indexes to allow recovery from Cache/DB desync.
      */
     private async isDuplicate(url: string): Promise<boolean> {
         if (!url) return true;
-        // Fast Check (Redis)
-        if (await redisClient.sIsMember('processed_urls', url)) return true;
+        // Check Redis, but allow proceeding if not found to avoid "Ghost" blocks
+        if (await redisClient.sIsMember('processed_urls', url)) {
+            // We return false here to allow the DB to be the source of truth.
+            // If it really is a duplicate, MongoDB will throw code 11000, which we handle.
+            return false; 
+        }
         return false;
     }
 
@@ -39,16 +43,12 @@ class PipelineService {
     private async getEmbeddingSafe(article: Partial<IArticle>): Promise<number[]> {
         const textToEmbed = `${article.headline || ''}. ${article.summary || ''}`;
         try {
-            // We pass an array of 1 to reuse the existing batch interface of aiService
             const embeddings = await aiService.createBatchEmbeddings([textToEmbed]);
-            if (!embeddings || embeddings.length === 0) {
-                // Not fatal, but worth noting
-                return [];
-            }
+            if (!embeddings || embeddings.length === 0) return [];
             return embeddings[0];
         } catch (err: any) {
             logger.error(`❌ Embedding failed: ${err.message}`);
-            return []; // Return empty array to allow pipeline to continue
+            return []; 
         }
     }
 
@@ -58,13 +58,11 @@ class PipelineService {
     async processSingleArticle(rawArticle: any): Promise<string> {
         try {
             if (!rawArticle?.url || !rawArticle?.title) {
+                logger.warn(`[Pipeline] Invalid Article Data: Missing URL/Title`);
                 return 'ERROR_INVALID';
             }
             
-            // 1. Fast Duplicate Check (Redis)
-            if (await this.isDuplicate(rawArticle.url)) return 'DUPLICATE_URL';
-
-            // 2. Prep & Sanitize
+            // 1. Prep & Sanitize
             const article: Partial<IArticle> = {
                 url: rawArticle.url,
                 headline: this.sanitizeContent(rawArticle.title),
@@ -77,38 +75,37 @@ class PipelineService {
 
             const contentLen = (article.summary || "").length + (rawArticle.content || "").length;
             if (contentLen < 50) {
+                logger.warn(`[Pipeline] Dropping Content (Too Short/Empty): ${article.headline}`);
                 return 'JUNK_CONTENT';
             }
 
-            // 3. Gatekeeper (Is this news?)
-            // We run this BEFORE expensive operations to save money
+            // 2. Gatekeeper (Is this news?)
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
-            if (gatekeeperResult.isJunk) return 'JUNK_CONTENT';
+            if (gatekeeperResult.isJunk) {
+                logger.info(`[Pipeline] Gatekeeper Rejected: ${article.headline}`);
+                return 'JUNK_CONTENT';
+            }
 
-            // 4. Similarity Check & Embeddings
+            // 3. Similarity Check & Embeddings
             let existingMatch = await clusteringService.findSimilarHeadline(article.headline!);
             let usedFuzzyMatch = !!existingMatch;
             
-            // OPTIMIZATION: Check if embedding was pre-calculated in Batch Fetcher
+            // Use pre-calculated embedding if available
             let embedding: number[] | null = null;
-            
             if (rawArticle.embedding && Array.isArray(rawArticle.embedding)) {
                  embedding = rawArticle.embedding;
-                 // logger.debug('⚡ Using pre-calculated batch embedding.');
             }
 
             if (!existingMatch) {
-                // If no pre-calculated embedding, fetch it now (Fallback)
                 if (!embedding || embedding.length === 0) {
                     embedding = await this.getEmbeddingSafe(article);
                 }
-
                 if (embedding && embedding.length > 0) {
                     existingMatch = await clusteringService.findSemanticDuplicate(embedding, 'Global');
                 }
             }
 
-            // 5. Analysis (Fresh vs Inherited)
+            // 4. Analysis (Fresh vs Inherited)
             let analysis: Partial<IArticle>;
             let isSemanticSkip = false;
 
@@ -145,7 +142,7 @@ class PipelineService {
                 analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
             }
 
-            // 6. Merge & Save
+            // 5. Merge & Save
             const newArticleData: Partial<IArticle> = {
                 ...article,
                 ...analysis,
@@ -154,43 +151,37 @@ class PipelineService {
                 clusterId: analysis.clusterId 
             };
             
-            // Assign Cluster ID if missing
             if (!newArticleData.clusterId) {
                 newArticleData.clusterId = await clusteringService.assignClusterId(newArticleData, embedding || undefined);
             }
             
-            // CRITICAL: Handle Race Condition at the Database Level
             try {
                 await Article.create(newArticleData);
 
-                // --- CRITICAL FIX START ---
-                // Invalidate the Main Feed Cache ('feed:default:page0') immediately.
-                // This ensures the user sees this new article the next time they refresh.
+                // Cache Invalidation
                 const client = redisClient.getClient();
                 if (client && redisClient.isReady()) {
                     await client.del('feed:default:page0');
                 }
-                // --- CRITICAL FIX END ---
+                
+                logger.info(`✅ [Pipeline] Saved: "${article.headline}" (${isSemanticSkip ? 'Inherited' : 'Fresh'})`);
 
             } catch (dbError: any) {
-                // Error 11000 is MongoDB's Duplicate Key Error
                 if (dbError.code === 11000) {
-                    logger.warn(`Duplicate URL detected at save: ${article.url}`);
-                    // Add to Redis so we don't try again soon
+                    logger.warn(`[Pipeline] Duplicate URL detected at save: ${article.url}`);
                     await redisClient.sAdd('processed_urls', article.url!);
                     return 'DUPLICATE_URL';
                 }
-                throw dbError; // Rethrow actual errors
+                throw dbError; 
             }
 
-            // 7. Post-Save Caching
+            // 6. Post-Save Caching
             await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
             await redisClient.sAdd('processed_urls', article.url!);
 
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
         } catch (error: any) {
-            // Throwing AppError allows the Worker to decide whether to retry
             if (error instanceof AppError) throw error;
             throw new AppError(`Pipeline Error: ${error.message}`, 500);
         }
