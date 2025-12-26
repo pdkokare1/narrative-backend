@@ -125,11 +125,6 @@ export const JUNK_KEYWORDS = [
     'celeb look', 'red carpet', 'outfit', 'dress', 'fashion', 'makeup',
     'royal family', 'kardashian', 'jenner', 'relationship timeline', 'net worth',
     
-    // Clickbait Phrases
-    'watch:', 'video:', 'photos:', 'gallery:', 'live:', 'live updates', 
-    'you need to know', 'here\'s why', 'what we know', 'everything we know',
-    'reaction', 'reacts to', 'internet is losing it', 'fans are',
-    
     // Gambling / Lottery
     'powerball', 'mega millions', 'lottery results', 'winning numbers', 
     'betting odds', 'prediction', 'parlay', 'gambling',
