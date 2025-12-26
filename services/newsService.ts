@@ -63,7 +63,8 @@ class NewsService {
         const gnewsArticles = await this.gnews.fetchArticles(currentCycle.gnews);
         allArticles.push(...gnewsArticles);
         
-        if (gnewsArticles.length < 2) {
+        // Critical: Increased threshold to trigger backup more aggressively if yield is low
+        if (gnewsArticles.length < 5) {
             logger.warn(`GNews returned low yield (${gnewsArticles.length}). Marking for fallback.`);
             gnewsFailed = true;
         }
@@ -73,25 +74,32 @@ class NewsService {
     }
 
     // 2. Fallback to NewsAPI Strategy
-    // Business Rule: Use fallback if GNews failed OR yields were low
+    // Fixed: Logic now runs fallback if GNews failed OR had low results.
+    // Removed strict CircuitBreaker.isOpen check to ensure we always try backup if needed.
     if (allArticles.length < 5 || gnewsFailed) {
-      const isNewsApiOpen = await CircuitBreaker.isOpen('NEWS_API');
-      
-      if (isNewsApiOpen) {
-          logger.info('⚠️ Low yield/Error, triggering NewsAPI fallback...');
-          try {
-              const newsApiArticles = await this.newsapi.fetchArticles(currentCycle.newsapi);
+      logger.info('⚠️ Low yield/Error, triggering NewsAPI fallback...');
+      try {
+          const newsApiArticles = await this.newsapi.fetchArticles(currentCycle.newsapi);
+          if (newsApiArticles.length > 0) {
+              logger.info(`✅ NewsAPI Backup retrieved ${newsApiArticles.length} articles.`);
               allArticles.push(...newsApiArticles);
               await CircuitBreaker.recordSuccess('NEWS_API');
-          } catch (err: any) {
-              logger.warn(`NewsAPI fallback failed: ${err.message}`);
-              await CircuitBreaker.recordFailure('NEWS_API');
+          } else {
+              logger.warn('NewsAPI returned 0 articles.');
           }
+      } catch (err: any) {
+          logger.warn(`NewsAPI fallback failed: ${err.message}`);
+          await CircuitBreaker.recordFailure('NEWS_API');
       }
     }
 
     // 3. Processing Pipeline
     // Filter -> Check DB -> Process -> Cache
+    if (allArticles.length === 0) {
+        logger.warn("❌ CRITICAL: No articles fetched from any source this cycle.");
+        return [];
+    }
+
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
     const finalUnique = articleProcessor.processBatch(dbUnseenArticles);
@@ -115,7 +123,6 @@ class NewsService {
     const client = redisClient.getClient();
     if (!client) return articles;
 
-    // Optimization: Run Redis checks in parallel instead of sequential await
     const checks = articles.map(async (article) => {
         const key = this.getRedisKey(article.url);
         try {
@@ -123,7 +130,6 @@ class NewsService {
             const result = await client.set(key, 'processing', { NX: true, EX: 180 });
             return result === 'OK' ? article : null;
         } catch (e) {
-            // In case of Redis error, process it anyway to be safe
             return article;
         }
     });
@@ -140,8 +146,8 @@ class NewsService {
               const multi = client.multi();
               for (const article of articles) {
                   const key = this.getRedisKey(article.url);
-                  // Mark as seen for 48 hours
-                  multi.set(key, '1', { EX: 172800 }); 
+                  // Fixed: Reduced from 48h to 24h to allow re-reporting of evolving stories
+                  multi.set(key, '1', { EX: 86400 }); 
               }
               await multi.exec();
           } catch (e: any) {
@@ -156,7 +162,6 @@ class NewsService {
       if (articles.length === 0) return [];
       const urls = articles.map(a => a.url);
       
-      // Optimization: Only select the _id field (implicit) or url to save bandwidth
       const existingDocs = await Article.find({ url: { $in: urls } }).select('url').lean();
       const existingUrls = new Set(existingDocs.map((d: any) => d.url));
       
