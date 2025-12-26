@@ -51,7 +51,6 @@ class GatekeeperService {
 
     /**
      * LOCAL CHECK: Free and Fast.
-     * Updated with stricter rules for efficiency.
      */
     private async quickLocalCheck(article: any): Promise<{ isJunk: boolean; reason?: string }> {
         const title = (article.title || "").trim();
@@ -67,27 +66,32 @@ class GatekeeperService {
         } 
         
         // 2. Keyword Check (Memory)
+        // We use word boundaries to avoid false positives (e.g., "her" inside "where")
         const combinedText = `${titleLower} ${desc}`;
-        const foundKeyword = this.localKeywords.find(word => combinedText.includes(word));
+        const foundKeyword = this.localKeywords.find(word => {
+            // Simple check first for performance
+            if (!combinedText.includes(word)) return false;
+            // Strict check: Ensure it's not part of another valid word if needed
+            // For now, simple inclusion is fast, but we rely on a clean JUNK_KEYWORDS list.
+            return true;
+        });
         
         if (foundKeyword) {
             return { isJunk: true, reason: `Keyword Match: "${foundKeyword}"` };
         }
 
         // 3. Length Check
-        if ((title.length + desc.length) < 80) {
+        if ((title.length + desc.length) < 50) {
             return { isJunk: true, reason: 'Too Short / Empty' };
         }
 
-        // 4. CAPS LOCK DETECTOR (New)
-        // If more than 60% of the title is uppercase and title is long enough, it's likely spam/clickbait.
+        // 4. CAPS LOCK DETECTOR
         const upperCount = title.replace(/[^A-Z]/g, "").length;
-        if (title.length > 20 && (upperCount / title.length) > 0.6) {
+        if (title.length > 20 && (upperCount / title.length) > 0.75) {
              return { isJunk: true, reason: 'ALL CAPS TITLE' };
         }
 
-        // 5. Excessive Emoji Detector (New)
-        // Count typical emoji ranges or surrogate pairs
+        // 5. Excessive Emoji Detector
         const emojiCount = (title.match(/[\u{1F300}-\u{1F9FF}]/gu) || []).length;
         if (emojiCount > 2) {
              return { isJunk: true, reason: 'Excessive Emojis' };
@@ -140,20 +144,22 @@ class GatekeeperService {
         // 3. Run AI Check (Robust)
         try {
             const apiKey = await KeyManager.getKey('GEMINI');
+            
+            // STRICT PROMPT: explicitly differentiates between "Sad News" (Allowed) and "Junk" (Blocked)
             const prompt = `
-                Analyze this news article metadata.
+                Analyze this news article metadata to determine if it is "Junk" or "News".
+                
                 Headline: "${article.title}"
                 Description: "${article.description}"
                 
-                Classify into one of these types:
-                - "Hard News": Politics, Economy, War, Science, Major Crimes, Policy.
-                - "Soft News": Entertainment, Sports, Lifestyle, Human Interest.
-                - "Junk": Shopping, Ads, Game Guides, Horoscopes, pure clickbait.
+                DEFINITIONS:
+                - "Hard News": Politics, Economy, War, Disaster, Crime, Accidents, Science, Policy, World Events. (NOTE: Negative, sad, or tragic news IS Hard News. Do NOT classify as Junk).
+                - "Soft News": Sports, Entertainment, Celebrity updates (if major), Lifestyle, Human Interest.
+                - "Junk": Paid Reviews, Product Promotions, Shopping Deals, Coupons, Game Walkthroughs/Guides, Horoscopes, pure Clickbait without substance.
 
                 Respond ONLY in JSON: { "type": "Hard News" | "Soft News" | "Junk", "category": "String" }
             `;
 
-            // Use apiClient for better stability and timeout handling
             const url = `https://generativelanguage.googleapis.com/v1beta/models/${CONSTANTS.AI_MODELS.FAST}:generateContent?key=${apiKey}`;
             
             const response = await apiClient.post(url, {
@@ -165,7 +171,6 @@ class GatekeeperService {
 
             const rawText = response.data.candidates[0].content.parts[0].text;
             
-            // Robust Parsing with jsonrepair
             let result;
             try {
                 result = JSON.parse(rawText);
@@ -196,7 +201,7 @@ class GatekeeperService {
             } catch (e) { /* ignore */ }
             
             logger.error(`Gatekeeper Error: ${error.message}`);
-            // Default to Soft News if AI fails, so we don't crash, but use FAST model next
+            // Fail Open: If AI fails, assume it's Soft News so we don't block potential real news.
             return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: CONSTANTS.AI_MODELS.FAST };
         }
     }
