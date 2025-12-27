@@ -1,7 +1,7 @@
-// services/articleService.ts
+// narrative-backend/services/articleService.ts
 import mongoose from 'mongoose';
 import Article, { ArticleDocument } from '../models/articleModel';
-import Narrative from '../models/narrativeModel'; // NEW IMPORT
+import Narrative from '../models/narrativeModel'; 
 import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
 import redis from '../utils/redisClient';
@@ -23,7 +23,7 @@ interface FeedFilters {
 
 class ArticleService {
   
-  // --- 1. Smart Trending Topics (UNCHANGED) ---
+  // --- 1. Smart Trending Topics ---
   async getTrendingTopics() {
     return redis.getOrFetch(
         CONSTANTS.REDIS_KEYS.TRENDING, 
@@ -43,7 +43,7 @@ class ArticleService {
     ); 
   }
 
-  // --- 2. Intelligent Search (Semantic + Hybrid) (UNCHANGED) ---
+  // --- 2. Intelligent Search ---
   async searchArticles(query: string, limit: number = 12) {
     if (!query) return { articles: [], total: 0 };
     
@@ -87,7 +87,7 @@ class ArticleService {
             logger.warn(`Semantic Search Failed (Fallback to Text): ${err}`);
         }
 
-        // B. Fallback to Text Search if Vector returned nothing or failed
+        // B. Fallback to Text Search
         if (!articles.length) {
             articles = await Article.smartSearch(safeQuery, limit);
         }
@@ -98,33 +98,21 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Main Feed (UPDATED FOR NARRATIVES & 'ALL' FILTER) ---
+  // --- 3. Main Feed (Optimized & Centralized Caching) ---
   async getMainFeed(filters: FeedFilters) {
     const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
     
-    // Cache Key includes all filters
-    const CACHE_KEY = `feed_v2:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${offset}:${limit}`;
-    
-    // Only cache first page to keep it snappy, deeper pages fetch live
-    if (Number(offset) === 0) {
-        const cached = await redis.get(CACHE_KEY);
-        if (cached) return cached;
-    }
-
-    try {
-        // A. Build Query for Articles (Preserving ALL your existing filters)
+    // Encapsulate the expensive fetching logic
+    const fetchFeedData = async () => {
+        // A. Build Query
         const query: any = {};
         
-        // FIX: Treat 'All' same as 'All Categories' (No filter)
         if (category && category !== 'All Categories' && category !== 'All' && category !== 'undefined') {
             query.category = category;
         }
-
         if (lean && lean !== 'All Leans' && lean !== 'undefined') query.politicalLean = lean;
-        
         if (region === 'India') query.country = 'India';
         else if (region === 'Global') query.country = { $ne: 'India' };
-
         if (articleType === 'Hard News') query.analysisType = 'Full';
         else if (articleType === 'Opinion & Reviews') query.analysisType = 'SentimentOnly';
 
@@ -140,18 +128,12 @@ class ArticleService {
             if (grades) query.credibilityGrade = { $in: grades };
         }
 
-        // B. Fetch Narratives (NEW LOGIC)
-        // We fetch "Master Stories" relevant to the current filters
+        // B. Fetch Narratives
         const narrativeQuery: any = {};
-        
-        // FIX: Apply same 'All' fix for Narratives
         if (category && category !== 'All Categories' && category !== 'All' && category !== 'undefined') {
             narrativeQuery.category = category;
         }
-
         if (region === 'India') narrativeQuery.country = 'India';
-        
-        // Only show narratives updated recently (last 24h)
         narrativeQuery.lastUpdated = { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) };
 
         const narratives = await Narrative.find(narrativeQuery)
@@ -159,13 +141,13 @@ class ArticleService {
                                           .limit(5)
                                           .lean();
 
-        // C. Smart Dedup: Don't show individual articles if they are inside a Narrative
+        // C. Smart Dedup
         const narrativeClusterIds = narratives.map(n => n.clusterId);
         if (narrativeClusterIds.length > 0) {
             query.clusterId = { $nin: narrativeClusterIds };
         }
 
-        // D. Sort Options (Preserving your existing sort logic)
+        // D. Sort Options
         let sortOptions: any = { publishedAt: -1 };
         if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
         else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
@@ -178,36 +160,33 @@ class ArticleService {
             .limit(Number(limit))
             .lean();
 
-        // F. Combine & Sort Mixed Feed
+        // F. Combine
         const feedItems = [
             ...narratives.map(n => ({ ...n, type: 'Narrative', publishedAt: n.lastUpdated })),
             ...articles.map(a => ({ ...a, type: 'Article' }))
         ];
 
-        // Re-sort the combined list by date (Newest First)
         feedItems.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
 
         const totalArticles = await Article.countDocuments(query);
         
-        const response = { 
+        return { 
             articles: feedItems.slice(0, Number(limit)), 
             pagination: { total: totalArticles + narratives.length } 
         };
+    };
 
-        // Cache result (Short TTL for freshness)
-        if (Number(offset) === 0) {
-            await redis.set(CACHE_KEY, response, CONSTANTS.CACHE.TTL_FEED);
-        }
-
-        return response;
-
-    } catch (error: any) {
-        logger.error(`Get Main Feed Error: ${error.message}`);
-        throw error;
+    // Use getOrFetch ONLY for the first page to ensure freshness for deep pagination
+    // and speed for the initial load.
+    if (Number(offset) === 0) {
+        const CACHE_KEY = `feed_v2:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${limit}`;
+        return redis.getOrFetch(CACHE_KEY, fetchFeedData, CONSTANTS.CACHE.TTL_FEED);
+    } else {
+        return fetchFeedData();
     }
   }
 
-  // --- 4. For You Feed (UNCHANGED) ---
+  // --- 4. For You Feed ---
   async getForYouFeed(userId: string | undefined) {
     if (!userId) {
         const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
@@ -227,7 +206,6 @@ class ArticleService {
             return { articles: standard, meta: { reason: "No history" } };
         }
 
-        // Challenger Logic
         const articleIds = history.map(h => h.articleId);
         const viewedDocs = await Article.find({ _id: { $in: articleIds } }).select('politicalLean');
         const leanCounts: Record<string, number> = {};
@@ -259,7 +237,7 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 5. Personalized Feed (UNCHANGED) ---
+  // --- 5. Personalized Feed ---
   async getPersonalizedFeed(userId: string) {
     const CACHE_KEY = `my_mix_${userId}`;
     
@@ -285,25 +263,16 @@ class ArticleService {
                     },
                     { "$match": { "publishedAt": { "$gte": threeDaysAgo } } },
                     { "$limit": 20 },
-                    {
-                        "$project": {
-                            "headline": 1, "summary": 1, "source": 1, "category": 1,
-                            "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1,
-                            "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1,
-                            "clusterTopic": 1, "audioUrl": 1,
-                            "score": { "$meta": "vectorSearchScore" }
-                        }
-                    }
+                    { "$project": { "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, "audioUrl": 1, "score": { "$meta": "vectorSearchScore" } } }
                 ];
                 recommendations = await Article.aggregate(pipeline);
                 metaReason = "AI Curated (Interest Match)";
             } catch (error) {
-                logger.error(`Vector Search Failed (ArticleService): ${error}`);
+                logger.error(`Vector Search Failed: ${error}`);
             }
         }
 
         if (recommendations.length === 0) {
-            // Fallback: Category matching
             const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50).lean();
             if (recentLogs.length > 0) {
                 const articleIds = recentLogs.map(l => l.articleId);
@@ -335,23 +304,19 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 6. Saved Articles (UNCHANGED) ---
+  // --- 6. Saved Articles ---
   async getSavedArticles(userId: string) {
     const profile = await Profile.findOne({ userId }).select('savedArticles');
     if (!profile || !profile.savedArticles.length) return [];
     return Article.find({ _id: { $in: profile.savedArticles } }).sort({ publishedAt: -1 }).lean();
   }
 
-  // --- 7. Toggle Save (UNCHANGED) ---
+  // --- 7. Toggle Save ---
   async toggleSaveArticle(userId: string, articleIdStr: string) {
     const articleId = new mongoose.Types.ObjectId(articleIdStr);
-    
-    // 1. Check current state (Read)
     const profile = await Profile.findOne({ userId, savedArticles: articleId });
     
-    let updateOp;
-    let message;
-    
+    let updateOp, message;
     if (profile) {
         updateOp = { $pull: { savedArticles: articleId } };
         message = 'Article unsaved';
@@ -360,13 +325,7 @@ class ArticleService {
         message = 'Article saved';
     }
     
-    // 2. Perform Atomic Update
-    const updatedProfile = await Profile.findOneAndUpdate(
-        { userId },
-        updateOp as any,
-        { new: true }
-    ).select('savedArticles');
-    
+    const updatedProfile = await Profile.findOneAndUpdate({ userId }, updateOp as any, { new: true }).select('savedArticles');
     if (!updatedProfile) throw new Error('Profile not found');
 
     return { message, savedArticles: updatedProfile.savedArticles };
