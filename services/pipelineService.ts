@@ -18,8 +18,6 @@ class PipelineService {
      */
     private async isDuplicate(url: string): Promise<boolean> {
         if (!url) return true;
-        // FIX: The original code returned false even if it was found. 
-        // Now checks correctly.
         const isMember = await redisClient.sIsMember('processed_urls', url);
         return !!isMember; 
     }
@@ -71,22 +69,18 @@ class PipelineService {
             }
 
             // ⚡ OPTIMIZATION: Early Duplicate Detection (Redis)
-            // Prevent expensive AI calls if we've already seen this URL
             if (await this.isDuplicate(rawArticle.url)) {
                 logger.info(`⏭️ Skipped Duplicate URL: ${rawArticle.url}`);
                 return 'DUPLICATE_REDIS';
             }
 
             // ⚡ OPTIMIZATION: Syndication Detection (Title)
-            // If "Reuters" and "CNN" publish the exact same AP wire title, skip the second one.
             if (await this.isTitleDuplicate(rawArticle.title)) {
                 logger.info(`⏭️ Skipped Syndicated Title: "${rawArticle.title}"`);
                 return 'DUPLICATE_TITLE';
             }
             
             // ⚡ OPTIMIZATION: Traffic Staggering
-            // Add a tiny random delay (100-500ms) to prevent "Thundering Herd" on Gemini keys
-            // when 25 articles arrive simultaneously from the queue.
             await new Promise(resolve => setTimeout(resolve, Math.random() * 400 + 100));
 
             // 1. Prep & Sanitize
@@ -101,11 +95,9 @@ class PipelineService {
             } as any;
 
             // 2. Gatekeeper (Is this news?)
-            // Note: Gatekeeper now handles 'headline'/'summary' correctly
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
             
             if (gatekeeperResult.isJunk) {
-                // Log the SPECIFIC reason (e.g. "Too Short", "Banned Domain", "AI Junk")
                 logger.info(`[Pipeline] Gatekeeper Rejected [${gatekeeperResult.reason || 'Junk'}]: "${article.headline}"`);
                 return 'JUNK_CONTENT';
             }
@@ -166,11 +158,21 @@ class PipelineService {
                 analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
             }
 
+            // --- CRITICAL FIX FOR PENDING STATE ---
+            // If AI failed (Rate Limit/Circuit Breaker), mark as 'pending' to hide from frontend
+            let finalAnalysisVersion = isSemanticSkip ? '3.8-Inherited' : '3.8-Full';
+            
+            if (analysis.summary && analysis.summary.includes("Analysis unavailable (System Error)")) {
+                logger.warn(`⚠️ Marking article as PENDING (AI Failure): "${article.headline}"`);
+                finalAnalysisVersion = 'pending';
+            }
+            // --------------------------------------
+
             // 5. Merge & Save
             const newArticleData: Partial<IArticle> = {
                 ...article,
                 ...analysis,
-                analysisVersion: isSemanticSkip ? '3.8-Inherited' : '3.8-Full',
+                analysisVersion: finalAnalysisVersion,
                 embedding: embedding || [],
                 clusterId: analysis.clusterId 
             };
@@ -188,7 +190,8 @@ class PipelineService {
                     await client.del('feed:default:page0');
                 }
                 
-                logger.info(`✅ [Pipeline] Saved: "${article.headline}" (${isSemanticSkip ? 'Inherited' : 'Fresh'})`);
+                const logStatus = finalAnalysisVersion === 'pending' ? 'Saved (Pending)' : 'Saved';
+                logger.info(`✅ [Pipeline] ${logStatus}: "${article.headline}"`);
 
             } catch (dbError: any) {
                 if (dbError.code === 11000) {
@@ -200,7 +203,6 @@ class PipelineService {
             }
 
             // 6. Post-Save Caching
-            // Cache both URL and Title slug to prevent future duplicates
             await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
             await redisClient.sAdd('processed_urls', article.url!);
             
