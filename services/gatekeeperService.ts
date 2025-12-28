@@ -116,7 +116,7 @@ class GatekeeperService {
     /**
      * FULL EVALUATION: Uses AI only if local check passes.
      */
-    async evaluateArticle(article: any): Promise<{ type: string; isJunk: boolean; category?: string; recommendedModel: string }> {
+    async evaluateArticle(article: any): Promise<{ type: string; isJunk: boolean; category?: string; recommendedModel: string; reason?: string }> {
         const CACHE_KEY = `${CONSTANTS.REDIS_KEYS.GATEKEEPER_CACHE}${article.url}`;
         
         // 1. Check Cache
@@ -126,7 +126,7 @@ class GatekeeperService {
         // 2. Run Local Check
         const localCheck = await this.quickLocalCheck(article);
         if (localCheck.isJunk) {
-            const result = { type: 'Junk', isJunk: true, recommendedModel: 'none' };
+            const result = { type: 'Junk', isJunk: true, recommendedModel: 'none', reason: localCheck.reason };
             await redis.set(CACHE_KEY, result, 86400); 
             return result;
         }
@@ -143,9 +143,14 @@ class GatekeeperService {
                 Description: "${article.description}"
                 
                 DEFINITIONS:
-                - "Hard News": Politics, Economy, War, Disaster, Crime, Accidents, Science, Policy, World Events, Religion, Obituaries, Missing Persons. (NOTE: Negative, sad, or tragic news IS Hard News. Do NOT classify as Junk).
-                - "Soft News": Sports, Entertainment, Celebrity updates, Lifestyle, Human Interest, Community Stories.
-                - "Junk": Paid Reviews, Product Promotions, Shopping Deals, Coupons, Game Walkthroughs/Guides, Horoscopes, pure Clickbait without substance.
+                - "Hard News": Politics, Economy, Business, Finance, Markets, IPOs, War, Disaster, Crime, Accidents, Science, Technology, Policy, World Events, Religion.
+                - "Soft News": Sports (Matches, Scores, Squads), Entertainment, Celebrity updates, Lifestyle, Human Interest, viral trends.
+                - "Junk": Spam, Paid Reviews, Product Promotions, Shopping Deals, Coupons, Game Cheats/Walkthroughs, Horoscopes, Gambling specific ads.
+
+                CRITICAL RULES:
+                1. IPOs, Financial Results, and Company News are HARD NEWS.
+                2. Sports squads, match results, and tournament updates are SOFT NEWS.
+                3. ONLY classify as "Junk" if it is spam, a direct product ad, or garbage content.
 
                 Respond ONLY in JSON: { "type": "Hard News" | "Soft News" | "Junk", "category": "String" }
             `;
@@ -154,7 +159,7 @@ class GatekeeperService {
             
             const response = await apiClient.post(url, {
                 contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { responseMimeType: "application/json", temperature: 0.1 }
+                generationConfig: { responseMimeType: "application/json", temperature: 0.0 }
             }, { timeout: CONSTANTS.TIMEOUTS.EXTERNAL_API });
 
             KeyManager.reportSuccess(apiKey);
@@ -177,6 +182,7 @@ class GatekeeperService {
             const finalDecision = {
                 ...result,
                 isJunk: isJunk,
+                reason: isJunk ? 'AI Classified as Junk' : undefined,
                 recommendedModel: result.type === 'Hard News' ? CONSTANTS.AI_MODELS.QUALITY : CONSTANTS.AI_MODELS.FAST
             };
 
