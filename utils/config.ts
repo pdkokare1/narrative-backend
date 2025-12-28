@@ -34,7 +34,7 @@ const envSchema = z.object({
   CLOUDINARY_API_SECRET: z.string().min(1),
 
   // AI & News Keys
-  // Removed single string validation for Gemini to allow arrays
+  // Removed explicit single-key validation to support arrays via helper
   GEMINI_API_KEY: z.string().optional(),
   
   // AI Performance (New)
@@ -211,11 +211,11 @@ const config = {
   },
 
   keys: {
-    // FIX: Updated to extract ALL Gemini keys, not just the first one
+    // FIX: Using extractApiKeys to support your 5 Gemini keys
     gemini: extractApiKeys('GEMINI'), 
     elevenLabs: extractApiKeys('ELEVENLABS'),
     gnews: extractApiKeys('GNEWS'),
-    newsApi: extractApiKeys('NEWS_API')
+    // REMOVED: newsApi
   },
   
   aiModels: {
