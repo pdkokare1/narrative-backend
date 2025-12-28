@@ -2,7 +2,6 @@
 import crypto from 'crypto';
 import logger from '../utils/logger';
 import redisClient from '../utils/redisClient';
-import CircuitBreaker from '../utils/CircuitBreaker'; 
 import { INewsSourceArticle } from '../types';
 import Article from '../models/articleModel';
 import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
@@ -12,16 +11,14 @@ import articleProcessor from './articleProcessor';
 
 // Strategies
 import { GNewsProvider } from './news/GNewsProvider';
-import { NewsApiProvider } from './news/NewsApiProvider';
+// REMOVED: NewsApiProvider import
 
 class NewsService {
   private gnews: GNewsProvider;
-  private newsapi: NewsApiProvider;
 
   constructor() {
     this.gnews = new GNewsProvider();
-    this.newsapi = new NewsApiProvider();
-    logger.info(`📰 News Service Initialized with [GNews, NewsAPI]`);
+    logger.info(`📰 News Service Initialized with [GNews Only]`);
   }
 
   /**
@@ -56,47 +53,27 @@ class NewsService {
     
     logger.info(`🔄 News Fetch Cycle: ${currentCycle.name} (Index: ${cycleIndex})`);
 
-    let gnewsFailed = false;
-
-    // 1. Try GNews Strategy
+    // 1. Single Strategy: GNews
     try {
+        // GNewsProvider now handles the Paid/Free logic internally
         const gnewsArticles = await this.gnews.fetchArticles(currentCycle.gnews);
-        allArticles.push(...gnewsArticles);
         
-        // Critical: Increased threshold to trigger backup more aggressively if yield is low
-        if (gnewsArticles.length < 5) {
-            logger.warn(`GNews returned low yield (${gnewsArticles.length}). Marking for fallback.`);
-            gnewsFailed = true;
+        if (gnewsArticles.length > 0) {
+            allArticles.push(...gnewsArticles);
+            logger.info(`✅ GNews retrieved ${gnewsArticles.length} articles.`);
+        } else {
+            logger.warn(`⚠️ GNews returned 0 articles for this cycle.`);
         }
+
     } catch (err: any) {
-        logger.warn(`GNews fetch failed: ${err.message}`);
-        gnewsFailed = true;
+        // No fallback available, just log the error
+        logger.error(`❌ GNews fetch failed: ${err.message}`);
     }
 
-    // 2. Fallback to NewsAPI Strategy
-    // Fixed: Logic now runs fallback if GNews failed OR had low results.
-    // Removed strict CircuitBreaker.isOpen check to ensure we always try backup if needed.
-    if (allArticles.length < 5 || gnewsFailed) {
-      logger.info('⚠️ Low yield/Error, triggering NewsAPI fallback...');
-      try {
-          const newsApiArticles = await this.newsapi.fetchArticles(currentCycle.newsapi);
-          if (newsApiArticles.length > 0) {
-              logger.info(`✅ NewsAPI Backup retrieved ${newsApiArticles.length} articles.`);
-              allArticles.push(...newsApiArticles);
-              await CircuitBreaker.recordSuccess('NEWS_API');
-          } else {
-              logger.warn('NewsAPI returned 0 articles.');
-          }
-      } catch (err: any) {
-          logger.warn(`NewsAPI fallback failed: ${err.message}`);
-          await CircuitBreaker.recordFailure('NEWS_API');
-      }
-    }
-
-    // 3. Processing Pipeline
+    // 2. Processing Pipeline
     // Filter -> Check DB -> Process -> Cache
     if (allArticles.length === 0) {
-        logger.warn("❌ CRITICAL: No articles fetched from any source this cycle.");
+        logger.warn("❌ CRITICAL: No articles fetched from GNews this cycle.");
         return [];
     }
 
