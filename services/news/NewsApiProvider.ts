@@ -42,8 +42,16 @@ export class NewsApiProvider implements INewsProvider {
             };
             const url = `https://newsapi.org/v2/${endpoint}`;
 
-            const response = await apiClient.get<unknown>(url, { params: queryParams });
-            return this.normalize(response.data);
+            try {
+                const response = await apiClient.get<unknown>(url, { params: queryParams });
+                return this.normalize(response.data);
+            } catch (error: any) {
+                // EXPLICIT DEBUGGING for 401 Errors
+                if (error.response?.status === 401) {
+                    logger.error(`❌ NewsAPI Auth Failed (401). Please check your API Key in .env file.`);
+                }
+                throw error;
+            }
         });
     }
 
