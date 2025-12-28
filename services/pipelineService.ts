@@ -15,14 +15,10 @@ class PipelineService {
     
     /**
      * Checks if the URL has already been processed using Redis Set.
-     * NOTE: We now rely primarily on MongoDB unique indexes to allow recovery from Cache/DB desync.
      */
     private async isDuplicate(url: string): Promise<boolean> {
         if (!url) return true;
-        // Check Redis, but allow proceeding if not found to avoid "Ghost" blocks
         if (await redisClient.sIsMember('processed_urls', url)) {
-            // We return false here to allow the DB to be the source of truth.
-            // If it really is a duplicate, MongoDB will throw code 11000, which we handle.
             return false; 
         }
         return false;
@@ -73,15 +69,12 @@ class PipelineService {
                 content: rawArticle.content
             } as any;
 
-            const contentLen = (article.summary || "").length + (rawArticle.content || "").length;
-            if (contentLen < 50) {
-                logger.warn(`[Pipeline] Dropping Content (Too Short/Empty): "${article.headline}"`);
-                return 'JUNK_CONTENT';
-            }
-
             // 2. Gatekeeper (Is this news?)
+            // Note: Gatekeeper now handles 'headline'/'summary' correctly
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
+            
             if (gatekeeperResult.isJunk) {
+                // Log the SPECIFIC reason (e.g. "Too Short", "Banned Domain", "AI Junk")
                 logger.info(`[Pipeline] Gatekeeper Rejected [${gatekeeperResult.reason || 'Junk'}]: "${article.headline}"`);
                 return 'JUNK_CONTENT';
             }
