@@ -30,7 +30,14 @@ class ArticleService {
         async () => {
             const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
             const results = await Article.aggregate([
-                { $match: { publishedAt: { $gte: twoDaysAgo }, clusterTopic: { $exists: true, $ne: null } } },
+                { 
+                    $match: { 
+                        publishedAt: { $gte: twoDaysAgo }, 
+                        clusterTopic: { $exists: true, $ne: null },
+                        // FILTER: Exclude pending articles
+                        analysisVersion: { $ne: 'pending' }
+                    } 
+                },
                 { $group: { _id: "$clusterTopic", count: { $sum: 1 }, sampleScore: { $max: "$trustScore" } } },
                 { $match: { count: { $gte: 3 } } },
                 { $sort: { count: -1 } },
@@ -66,9 +73,12 @@ class ArticleService {
                             "path": "embedding",
                             "queryVector": queryEmbedding,
                             "numCandidates": 100, 
-                            "limit": limit
+                            "limit": limit * 2 // Fetch extra to allow for filtering
                         }
                     },
+                    // FILTER: Exclude pending articles
+                    { "$match": { analysisVersion: { $ne: 'pending' } } },
+                    { "$limit": limit },
                     {
                         "$project": {
                             "headline": 1, "summary": 1, "source": 1, "category": 1,
@@ -89,7 +99,10 @@ class ArticleService {
 
         // B. Fallback to Text Search
         if (!articles.length) {
-            articles = await Article.smartSearch(safeQuery, limit);
+            // Note: smartSearch is a model static, so we filter AFTER fetching
+            // since we can't easily modify the model static right now.
+            const rawArticles = await Article.smartSearch(safeQuery, limit * 2);
+            articles = rawArticles.filter((a: any) => a.analysisVersion !== 'pending').slice(0, limit);
         }
 
         logger.info(`🔍 Search: "${safeQuery}" | Method: ${searchMethod} | Results: ${articles.length}`);
@@ -105,7 +118,10 @@ class ArticleService {
     // Encapsulate the expensive fetching logic
     const fetchFeedData = async () => {
         // A. Build Query
-        const query: any = {};
+        const query: any = {
+            // FILTER: Exclude pending articles globally
+            analysisVersion: { $ne: 'pending' }
+        };
         
         if (category && category !== 'All Categories' && category !== 'All' && category !== 'undefined') {
             query.category = category;
@@ -189,7 +205,8 @@ class ArticleService {
   // --- 4. For You Feed ---
   async getForYouFeed(userId: string | undefined) {
     if (!userId) {
-        const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
+        const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
+            .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
         return { articles: standard, meta: { reason: "Guest User" } };
     }
 
@@ -202,7 +219,8 @@ class ArticleService {
             .lean();
         
         if (history.length === 0) {
-            const standard = await Article.find({}).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
+            const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
+                .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
             return { articles: standard, meta: { reason: "No history" } };
         }
 
@@ -223,11 +241,16 @@ class ArticleService {
 
         let challengerArticles = await Article.find({
             politicalLean: { $in: targetLean },
-            publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+            publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+            // FILTER: Exclude pending
+            analysisVersion: { $ne: 'pending' }
         }).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
 
         if (challengerArticles.length === 0) {
-            challengerArticles = await Article.find({ politicalLean: 'Center' }).sort({ publishedAt: -1 }).limit(10).lean();
+            challengerArticles = await Article.find({ 
+                politicalLean: 'Center',
+                analysisVersion: { $ne: 'pending' }
+            }).sort({ publishedAt: -1 }).limit(10).lean();
         }
 
         return { 
@@ -261,7 +284,13 @@ class ArticleService {
                             "limit": 50
                         }
                     },
-                    { "$match": { "publishedAt": { "$gte": threeDaysAgo } } },
+                    { 
+                        "$match": { 
+                            "publishedAt": { "$gte": threeDaysAgo },
+                            // FILTER: Exclude pending
+                            "analysisVersion": { "$ne": "pending" }
+                        } 
+                    },
                     { "$limit": 20 },
                     { "$project": { "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, "audioUrl": 1, "score": { "$meta": "vectorSearchScore" } } }
                 ];
@@ -285,7 +314,14 @@ class ArticleService {
                 
                 if (topCategories.length > 0) {
                     recommendations = await Article.aggregate([
-                        { $match: { category: { $in: topCategories }, publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) } } },
+                        { 
+                            $match: { 
+                                category: { $in: topCategories }, 
+                                publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
+                                // FILTER: Exclude pending
+                                analysisVersion: { $ne: 'pending' }
+                            } 
+                        },
                         { $sample: { size: 15 } }
                     ]);
                 }
@@ -293,7 +329,8 @@ class ArticleService {
         }
 
         if (recommendations.length === 0) {
-            recommendations = await Article.find({}).sort({ publishedAt: -1 }).limit(15).lean();
+            recommendations = await Article.find({ analysisVersion: { $ne: 'pending' } })
+                .sort({ publishedAt: -1 }).limit(15).lean();
             metaReason = "Trending (No Data)";
         }
 
