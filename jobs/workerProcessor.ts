@@ -15,8 +15,6 @@ import {
  */
 export default async function workerProcessor(job: Job) {
     // 1. Ensure Database Connection
-    // In threaded mode, this likely recycles the existing connection immediately.
-    // If connection was lost, it reconnects.
     await dbLoader.connect();
 
     // 2. Route Job to Handler
@@ -24,14 +22,17 @@ export default async function workerProcessor(job: Job) {
         case 'update-trending':
             return await handleUpdateTrending(job);
 
-        // Updated: Handle both Day and Night schedule names
-        case 'fetch-feed': // Legacy support
-        case 'fetch-feed-day':
-        case 'fetch-feed-night':
-        case 'scheduled-news-fetch':
+        // --- Fetch Handlers ---
+        case 'fetch-feed':       // Legacy
+        case 'fetch-feed-day':   // Current Day
+        case 'fetch-feed-night': // Current Night
+        case 'scheduled-news-fetch': // Legacy
+        case 'cron-day':         // Zombie from logs
+        case 'cron-night':       // Zombie from logs
         case 'manual-fetch':
             return await handleFetchFeed(job);
 
+        // --- Processing Handlers ---
         case 'process-article':
             return await handleProcessArticle(job);
 
