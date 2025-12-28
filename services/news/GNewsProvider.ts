@@ -29,15 +29,28 @@ export class GNewsProvider implements INewsProvider {
 
     constructor() {
         // Register keys specifically for this provider
+        // config.keys.gnews is an array of strings (e.g., [PaidKey, FreeKey1, FreeKey2...])
         KeyManager.registerProviderKeys('GNEWS', config.keys.gnews);
     }
 
     async fetchArticles(params: any): Promise<INewsSourceArticle[]> {
         return KeyManager.executeWithRetry<INewsSourceArticle[]>('GNEWS', async (apiKey) => {
+            
+            // ⚡ SMART OPTIMIZATION: Check if this is the Paid Essential Key (Key #1)
+            // Essential Plan allows 25 articles. Free Plan allows 10.
+            const isPaidKey = config.keys.gnews.length > 0 && apiKey === config.keys.gnews[0];
+            const dynamicMax = isPaidKey ? 25 : 10;
+
+            if (isPaidKey) {
+                logger.debug(`🚀 Using PAID GNews Key. Fetching ${dynamicMax} articles.`);
+            } else {
+                logger.debug(`🛡️ Using BACKUP GNews Key. Throttling to ${dynamicMax} articles.`);
+            }
+
             const queryParams = { 
                 lang: 'en', 
                 sortby: 'publishedAt', 
-                max: CONSTANTS.NEWS.FETCH_LIMIT, 
+                max: dynamicMax, // Use the dynamic limit
                 ...params, 
                 apikey: apiKey 
             };
@@ -52,7 +65,7 @@ export class GNewsProvider implements INewsProvider {
                 if (status === 401 || status === 403) {
                     logger.error(`❌ GNews Auth Failed (${status}). Check API Key.`);
                 } else if (status === 429) {
-                    logger.warn(`⏳ GNews Rate Limited (429).`);
+                    logger.warn(`⏳ GNews Rate Limited (429). Key: ...${apiKey.slice(-4)}`);
                 }
                 throw error;
             }
