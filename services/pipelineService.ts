@@ -75,14 +75,14 @@ class PipelineService {
 
             const contentLen = (article.summary || "").length + (rawArticle.content || "").length;
             if (contentLen < 50) {
-                logger.warn(`[Pipeline] Dropping Content (Too Short/Empty): ${article.headline}`);
+                logger.warn(`[Pipeline] Dropping Content (Too Short/Empty): "${article.headline}"`);
                 return 'JUNK_CONTENT';
             }
 
             // 2. Gatekeeper (Is this news?)
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
             if (gatekeeperResult.isJunk) {
-                logger.info(`[Pipeline] Gatekeeper Rejected: ${article.headline}`);
+                logger.info(`[Pipeline] Gatekeeper Rejected [${gatekeeperResult.reason || 'Junk'}]: "${article.headline}"`);
                 return 'JUNK_CONTENT';
             }
 
