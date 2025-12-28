@@ -9,25 +9,30 @@ import queueManager from './queueManager';
 export const startScheduler = async () => {
   logger.info('⏰ Initializing Distributed Smart Scheduler...');
 
-  // --- 0. CLEANUP: Remove Zombie/Ghost Jobs ---
-  // This prevents the "fetch-feed" vs "fetch-feed-day" collision seen in logs
+  // --- 0. NUCLEAR CLEANUP: Remove Specific Zombie Jobs ---
+  // We explicitly list old job names that might be stuck in Redis
+  const ZOMBIE_JOBS = ['fetch-feed', 'cron-day', 'cron-night', 'scheduled-news-fetch'];
+
   try {
       const queue = (queueManager as any).queues?.[(queueManager as any).NEWS_QUEUE_NAME];
       if (queue) {
-          const oldJobs = await queue.getRepeatableJobs();
-          for (const job of oldJobs) {
-              if (job.name.includes('fetch-feed') || job.name.includes('update-trending')) {
-                  logger.info(`🧹 Removing stale/zombie job: ${job.name} (${job.key})`);
+          const existingJobs = await queue.getRepeatableJobs();
+          
+          for (const job of existingJobs) {
+              // 1. Remove if it's in our Zombie list
+              // 2. Remove if it's a duplicate of our current jobs (cleanup overlapping schedules)
+              if (ZOMBIE_JOBS.includes(job.name)) {
+                  logger.info(`🔥 NUKING Zombie Job: ${job.name} (Key: ${job.key})`);
                   await queue.removeRepeatableByKey(job.key);
               }
           }
       }
-  } catch (e) {
-      logger.warn('⚠️ Could not clean up old jobs (Queue might not be ready), continuing...');
+  } catch (e: any) {
+      logger.warn(`⚠️ Cleanup Warning: ${e.message}`);
   }
 
   // --- 1. Day Mode: High Frequency (6:00 AM - 11:59 PM) ---
-  // Runs every 30 minutes to catch breaking news during active hours
+  // Runs every 30 minutes
   await queueManager.scheduleRepeatableJob(
     'fetch-feed-day', 
     '*/30 6-23 * * *', 
@@ -35,7 +40,7 @@ export const startScheduler = async () => {
   );
 
   // --- 2. Night Mode: Low Frequency (12:00 AM - 5:59 AM) ---
-  // Runs every 2 hours (00:00, 02:00, 04:00) to save resources
+  // Runs every 2 hours
   await queueManager.scheduleRepeatableJob(
     'fetch-feed-night',
     '0 0-5/2 * * *',
@@ -50,7 +55,6 @@ export const startScheduler = async () => {
   );
 
   // --- 4. Startup Check ---
-  // Triggers an initial fetch 5 seconds after boot if needed
   setTimeout(() => {
     logger.info('🚀 Startup: Triggering initial News Fetch check...');
     queueManager.addFetchJob(
