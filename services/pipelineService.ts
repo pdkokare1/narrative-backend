@@ -18,10 +18,22 @@ class PipelineService {
      */
     private async isDuplicate(url: string): Promise<boolean> {
         if (!url) return true;
-        if (await redisClient.sIsMember('processed_urls', url)) {
-            return false; 
-        }
-        return false;
+        // FIX: The original code returned false even if it was found. 
+        // Now checks correctly.
+        const isMember = await redisClient.sIsMember('processed_urls', url);
+        return !!isMember; 
+    }
+
+    /**
+     * Checks if the TITLE has already been processed.
+     * Optimization for syndicated content (same title, different URL).
+     */
+    private async isTitleDuplicate(title: string): Promise<boolean> {
+        if (!title) return false;
+        // Create a simple slug: "Man Bites Dog" -> "man-bites-dog"
+        const slug = title.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
+        const isMember = await redisClient.sIsMember('processed_titles', slug);
+        return !!isMember;
     }
 
     private sanitizeContent(text: string): string {
@@ -57,7 +69,26 @@ class PipelineService {
                 logger.warn(`[Pipeline] Invalid Article Data: Missing URL/Title`);
                 return 'ERROR_INVALID';
             }
+
+            // ⚡ OPTIMIZATION: Early Duplicate Detection (Redis)
+            // Prevent expensive AI calls if we've already seen this URL
+            if (await this.isDuplicate(rawArticle.url)) {
+                logger.info(`⏭️ Skipped Duplicate URL: ${rawArticle.url}`);
+                return 'DUPLICATE_REDIS';
+            }
+
+            // ⚡ OPTIMIZATION: Syndication Detection (Title)
+            // If "Reuters" and "CNN" publish the exact same AP wire title, skip the second one.
+            if (await this.isTitleDuplicate(rawArticle.title)) {
+                logger.info(`⏭️ Skipped Syndicated Title: "${rawArticle.title}"`);
+                return 'DUPLICATE_TITLE';
+            }
             
+            // ⚡ OPTIMIZATION: Traffic Staggering
+            // Add a tiny random delay (100-500ms) to prevent "Thundering Herd" on Gemini keys
+            // when 25 articles arrive simultaneously from the queue.
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 400 + 100));
+
             // 1. Prep & Sanitize
             const article: Partial<IArticle> = {
                 url: rawArticle.url,
@@ -169,8 +200,12 @@ class PipelineService {
             }
 
             // 6. Post-Save Caching
+            // Cache both URL and Title slug to prevent future duplicates
             await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
             await redisClient.sAdd('processed_urls', article.url!);
+            
+            const titleSlug = article.headline!.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
+            await redisClient.sAdd('processed_titles', titleSlug);
 
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
