@@ -129,8 +129,9 @@ const NARRATIVE_SCHEMA = {
 
 class AIService {
   constructor() {
-    if (config.keys?.gemini) {
-        KeyManager.registerProviderKeys('GEMINI', [config.keys.gemini]);
+    // FIX: Pass the array of keys directly (it is now string[], not string)
+    if (config.keys?.gemini && config.keys.gemini.length > 0) {
+        KeyManager.registerProviderKeys('GEMINI', config.keys.gemini);
     } else {
         logger.warn("⚠️ No Gemini API Key found in config");
     }
