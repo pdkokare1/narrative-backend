@@ -68,10 +68,11 @@ export const CONSTANTS = {
 };
 
 // --- NEWS FETCH CYCLES ---
+// Removed 'newsapi' configurations as we are 100% GNews now
 export const FETCH_CYCLES = [
-    { name: 'US-Focus', gnews: { country: 'us' }, newsapi: { country: 'us' } },
-    { name: 'IN-Focus', gnews: { country: 'in' }, newsapi: { country: 'in' } },
-    { name: 'World-Focus', gnews: { topic: 'world' }, newsapi: { q: 'international', language: 'en' } }
+    { name: 'US-Focus', gnews: { country: 'us' } },
+    { name: 'IN-Focus', gnews: { country: 'in' } },
+    { name: 'World-Focus', gnews: { topic: 'world' } }
 ];
 
 // --- TRUSTED SOURCES ---
