@@ -34,8 +34,8 @@ const envSchema = z.object({
   CLOUDINARY_API_SECRET: z.string().min(1),
 
   // AI & News Keys
+  // Removed single string validation for Gemini to allow arrays
   GEMINI_API_KEY: z.string().optional(),
-  GEMINI_API_KEY_1: z.string().optional(),
   
   // AI Performance (New)
   AI_CONCURRENCY: z.string().transform(Number).default('5'),
@@ -183,7 +183,6 @@ const config = {
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
-  // ADDED: Your UID is now strictly added to the Admin list
   adminUids: [
     ...(env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : []),
     'z5uKireLhcffRWvocrrYMZaLbZw1'
@@ -212,7 +211,8 @@ const config = {
   },
 
   keys: {
-    gemini: env.GEMINI_API_KEY || env.GEMINI_API_KEY_1 || '',
+    // FIX: Updated to extract ALL Gemini keys, not just the first one
+    gemini: extractApiKeys('GEMINI'), 
     elevenLabs: extractApiKeys('ELEVENLABS'),
     gnews: extractApiKeys('GNEWS'),
     newsApi: extractApiKeys('NEWS_API')
