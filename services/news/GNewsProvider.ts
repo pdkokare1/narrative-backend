@@ -43,8 +43,19 @@ export class GNewsProvider implements INewsProvider {
             };
             const url = 'https://gnews.io/api/v4/top-headlines';
 
-            const response = await apiClient.get<unknown>(url, { params: queryParams });
-            return this.normalize(response.data);
+            try {
+                const response = await apiClient.get<unknown>(url, { params: queryParams });
+                return this.normalize(response.data);
+            } catch (error: any) {
+                // EXPLICIT DEBUGGING for GNews Errors
+                const status = error.response?.status;
+                if (status === 401 || status === 403) {
+                    logger.error(`❌ GNews Auth Failed (${status}). Check API Key.`);
+                } else if (status === 429) {
+                    logger.warn(`⏳ GNews Rate Limited (429).`);
+                }
+                throw error;
+            }
         });
     }
 
