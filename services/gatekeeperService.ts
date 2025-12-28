@@ -143,8 +143,8 @@ class GatekeeperService {
                 Description: "${article.description}"
                 
                 DEFINITIONS:
-                - "Hard News": Politics, Economy, War, Disaster, Crime, Accidents, Science, Policy, World Events. (NOTE: Negative, sad, or tragic news IS Hard News. Do NOT classify as Junk).
-                - "Soft News": Sports, Entertainment, Celebrity updates (if major), Lifestyle, Human Interest.
+                - "Hard News": Politics, Economy, War, Disaster, Crime, Accidents, Science, Policy, World Events, Religion, Obituaries, Missing Persons. (NOTE: Negative, sad, or tragic news IS Hard News. Do NOT classify as Junk).
+                - "Soft News": Sports, Entertainment, Celebrity updates, Lifestyle, Human Interest, Community Stories.
                 - "Junk": Paid Reviews, Product Promotions, Shopping Deals, Coupons, Game Walkthroughs/Guides, Horoscopes, pure Clickbait without substance.
 
                 Respond ONLY in JSON: { "type": "Hard News" | "Soft News" | "Junk", "category": "String" }
