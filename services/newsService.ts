@@ -1,4 +1,4 @@
-// narrative-backend/services/newsService.ts
+// services/newsService.ts
 import crypto from 'crypto';
 import logger from '../utils/logger';
 import redisClient from '../utils/redisClient';
