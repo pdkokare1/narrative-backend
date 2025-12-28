@@ -9,6 +9,23 @@ import queueManager from './queueManager';
 export const startScheduler = async () => {
   logger.info('⏰ Initializing Distributed Smart Scheduler...');
 
+  // --- 0. CLEANUP: Remove Zombie/Ghost Jobs ---
+  // This prevents the "fetch-feed" vs "fetch-feed-day" collision seen in logs
+  try {
+      const queue = (queueManager as any).queues?.[(queueManager as any).NEWS_QUEUE_NAME];
+      if (queue) {
+          const oldJobs = await queue.getRepeatableJobs();
+          for (const job of oldJobs) {
+              if (job.name.includes('fetch-feed') || job.name.includes('update-trending')) {
+                  logger.info(`🧹 Removing stale/zombie job: ${job.name} (${job.key})`);
+                  await queue.removeRepeatableByKey(job.key);
+              }
+          }
+      }
+  } catch (e) {
+      logger.warn('⚠️ Could not clean up old jobs (Queue might not be ready), continuing...');
+  }
+
   // --- 1. Day Mode: High Frequency (6:00 AM - 11:59 PM) ---
   // Runs every 30 minutes to catch breaking news during active hours
   await queueManager.scheduleRepeatableJob(
