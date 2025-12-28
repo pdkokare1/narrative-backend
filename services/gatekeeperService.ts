@@ -53,9 +53,13 @@ class GatekeeperService {
      * LOCAL CHECK: Free and Fast.
      */
     private async quickLocalCheck(article: any): Promise<{ isJunk: boolean; reason?: string }> {
-        const title = (article.title || "").trim();
+        // ROBUST DATA EXTRACTION: Handle both 'raw' (title) and 'processed' (headline) formats
+        const titleRaw = article.title || article.headline || "";
+        const descRaw = article.description || article.summary || article.content || "";
+
+        const title = titleRaw.trim();
         const titleLower = title.toLowerCase();
-        const desc = (article.description || "").toLowerCase();
+        const desc = descRaw.toLowerCase();
         const url = (article.url || "").toLowerCase();
         const domain = this.getDomain(url);
 
@@ -77,6 +81,7 @@ class GatekeeperService {
         }
 
         // 3. Length Check
+        // Fixed: Use the correctly extracted text length
         if ((title.length + desc.length) < 50) {
             return { isJunk: true, reason: 'Too Short / Empty' };
         }
@@ -119,6 +124,10 @@ class GatekeeperService {
     async evaluateArticle(article: any): Promise<{ type: string; isJunk: boolean; category?: string; recommendedModel: string; reason?: string }> {
         const CACHE_KEY = `${CONSTANTS.REDIS_KEYS.GATEKEEPER_CACHE}${article.url}`;
         
+        // Robust Extraction for AI Prompt
+        const title = article.title || article.headline || "";
+        const desc = article.description || article.summary || "";
+
         // 1. Check Cache
         const cached = await redis.get(CACHE_KEY);
         if (cached) return cached;
@@ -139,8 +148,8 @@ class GatekeeperService {
             const prompt = `
                 Analyze this news article metadata to determine if it is "Junk" or "News".
                 
-                Headline: "${article.title}"
-                Description: "${article.description}"
+                Headline: "${title}"
+                Description: "${desc}"
                 
                 DEFINITIONS:
                 - "Hard News": Politics, Economy, Business, Finance, Markets, IPOs, War, Disaster, Crime, Accidents, Science, Technology, Policy, World Events, Religion.
