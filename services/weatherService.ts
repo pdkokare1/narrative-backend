@@ -6,7 +6,7 @@ const WEATHER_BASE_URL = 'https://api.open-meteo.com/v1/forecast';
 const GEO_BASE_URL = 'https://geocoding-api.open-meteo.com/v1/reverse';
 
 interface WeatherData {
-  city: string; // Added city name
+  city: string;
   temperature: number;
   weatherCode: number;
   isDay: boolean;
@@ -14,8 +14,8 @@ interface WeatherData {
 
 export const fetchWeather = async (lat: number, lon: number): Promise<WeatherData | null> => {
   try {
-    // 1. Fetch Weather Data
-    const weatherPromise = axios.get(WEATHER_BASE_URL, {
+    // 1. Fetch Weather Data (Primary - Must Succeed)
+    const weatherResponse = await axios.get(WEATHER_BASE_URL, {
       params: {
         latitude: lat,
         longitude: lon,
@@ -25,27 +25,28 @@ export const fetchWeather = async (lat: number, lon: number): Promise<WeatherDat
       timeout: 5000
     });
 
-    // 2. Fetch Location Name (Reverse Geocoding)
-    const locationPromise = axios.get(GEO_BASE_URL, {
-        params: {
-            latitude: lat,
-            longitude: lon,
-            count: 1, // Just need the closest one
-            language: 'en'
-        },
-        timeout: 5000
-    });
+    const current = weatherResponse.data.current_weather;
+    let cityName = "Local Weather";
 
-    // Execute both in parallel for speed
-    const [weatherRes, locationRes] = await Promise.all([weatherPromise, locationPromise]);
+    // 2. Fetch Location Name (Secondary - Optional)
+    // We wrap this in its own try/catch so it doesn't break the weather display if it fails
+    try {
+        const locationResponse = await axios.get(GEO_BASE_URL, {
+            params: {
+                latitude: lat,
+                longitude: lon,
+                count: 1, 
+                language: 'en'
+            },
+            timeout: 3000 // Shorter timeout for name lookup
+        });
 
-    const current = weatherRes.data.current_weather;
-    
-    // Extract city name safely
-    let cityName = "Unknown Location";
-    if (locationRes.data.results && locationRes.data.results.length > 0) {
-        // Prefer 'name' (usually city/town), fallback to other fields if necessary
-        cityName = locationRes.data.results[0].name || locationRes.data.results[0].admin1 || "Local Weather";
+        if (locationResponse.data.results && locationResponse.data.results.length > 0) {
+            cityName = locationResponse.data.results[0].name || locationResponse.data.results[0].admin1 || "Local Weather";
+        }
+    } catch (geoError) {
+        // Silently fail on city name, just log it as a warning
+        logger.warn('⚠️ Weather Geo-lookup failed, using default name.');
     }
 
     return {
@@ -56,12 +57,7 @@ export const fetchWeather = async (lat: number, lon: number): Promise<WeatherDat
     };
 
   } catch (error: any) {
-    // Log details if axios error
-    if (axios.isAxiosError(error)) {
-        logger.error(`❌ Weather/Geo Service Error: ${error.response?.status} - ${error.message}`);
-    } else {
-        logger.error(`❌ Weather Service Error: ${error.message}`);
-    }
+    logger.error(`❌ Weather Service Error: ${error.message}`);
     return null;
   }
 };
