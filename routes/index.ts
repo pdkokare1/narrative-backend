@@ -13,6 +13,7 @@ import migrationRoutes from './migrationRoutes';
 import assetGenRoutes from './assetGenRoutes';
 import clusterRoutes from './clusterRoutes';
 import jobRoutes from './jobRoutes';
+import weatherRoutes from './weatherRoutes'; // [ADDED]
 
 const router = express.Router();
 
@@ -33,6 +34,7 @@ router.use('/activity', checkAppCheck, checkAuth, activityRoutes);
 // --- 4. Public / Hybrid Routes ---
 router.use('/emergency-resources', emergencyRoutes);
 router.use('/tts', ttsLimiter, ttsRoutes);
+router.use('/weather', weatherRoutes); // [ADDED]
 
 // --- 5. Main Content Routes ---
 // Mounted at root to maintain API compatibility:
