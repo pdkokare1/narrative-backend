@@ -9,8 +9,9 @@ class AppError extends Error {
   public statusCode: number;
   public status: string;
   public isOperational: boolean;
+  public errorCode?: string; // Added to support specific error codes
 
-  constructor(message: string, statusCode: number) {
+  constructor(message: string, statusCode: number, errorCode?: string) {
     super(message);
 
     this.statusCode = statusCode;
@@ -20,6 +21,9 @@ class AppError extends Error {
     // Operational errors are predictable (user input bad, etc.)
     // Programming errors (bugs) are not operational.
     this.isOperational = true;
+    
+    // Store the optional error code if provided
+    this.errorCode = errorCode;
 
     Error.captureStackTrace(this, this.constructor);
   }
