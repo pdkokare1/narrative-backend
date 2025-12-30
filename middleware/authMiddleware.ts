@@ -3,33 +3,39 @@ import { Request, Response, NextFunction } from 'express';
 import * as admin from 'firebase-admin';
 import logger from '../utils/logger';
 import config from '../utils/config';
-import { isUserAdmin } from '../utils/helpers';
+import { CONSTANTS } from '../utils/constants';
+import AppError from '../utils/AppError';
 
 // --- App Check (Security Gate) ---
+// Enforces that requests come from YOUR specific frontend app.
 export const checkAppCheck = async (req: Request, res: Response, next: NextFunction) => {
+  // If explicitly disabled in config (e.g. for testing), skip
+  if (!config.enableAppCheck) return next();
+
   const appCheckToken = req.header('X-Firebase-AppCheck');
   
   if (!appCheckToken) {
-      // In Production, this is usually strictly enforced.
-      // MODIFIED: We are relaxing this to a Warning to prevent admin lockout.
       if (config.isProduction) {
-          logger.warn('⚠️ Missing App Check Token (Proceeding via Exception)');
-          // res.status(401);
-          // return next(new Error('Unauthorized: No App Check token.'));
+          logger.warn(`🛑 Blocked Request: Missing App Check Token [IP: ${req.ip}]`);
+          return next(new AppError('Unauthorized: App Check Token Missing', 401, CONSTANTS.ERROR_CODES.AUTH_NO_APP_CHECK));
+      } else {
+          // Dev Mode: Allow with warning
+          logger.debug('⚠️ Missing App Check Token (Allowed in Dev)');
+          return next();
       }
   }
   
   try {
-    if (appCheckToken) {
-        await admin.appCheck().verifyToken(appCheckToken);
-    }
+    await admin.appCheck().verifyToken(appCheckToken);
     next(); 
   } catch (err: any) {
-    logger.warn(`App Check Error: ${err.message}`);
-    // Relaxed for now:
+    logger.warn(`🛑 App Check Validation Failed: ${err.message} [IP: ${req.ip}]`);
+    
+    // In production, this is a hard stop.
+    if (config.isProduction) {
+        return next(new AppError('Forbidden: Invalid App Check Token', 403, CONSTANTS.ERROR_CODES.AUTH_INVALID_TOKEN));
+    }
     next();
-    // res.status(403);
-    // return next(new Error('Forbidden: Invalid App Check token.'));
   }
 };
 
@@ -38,8 +44,7 @@ export const checkAuth = async (req: Request, res: Response, next: NextFunction)
   const token = req.headers.authorization?.split('Bearer ')[1];
   
   if (!token) {
-      res.status(401);
-      return next(new Error('Unauthorized: No token provided'));
+      return next(new AppError('Unauthorized: No token provided', 401, CONSTANTS.ERROR_CODES.AUTH_MISSING_TOKEN));
   }
   
   try {
@@ -48,8 +53,11 @@ export const checkAuth = async (req: Request, res: Response, next: NextFunction)
     next();
   } catch (error: any) {
     logger.warn(`Auth Error: ${error.code || 'Unknown'} - ${error.message}`);
-    res.status(403);
-    return next(new Error('Forbidden: Invalid or expired token'));
+    
+    if (error.code === 'auth/id-token-expired') {
+         return next(new AppError('Unauthorized: Token Expired', 401, CONSTANTS.ERROR_CODES.AUTH_INVALID_TOKEN));
+    }
+    return next(new AppError('Forbidden: Invalid token', 403, CONSTANTS.ERROR_CODES.ACCESS_DENIED));
   }
 };
 
@@ -68,30 +76,34 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
   next();
 };
 
-// --- Admin Authentication (Strict System) ---
-export const checkAdmin = async (req: Request, res: Response, next: NextFunction) => {
-    
-    // 1. Check for User Token with Admin Privileges
-    const token = req.headers.authorization?.split('Bearer ')[1];
-    if (token) {
-        try {
-            const decodedToken = await admin.auth().verifyIdToken(token);
-            
-            // Check via Helper (Centralized Logic)
-            if (isUserAdmin(decodedToken)) {
-                req.user = decodedToken;
-                return next();
-            }
-            
-            logger.warn(`🛑 Admin Access Denied: User ${decodedToken.uid} is not an admin.`);
-            
-        } catch (e) {
-            // Token invalid, fall through to error
+// --- Role Based Access Control (RBAC) ---
+// Universal middleware to check for ANY role
+export const requireRole = (role: string) => {
+    return async (req: Request, res: Response, next: NextFunction) => {
+        // 1. Ensure user is logged in first
+        if (!req.user) {
+            return next(new AppError('Unauthorized: Login required', 401, CONSTANTS.ERROR_CODES.AUTH_MISSING_TOKEN));
         }
-    }
 
-    // 2. Deny Access
-    logger.warn(`🛑 Admin access denied from IP: ${req.ip}`);
-    res.status(403);
-    return next(new Error('Forbidden: Admin access required'));
+        // 2. Check hardcoded Super Admins (Always allowed)
+        if (config.adminUids.includes(req.user.uid)) {
+            return next();
+        }
+
+        // 3. Check Custom Claims (Recommended way for Firebase)
+        // Note: You need to set custom claims on the user object in Firebase
+        if (req.user[role] === true || req.user.role === role) {
+            return next();
+        }
+
+        // 4. Fallback: Check Profile in DB (Slower, but easier to manage initially)
+        // We skip this for now to keep middleware fast. Use Custom Claims or AdminUIDs.
+
+        logger.warn(`🛑 Access Denied: User ${req.user.uid} needs role '${role}'`);
+        return next(new AppError(`Forbidden: Requires ${role} privileges`, 403, CONSTANTS.ERROR_CODES.ACCESS_DENIED));
+    };
 };
+
+// --- Admin Authentication (Legacy Wrapper) ---
+// Uses the new requireRole but keeps specific admin logic if needed
+export const checkAdmin = requireRole('admin');
