@@ -6,6 +6,14 @@ export const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
 // --- CENTRAL CONFIGURATION ---
 export const CONSTANTS = {
+  // Error Codes (Added to fix build failure)
+  ERROR_CODES: {
+    AUTH_NO_APP_CHECK: 'AUTH_NO_APP_CHECK',
+    AUTH_INVALID_TOKEN: 'AUTH_INVALID_TOKEN',
+    AUTH_MISSING_TOKEN: 'AUTH_MISSING_TOKEN',
+    ACCESS_DENIED: 'ACCESS_DENIED',
+  },
+
   // Rate Limiting
   RATE_LIMIT: {
     WINDOW_MS: FIFTEEN_MINUTES,
