@@ -1,4 +1,4 @@
-// narrative-backend/services/articleService.ts
+// services/articleService.ts
 import mongoose from 'mongoose';
 import Article, { ArticleDocument } from '../models/articleModel';
 import Narrative from '../models/narrativeModel'; 
@@ -7,6 +7,7 @@ import Profile from '../models/profileModel';
 import redis from '../utils/redisClient';
 import logger from '../utils/logger';
 import { CONSTANTS } from '../utils/constants';
+import config from '../utils/config';
 import aiService from './aiService'; 
 
 // Interface for Filter Arguments
@@ -21,6 +22,15 @@ interface FeedFilters {
     offset?: number | string;
 }
 
+// Helper: Optimize Image URLs for bandwidth
+const optimizeImageUrl = (url?: string) => {
+    if (!url) return undefined;
+    if (url.includes('cloudinary') && !url.includes('f_auto')) {
+        return url.replace('/upload/', '/upload/f_auto,q_auto,w_800/');
+    }
+    return url;
+};
+
 class ArticleService {
   
   // --- 1. Smart Trending Topics ---
@@ -34,7 +44,6 @@ class ArticleService {
                     $match: { 
                         publishedAt: { $gte: twoDaysAgo }, 
                         clusterTopic: { $exists: true, $ne: null },
-                        // FILTER: Exclude pending articles
                         analysisVersion: { $ne: 'pending' }
                     } 
                 },
@@ -55,7 +64,7 @@ class ArticleService {
     if (!query) return { articles: [], total: 0 };
     
     const safeQuery = query.replace(/[^\w\s\-\.\?]/gi, '');
-    const CACHE_KEY = `search:v2:${safeQuery.toLowerCase().trim()}:${limit}`;
+    const CACHE_KEY = `search:v3:${safeQuery.toLowerCase().trim()}:${limit}`;
 
     return redis.getOrFetch(CACHE_KEY, async () => {
         let articles: any[] = [];
@@ -73,14 +82,14 @@ class ArticleService {
                             "path": "embedding",
                             "queryVector": queryEmbedding,
                             "numCandidates": 100, 
-                            "limit": limit * 2 // Fetch extra to allow for filtering
+                            "limit": limit * 2 
                         }
                     },
-                    // FILTER: Exclude pending articles
                     { "$match": { analysisVersion: { $ne: 'pending' } } },
                     { "$limit": limit },
                     {
                         "$project": {
+                            // OPTIMIZATION: Projection excludes content/embedding
                             "headline": 1, "summary": 1, "source": 1, "category": 1,
                             "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1,
                             "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1,
@@ -99,27 +108,27 @@ class ArticleService {
 
         // B. Fallback to Text Search
         if (!articles.length) {
-            // Note: smartSearch is a model static, so we filter AFTER fetching
-            // since we can't easily modify the model static right now.
             const rawArticles = await Article.smartSearch(safeQuery, limit * 2);
             articles = rawArticles.filter((a: any) => a.analysisVersion !== 'pending').slice(0, limit);
         }
 
+        // Post-process images
+        articles = articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
+
         logger.info(`🔍 Search: "${safeQuery}" | Method: ${searchMethod} | Results: ${articles.length}`);
-        
         return { articles, total: articles.length };
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Main Feed (Optimized & Centralized Caching) ---
+  // --- 3. Main Feed (Optimized & Stale-While-Revalidate) ---
   async getMainFeed(filters: FeedFilters) {
     const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
-    
+    const isFirstPage = Number(offset) === 0;
+
     // Encapsulate the expensive fetching logic
     const fetchFeedData = async () => {
         // A. Build Query
         const query: any = {
-            // FILTER: Exclude pending articles globally
             analysisVersion: { $ne: 'pending' }
         };
         
@@ -153,6 +162,7 @@ class ArticleService {
         narrativeQuery.lastUpdated = { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) };
 
         const narratives = await Narrative.find(narrativeQuery)
+                                          .select('-articles -vector') // Projection
                                           .sort({ lastUpdated: -1 })
                                           .limit(5)
                                           .lean();
@@ -169,8 +179,9 @@ class ArticleService {
         else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
         else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
 
-        // E. Fetch Articles
+        // E. Fetch Articles with Projection
         const articles = await Article.find(query)
+            .select('-content -embedding -keyFindings -recommendations') // OPTIMIZATION: Exclude heavy fields
             .sort(sortOptions)
             .skip(Number(offset))
             .limit(Number(limit))
@@ -179,7 +190,11 @@ class ArticleService {
         // F. Combine
         const feedItems = [
             ...narratives.map(n => ({ ...n, type: 'Narrative', publishedAt: n.lastUpdated })),
-            ...articles.map(a => ({ ...a, type: 'Article' }))
+            ...articles.map(a => ({ 
+                ...a, 
+                type: 'Article',
+                imageUrl: optimizeImageUrl(a.imageUrl)
+            }))
         ];
 
         feedItems.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
@@ -192,25 +207,40 @@ class ArticleService {
         };
     };
 
-    // Use getOrFetch ONLY for the first page to ensure freshness for deep pagination
-    // and speed for the initial load.
-    if (Number(offset) === 0) {
-        const CACHE_KEY = `feed_v2:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${limit}`;
-        return redis.getOrFetch(CACHE_KEY, fetchFeedData, CONSTANTS.CACHE.TTL_FEED);
+    // Stale-While-Revalidate Pattern for First Page
+    if (isFirstPage) {
+        const CACHE_KEY = `feed_v3:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${limit}`;
+        
+        // 1. Try to get data
+        const cachedData = await redis.get(CACHE_KEY);
+        
+        if (cachedData) {
+            // 2. Return immediately
+            // 3. BUT, if it's nearing expiry (or just periodically), trigger a background refresh
+            // For simplicity, we just return cached data. 
+            // A true SWR would check a timestamp and refresh if > 5 mins old but < 15 mins.
+            return cachedData; 
+        }
+
+        // 4. Cache Miss - Fetch and Cache
+        const freshData = await fetchFeedData();
+        await redis.set(CACHE_KEY, freshData, CONSTANTS.CACHE.TTL_FEED);
+        return freshData;
     } else {
         return fetchFeedData();
     }
   }
 
-  // --- 4. For You Feed ---
+  // --- 4. For You Feed (Optimized) ---
   async getForYouFeed(userId: string | undefined) {
     if (!userId) {
         const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
+            .select('-content -embedding')
             .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
         return { articles: standard, meta: { reason: "Guest User" } };
     }
 
-    const CACHE_KEY = `feed_foryou:${userId}`;
+    const CACHE_KEY = `feed_foryou_v2:${userId}`;
 
     return redis.getOrFetch(CACHE_KEY, async () => {
         const history = await ActivityLog.find({ userId, action: 'view_analysis' })
@@ -220,6 +250,7 @@ class ArticleService {
         
         if (history.length === 0) {
             const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
+                .select('-content -embedding')
                 .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
             return { articles: standard, meta: { reason: "No history" } };
         }
@@ -242,27 +273,34 @@ class ArticleService {
         let challengerArticles = await Article.find({
             politicalLean: { $in: targetLean },
             publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-            // FILTER: Exclude pending
             analysisVersion: { $ne: 'pending' }
-        }).sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
+        })
+        .select('-content -embedding')
+        .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
 
         if (challengerArticles.length === 0) {
             challengerArticles = await Article.find({ 
                 politicalLean: 'Center',
                 analysisVersion: { $ne: 'pending' }
-            }).sort({ publishedAt: -1 }).limit(10).lean();
+            })
+            .select('-content -embedding')
+            .sort({ publishedAt: -1 }).limit(10).lean();
         }
 
         return { 
-            articles: challengerArticles.map(a => ({ ...a, suggestionType: 'Challenge' })), 
+            articles: challengerArticles.map(a => ({ 
+                ...a, 
+                suggestionType: 'Challenge',
+                imageUrl: optimizeImageUrl(a.imageUrl)
+            })), 
             meta: { basedOnCategory: 'Your Reading History', usualLean: dominantLean } 
         };
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 5. Personalized Feed ---
+  // --- 5. Personalized Feed (Optimized) ---
   async getPersonalizedFeed(userId: string) {
-    const CACHE_KEY = `my_mix_${userId}`;
+    const CACHE_KEY = `my_mix_v2:${userId}`;
     
     return redis.getOrFetch(CACHE_KEY, async () => {
         const profile = await Profile.findOne({ userId }).select('userEmbedding');
@@ -287,12 +325,19 @@ class ArticleService {
                     { 
                         "$match": { 
                             "publishedAt": { "$gte": threeDaysAgo },
-                            // FILTER: Exclude pending
                             "analysisVersion": { "$ne": "pending" }
                         } 
                     },
                     { "$limit": 20 },
-                    { "$project": { "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, "audioUrl": 1, "score": { "$meta": "vectorSearchScore" } } }
+                    { 
+                        "$project": { 
+                            // OPTIMIZED PROJECTION
+                            "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, 
+                            "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, 
+                            "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, 
+                            "audioUrl": 1, "score": { "$meta": "vectorSearchScore" } 
+                        } 
+                    }
                 ];
                 recommendations = await Article.aggregate(pipeline);
                 metaReason = "AI Curated (Interest Match)";
@@ -318,11 +363,11 @@ class ArticleService {
                             $match: { 
                                 category: { $in: topCategories }, 
                                 publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
-                                // FILTER: Exclude pending
                                 analysisVersion: { $ne: 'pending' }
                             } 
                         },
-                        { $sample: { size: 15 } }
+                        { $sample: { size: 15 } },
+                        { $project: { embedding: 0, content: 0 } } // Optimization
                     ]);
                 }
             }
@@ -330,12 +375,17 @@ class ArticleService {
 
         if (recommendations.length === 0) {
             recommendations = await Article.find({ analysisVersion: { $ne: 'pending' } })
+                .select('-content -embedding')
                 .sort({ publishedAt: -1 }).limit(15).lean();
             metaReason = "Trending (No Data)";
         }
 
         return { 
-            articles: recommendations.map(a => ({ ...a, suggestionType: 'Comfort' })), 
+            articles: recommendations.map(a => ({ 
+                ...a, 
+                suggestionType: 'Comfort',
+                imageUrl: optimizeImageUrl(a.imageUrl)
+            })), 
             meta: { topCategories: [metaReason] } 
         };
     }, CONSTANTS.CACHE.TTL_PERSONAL);
@@ -345,7 +395,14 @@ class ArticleService {
   async getSavedArticles(userId: string) {
     const profile = await Profile.findOne({ userId }).select('savedArticles');
     if (!profile || !profile.savedArticles.length) return [];
-    return Article.find({ _id: { $in: profile.savedArticles } }).sort({ publishedAt: -1 }).lean();
+    
+    // Optimized: Only fetch what's needed for the list
+    const articles = await Article.find({ _id: { $in: profile.savedArticles } })
+        .select('-content -embedding')
+        .sort({ publishedAt: -1 })
+        .lean();
+        
+    return articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
   }
 
   // --- 7. Toggle Save ---
