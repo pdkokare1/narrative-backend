@@ -26,33 +26,33 @@ import shareRoutes from './routes/shareRoutes';
 
 const app = express();
 
-// --- 1. Request Logging ---
+// --- 1. Trust Proxy (Critical for Railway/Vercel) ---
+// Must be set BEFORE rate limiters or logging that relies on IPs
+app.set('trust proxy', config.trustProxyLevel);
+
+// --- 2. Request Logging ---
 app.use((req: Request, res: Response, next: NextFunction) => {
     if (req.url !== '/health' && req.url !== '/ping') {
-        // This now uses Pino's custom 'http' level
         logger.http(`${req.method} ${req.url}`);
     }
     next();
 });
 
-// CRITICAL FIX: Trust Proxy for Railway/Vercel Load Balancers
-// "1" means we trust the first proxy hop (Railway's internal router)
-// This ensures 'req.ip' is the ACTUAL user IP, not Railway's IP.
-app.set('trust proxy', 1);
-
+// --- 3. Security Middleware ---
 // SECURITY: Hide Express signature
 app.disable('x-powered-by');
 
-// --- 2. Security Middleware ---
-app.use(helmet({ 
-  crossOriginResourcePolicy: { policy: "cross-origin" } 
+// SECURITY: Strict Content Security Policy
+app.use(helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: config.csp // Load strict CSP from config
 }));
 
 app.use(compression());
 app.use(mongoSanitize());
 app.use(hpp());
 
-// --- 3. CORS Configuration ---
+// --- 4. CORS Configuration ---
 app.use(cors({
   origin: config.corsOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -62,7 +62,7 @@ app.use(cors({
 
 app.use(express.json({ limit: '200kb' }));
 
-// --- 4. System Routes ---
+// --- 5. System Routes ---
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
 
 app.get('/ping', (req: Request, res: Response) => { 
@@ -73,7 +73,6 @@ app.get('/health', async (req: Request, res: Response) => {
     const mongoStatus = mongoose.connection.readyState === 1 ? 'UP' : 'DOWN';
     const redisStatus = redisClient.isReady() ? 'UP' : 'DOWN';
     
-    // Return 503 if critical services are down so monitoring tools know
     const status = (mongoStatus === 'UP' && redisStatus === 'UP') ? 200 : 503;
 
     res.status(status).json({ 
@@ -83,7 +82,7 @@ app.get('/health', async (req: Request, res: Response) => {
     });
 });
 
-// --- 5. Firebase Init ---
+// --- 6. Firebase Init ---
 try {
   if (config.firebase.serviceAccount) {
     if (!admin.apps.length) {
@@ -97,25 +96,24 @@ try {
     logger.error(`Firebase Admin Init Error: ${error instanceof Error ? error.message : 'Unknown'}`);
 }
 
-// --- 6. Global Rate Limiter ---
+// --- 7. Global Rate Limiter ---
 app.use('/api/v1/', apiLimiter); 
 
-// --- 7. Mount Routes ---
+// --- 8. Mount Routes ---
 app.use('/share', shareRoutes); 
 app.use('/api/v1', apiRouter);
 // Fallback
 app.use('/api', apiRouter);
 
-// --- 8. Error Handling ---
+// --- 9. Error Handling ---
 app.use(errorHandler);
 
-// --- 9. Database & Server Start ---
+// --- 10. Database & Server Start ---
 const startServer = async () => {
     try {
         logger.info('🚀 Starting Server Initialization...');
 
         // 1. Connect to Infrastructure (DB & Redis)
-        // Using dbLoader as the single source of truth for connections
         await dbLoader.connect();
 
         // 2. Start HTTP Server
@@ -126,14 +124,14 @@ const startServer = async () => {
             logger.info(`✅ Server running on http://${HOST}:${PORT}`);
         });
 
-        // 3. Initialize Queue (After Redis is definitely ready)
-        // Note: queueManager internally checks if Redis is connected
+        // 3. Initialize Queue (Only if needed by this instance)
+        // In a perfect microservices world, this would be in workerEntry.ts
+        // But for now, we keep it here to ensure jobs run on the main instance if no worker is present.
         await queueManager.initialize();
         logger.info('✨ Infrastructure Fully Initialized');
 
         // 4. Register Graceful Shutdown
         registerShutdownHandler('API Server', [
-            // Stop HTTP
             () => new Promise<void>((resolve, reject) => {
                 server.close((err) => {
                     if (err) reject(err);
@@ -143,9 +141,7 @@ const startServer = async () => {
                     }
                 });
             }),
-            // Stop Queues
             async () => { await queueManager.shutdown(); },
-            // Stop DB & Redis
             async () => { await dbLoader.disconnect(); }
         ]);
 
