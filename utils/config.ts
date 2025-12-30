@@ -13,6 +13,9 @@ const envSchema = z.object({
   
   // Database & Cache
   MONGODB_URI: z.string().url(),
+  // Scaling: Optional separate URI for read operations (e.g. MongoDB Atlas Secondary)
+  MONGODB_READ_URI: z.string().url().optional(),
+  
   MONGO_POOL_SIZE: z.string().transform(Number).default('10'),
   
   // Redis - Primary (Cache/Rate Limits)
@@ -34,10 +37,9 @@ const envSchema = z.object({
   CLOUDINARY_API_SECRET: z.string().min(1),
 
   // AI & News Keys
-  // Removed explicit single-key validation to support arrays via helper
   GEMINI_API_KEY: z.string().optional(),
   
-  // AI Performance (New)
+  // AI Performance
   AI_CONCURRENCY: z.string().transform(Number).default('5'),
   
   // Security
@@ -47,6 +49,9 @@ const envSchema = z.object({
   
   // Trust Proxy Configuration
   TRUST_PROXY_LVL: z.string().transform(Number).default('1'),
+  
+  // Feature Flags
+  ENABLE_APP_CHECK: z.enum(['true', 'false']).default('true'),
   
   // AI Model Configuration - STRICT 2.5 DEFAULTS
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
@@ -176,6 +181,7 @@ const getBullMQConfig = () => {
 const config = {
   port: env.PORT,
   mongoUri: env.MONGODB_URI,
+  mongoReadUri: env.MONGODB_READ_URI || env.MONGODB_URI, // Fallback to primary if no read replica
   mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
   redisOptions: getRedisConfig(),
@@ -190,6 +196,9 @@ const config = {
   corsOrigins: getCorsOrigins(),
   trustProxyLevel: env.TRUST_PROXY_LVL, 
   
+  // Feature Flags
+  enableAppCheck: env.ENABLE_APP_CHECK === 'true',
+
   worker: {
       concurrency: env.WORKER_CONCURRENCY
   },
@@ -211,11 +220,9 @@ const config = {
   },
 
   keys: {
-    // FIX: Using extractApiKeys to support your 5 Gemini keys
     gemini: extractApiKeys('GEMINI'), 
     elevenLabs: extractApiKeys('ELEVENLABS'),
     gnews: extractApiKeys('GNEWS'),
-    // REMOVED: newsApi
   },
   
   aiModels: {
@@ -226,6 +233,21 @@ const config = {
 
   firebase: {
     serviceAccount: getFirebaseConfig(),
+  },
+  
+  // Content Security Policy
+  csp: {
+      directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "https://apis.google.com"],
+          styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+          imgSrc: ["'self'", "data:", "https://res.cloudinary.com", "https://lh3.googleusercontent.com"],
+          connectSrc: ["'self'", "https://api.thegamut.in", "https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com"],
+          fontSrc: ["'self'", "https://fonts.gstatic.com"],
+          objectSrc: ["'none'"],
+          mediaSrc: ["'self'", "https://res.cloudinary.com"],
+          frameSrc: ["'none'"],
+      }
   }
 };
 
