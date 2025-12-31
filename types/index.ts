@@ -151,6 +151,7 @@ export interface IUserProfile {
   userId: string;
   email: string;
   username: string;
+  role?: IUserRole; // ADDED: For RBAC
   
   articlesViewedCount: number;
   comparisonsViewedCount: number;
@@ -194,4 +195,33 @@ export interface IAIPrompt {
   version: number;
   active: boolean;
   description?: string;
+}
+
+// --- 10. NEW: Shared Service Interfaces ---
+
+export type IUserRole = 'user' | 'admin' | 'moderator';
+
+export interface FeedFilters {
+    category?: string;
+    lean?: string;
+    region?: string;
+    articleType?: string;
+    quality?: string;
+    sort?: string;
+    limit?: number | string;
+    offset?: number | string;
+}
+
+export interface IServiceResponse<T> {
+    success: boolean;
+    data?: T;
+    error?: string;
+    meta?: any;
+}
+
+// Decoupled AI Service Interface (Future-Proofing)
+export interface IAIService {
+    analyzeArticle(article: Partial<IArticle>, model?: string): Promise<Partial<IArticle>>;
+    generateNarrative(articles: IArticle[]): Promise<any>;
+    createEmbedding(text: string): Promise<number[] | null>;
 }
