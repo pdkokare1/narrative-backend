@@ -7,25 +7,14 @@ import Profile from '../models/profileModel';
 import redis from '../utils/redisClient';
 import logger from '../utils/logger';
 import { CONSTANTS } from '../utils/constants';
-import config from '../utils/config';
 import aiService from './aiService'; 
-
-// Interface for Filter Arguments
-interface FeedFilters {
-    category?: string;
-    lean?: string;
-    region?: string;
-    articleType?: string;
-    quality?: string;
-    sort?: string;
-    limit?: number | string;
-    offset?: number | string;
-}
+import { FeedFilters, IArticle, INarrative } from '../types';
 
 // Helper: Optimize Image URLs for bandwidth
 const optimizeImageUrl = (url?: string) => {
     if (!url) return undefined;
-    if (url.includes('cloudinary') && !url.includes('f_auto')) {
+    // Safety check for valid URL structure before replacement
+    if (url.includes('cloudinary.com') && !url.includes('f_auto')) {
         return url.replace('/upload/', '/upload/f_auto,q_auto,w_800/');
     }
     return url;
@@ -51,7 +40,7 @@ class ArticleService {
                 { $match: { count: { $gte: 3 } } },
                 { $sort: { count: -1 } },
                 { $limit: 10 }
-            ]);
+            ]).read('secondaryPreferred'); // SCALING: Use Read Replica
 
             return results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
         }, 
@@ -89,7 +78,6 @@ class ArticleService {
                     { "$limit": limit },
                     {
                         "$project": {
-                            // OPTIMIZATION: Projection excludes content/embedding
                             "headline": 1, "summary": 1, "source": 1, "category": 1,
                             "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1,
                             "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1,
@@ -99,6 +87,7 @@ class ArticleService {
                     }
                 ];
                 
+                // Note: Aggregations with $vectorSearch often require primary read or specific index support
                 articles = await Article.aggregate(pipeline);
                 searchMethod = 'Vector';
             }
@@ -165,7 +154,8 @@ class ArticleService {
                                           .select('-articles -vector') // Projection
                                           .sort({ lastUpdated: -1 })
                                           .limit(5)
-                                          .lean();
+                                          .lean()
+                                          .read('secondaryPreferred'); // SCALING: Offload to Replica
 
         // C. Smart Dedup
         const narrativeClusterIds = narratives.map(n => n.clusterId);
@@ -185,7 +175,8 @@ class ArticleService {
             .sort(sortOptions)
             .skip(Number(offset))
             .limit(Number(limit))
-            .lean();
+            .lean()
+            .read('secondaryPreferred'); // SCALING: Offload to Replica
 
         // F. Combine
         const feedItems = [
@@ -199,7 +190,7 @@ class ArticleService {
 
         feedItems.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
 
-        const totalArticles = await Article.countDocuments(query);
+        const totalArticles = await Article.countDocuments(query).read('secondaryPreferred');
         
         return { 
             articles: feedItems.slice(0, Number(limit)), 
@@ -215,10 +206,8 @@ class ArticleService {
         const cachedData = await redis.get(CACHE_KEY);
         
         if (cachedData) {
-            // 2. Return immediately
-            // 3. BUT, if it's nearing expiry (or just periodically), trigger a background refresh
-            // For simplicity, we just return cached data. 
-            // A true SWR would check a timestamp and refresh if > 5 mins old but < 15 mins.
+            // Return immediately.
+            // Future Optimization: Trigger background refresh here if nearing TTL.
             return cachedData; 
         }
 
@@ -236,7 +225,10 @@ class ArticleService {
     if (!userId) {
         const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
             .select('-content -embedding')
-            .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
+            .sort({ trustScore: -1, publishedAt: -1 })
+            .limit(10)
+            .lean()
+            .read('secondaryPreferred');
         return { articles: standard, meta: { reason: "Guest User" } };
     }
 
@@ -251,14 +243,17 @@ class ArticleService {
         if (history.length === 0) {
             const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
                 .select('-content -embedding')
-                .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
+                .sort({ trustScore: -1, publishedAt: -1 })
+                .limit(10)
+                .lean()
+                .read('secondaryPreferred');
             return { articles: standard, meta: { reason: "No history" } };
         }
 
         const articleIds = history.map(h => h.articleId);
-        const viewedDocs = await Article.find({ _id: { $in: articleIds } }).select('politicalLean');
+        const viewedDocs = await Article.find({ _id: { $in: articleIds } }).select('politicalLean').lean();
         const leanCounts: Record<string, number> = {};
-        viewedDocs.forEach(d => { leanCounts[d.politicalLean] = (leanCounts[d.politicalLean] || 0) + 1; });
+        viewedDocs.forEach((d: any) => { leanCounts[d.politicalLean] = (leanCounts[d.politicalLean] || 0) + 1; });
         
         let dominantLean = 'Center';
         let maxCount = 0;
@@ -276,7 +271,10 @@ class ArticleService {
             analysisVersion: { $ne: 'pending' }
         })
         .select('-content -embedding')
-        .sort({ trustScore: -1, publishedAt: -1 }).limit(10).lean();
+        .sort({ trustScore: -1, publishedAt: -1 })
+        .limit(10)
+        .lean()
+        .read('secondaryPreferred');
 
         if (challengerArticles.length === 0) {
             challengerArticles = await Article.find({ 
@@ -284,7 +282,10 @@ class ArticleService {
                 analysisVersion: { $ne: 'pending' }
             })
             .select('-content -embedding')
-            .sort({ publishedAt: -1 }).limit(10).lean();
+            .sort({ publishedAt: -1 })
+            .limit(10)
+            .lean()
+            .read('secondaryPreferred');
         }
 
         return { 
@@ -303,7 +304,7 @@ class ArticleService {
     const CACHE_KEY = `my_mix_v2:${userId}`;
     
     return redis.getOrFetch(CACHE_KEY, async () => {
-        const profile = await Profile.findOne({ userId }).select('userEmbedding');
+        const profile = await Profile.findOne({ userId }).select('userEmbedding').lean();
         const hasVector = profile && profile.userEmbedding && profile.userEmbedding.length > 0;
 
         let recommendations: any[] = [];
@@ -331,7 +332,6 @@ class ArticleService {
                     { "$limit": 20 },
                     { 
                         "$project": { 
-                            // OPTIMIZED PROJECTION
                             "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, 
                             "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, 
                             "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, 
@@ -350,9 +350,9 @@ class ArticleService {
             const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50).lean();
             if (recentLogs.length > 0) {
                 const articleIds = recentLogs.map(l => l.articleId);
-                const viewedArticles = await Article.find({ _id: { $in: articleIds } }).select('category');
+                const viewedArticles = await Article.find({ _id: { $in: articleIds } }).select('category').lean();
                 const categoryCounts: Record<string, number> = {};
-                viewedArticles.forEach(a => categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1);
+                viewedArticles.forEach((a: any) => categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1);
                 
                 const topCategories = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]);
                 metaReason = `Based on ${topCategories.join(', ')}`;
@@ -367,7 +367,7 @@ class ArticleService {
                             } 
                         },
                         { $sample: { size: 15 } },
-                        { $project: { embedding: 0, content: 0 } } // Optimization
+                        { $project: { embedding: 0, content: 0 } }
                     ]);
                 }
             }
@@ -376,7 +376,10 @@ class ArticleService {
         if (recommendations.length === 0) {
             recommendations = await Article.find({ analysisVersion: { $ne: 'pending' } })
                 .select('-content -embedding')
-                .sort({ publishedAt: -1 }).limit(15).lean();
+                .sort({ publishedAt: -1 })
+                .limit(15)
+                .lean()
+                .read('secondaryPreferred');
             metaReason = "Trending (No Data)";
         }
 
@@ -393,14 +396,15 @@ class ArticleService {
 
   // --- 6. Saved Articles ---
   async getSavedArticles(userId: string) {
-    const profile = await Profile.findOne({ userId }).select('savedArticles');
+    const profile = await Profile.findOne({ userId }).select('savedArticles').lean();
     if (!profile || !profile.savedArticles.length) return [];
     
     // Optimized: Only fetch what's needed for the list
     const articles = await Article.find({ _id: { $in: profile.savedArticles } })
         .select('-content -embedding')
         .sort({ publishedAt: -1 })
-        .lean();
+        .lean()
+        .read('secondaryPreferred'); // Replica Safe
         
     return articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
   }
