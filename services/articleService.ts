@@ -8,12 +8,12 @@ import redis from '../utils/redisClient';
 import logger from '../utils/logger';
 import { CONSTANTS } from '../utils/constants';
 import aiService from './aiService'; 
-import { FeedFilters, IArticle, INarrative } from '../types';
+import { FeedFilters } from '../types';
+import { buildArticleQuery, buildNarrativeQuery } from '../utils/feedUtils';
 
 // Helper: Optimize Image URLs for bandwidth
 const optimizeImageUrl = (url?: string) => {
     if (!url) return undefined;
-    // Safety check for valid URL structure before replacement
     if (url.includes('cloudinary.com') && !url.includes('f_auto')) {
         return url.replace('/upload/', '/upload/f_auto,q_auto,w_800/');
     }
@@ -40,7 +40,7 @@ class ArticleService {
                 { $match: { count: { $gte: 3 } } },
                 { $sort: { count: -1 } },
                 { $limit: 10 }
-            ]).read('secondaryPreferred'); // SCALING: Use Read Replica
+            ]).read('secondaryPreferred'); 
 
             return results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
         }, 
@@ -60,7 +60,6 @@ class ArticleService {
         let searchMethod = 'Text';
 
         try {
-            // A. Try Semantic Search First (AI Powered)
             const queryEmbedding = await aiService.createEmbedding(safeQuery);
             
             if (queryEmbedding && queryEmbedding.length > 0) {
@@ -86,8 +85,6 @@ class ArticleService {
                         }
                     }
                 ];
-                
-                // Note: Aggregations with $vectorSearch often require primary read or specific index support
                 articles = await Article.aggregate(pipeline);
                 searchMethod = 'Vector';
             }
@@ -95,69 +92,36 @@ class ArticleService {
             logger.warn(`Semantic Search Failed (Fallback to Text): ${err}`);
         }
 
-        // B. Fallback to Text Search
         if (!articles.length) {
             const rawArticles = await Article.smartSearch(safeQuery, limit * 2);
             articles = rawArticles.filter((a: any) => a.analysisVersion !== 'pending').slice(0, limit);
         }
 
-        // Post-process images
         articles = articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
-
         logger.info(`🔍 Search: "${safeQuery}" | Method: ${searchMethod} | Results: ${articles.length}`);
         return { articles, total: articles.length };
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Main Feed (Optimized & Stale-While-Revalidate) ---
+  // --- 3. Main Feed (Refactored & Modularized) ---
   async getMainFeed(filters: FeedFilters) {
-    const { category, lean, region, articleType, quality, sort, limit = 20, offset = 0 } = filters;
+    const { sort, limit = 20, offset = 0 } = filters;
     const isFirstPage = Number(offset) === 0;
 
-    // Encapsulate the expensive fetching logic
     const fetchFeedData = async () => {
-        // A. Build Query
-        const query: any = {
-            analysisVersion: { $ne: 'pending' }
-        };
-        
-        if (category && category !== 'All Categories' && category !== 'All' && category !== 'undefined') {
-            query.category = category;
-        }
-        if (lean && lean !== 'All Leans' && lean !== 'undefined') query.politicalLean = lean;
-        if (region === 'India') query.country = 'India';
-        else if (region === 'Global') query.country = { $ne: 'India' };
-        if (articleType === 'Hard News') query.analysisType = 'Full';
-        else if (articleType === 'Opinion & Reviews') query.analysisType = 'SentimentOnly';
-
-        if (quality && quality !== 'All Quality Levels') {
-            const gradeMap: Record<string, string[]> = {
-                'A+ Excellent (90-100)': ['A+'],
-                'A High (80-89)': ['A', 'A-'],
-                'B Professional (70-79)': ['B+', 'B', 'B-'],
-                'C Acceptable (60-69)': ['C+', 'C', 'C-'],
-                'D-F Poor (0-59)': ['D+', 'D', 'D-', 'F', 'D-F']
-            };
-            const grades = gradeMap[quality];
-            if (grades) query.credibilityGrade = { $in: grades };
-        }
+        // A. Build Queries (Using Utils)
+        const query = buildArticleQuery(filters);
+        const narrativeQuery = buildNarrativeQuery(filters);
 
         // B. Fetch Narratives
-        const narrativeQuery: any = {};
-        if (category && category !== 'All Categories' && category !== 'All' && category !== 'undefined') {
-            narrativeQuery.category = category;
-        }
-        if (region === 'India') narrativeQuery.country = 'India';
-        narrativeQuery.lastUpdated = { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) };
-
         const narratives = await Narrative.find(narrativeQuery)
-                                          .select('-articles -vector') // Projection
+                                          .select('-articles -vector') 
                                           .sort({ lastUpdated: -1 })
                                           .limit(5)
                                           .lean()
-                                          .read('secondaryPreferred'); // SCALING: Offload to Replica
+                                          .read('secondaryPreferred'); 
 
-        // C. Smart Dedup
+        // C. Smart Dedup (Filter out articles belonging to fetched narratives)
         const narrativeClusterIds = narratives.map(n => n.clusterId);
         if (narrativeClusterIds.length > 0) {
             query.clusterId = { $nin: narrativeClusterIds };
@@ -169,14 +133,14 @@ class ArticleService {
         else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
         else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
 
-        // E. Fetch Articles with Projection
+        // E. Fetch Articles
         const articles = await Article.find(query)
-            .select('-content -embedding -keyFindings -recommendations') // OPTIMIZATION: Exclude heavy fields
+            .select('-content -embedding -keyFindings -recommendations')
             .sort(sortOptions)
             .skip(Number(offset))
             .limit(Number(limit))
             .lean()
-            .read('secondaryPreferred'); // SCALING: Offload to Replica
+            .read('secondaryPreferred'); 
 
         // F. Combine
         const feedItems = [
@@ -200,18 +164,12 @@ class ArticleService {
 
     // Stale-While-Revalidate Pattern for First Page
     if (isFirstPage) {
-        const CACHE_KEY = `feed_v3:${category || 'all'}:${lean || 'all'}:${region || 'all'}:${sort || 'latest'}:${limit}`;
+        // Construct a unique cache key based on filters
+        const CACHE_KEY = `feed_v3:${JSON.stringify(filters)}`;
         
-        // 1. Try to get data
         const cachedData = await redis.get(CACHE_KEY);
-        
-        if (cachedData) {
-            // Return immediately.
-            // Future Optimization: Trigger background refresh here if nearing TTL.
-            return cachedData; 
-        }
+        if (cachedData) return cachedData;
 
-        // 4. Cache Miss - Fetch and Cache
         const freshData = await fetchFeedData();
         await redis.set(CACHE_KEY, freshData, CONSTANTS.CACHE.TTL_FEED);
         return freshData;
@@ -220,7 +178,7 @@ class ArticleService {
     }
   }
 
-  // --- 4. For You Feed (Optimized) ---
+  // --- 4. For You Feed ---
   async getForYouFeed(userId: string | undefined) {
     if (!userId) {
         const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
@@ -299,7 +257,7 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 5. Personalized Feed (Optimized) ---
+  // --- 5. Personalized "My Mix" Feed ---
   async getPersonalizedFeed(userId: string) {
     const CACHE_KEY = `my_mix_v2:${userId}`;
     
@@ -399,12 +357,11 @@ class ArticleService {
     const profile = await Profile.findOne({ userId }).select('savedArticles').lean();
     if (!profile || !profile.savedArticles.length) return [];
     
-    // Optimized: Only fetch what's needed for the list
     const articles = await Article.find({ _id: { $in: profile.savedArticles } })
         .select('-content -embedding')
         .sort({ publishedAt: -1 })
         .lean()
-        .read('secondaryPreferred'); // Replica Safe
+        .read('secondaryPreferred'); 
         
     return articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
   }
