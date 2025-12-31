@@ -8,22 +8,28 @@ import redisClient from '../utils/redisClient';
 
 // --- 1. Smart Trending Topics ---
 export const getTrendingTopics = asyncHandler(async (req: Request, res: Response) => {
+    // Validate
     schemas.trending.parse({ query: req.query });
 
     const CACHE_KEY = 'trending:topics';
     
+    // REFACTOR: Use centralized getOrFetch logic
+    // Automatically handles: Cache Hit -> Return, Cache Miss -> Fetch -> Cache -> Return
+    // Also handles anti-stampede (multiple users hitting same endpoint simultaneously)
     const topics = await redisClient.getOrFetch(
         CACHE_KEY, 
         async () => await articleService.getTrendingTopics(), 
-        600 
+        600 // 10 minutes
     );
 
+    // Cache-Control Header for Browser/CDN
     res.set('Cache-Control', 'public, max-age=300'); 
     res.status(200).json({ topics });
 });
 
 // --- 2. Intelligent Search ---
 export const searchArticles = asyncHandler(async (req: Request, res: Response) => {
+    // Strict Validation
     const { query } = schemas.search.parse({ query: req.query });
     
     const searchTerm = query.q || '';
@@ -38,23 +44,50 @@ export const searchArticles = asyncHandler(async (req: Request, res: Response) =
 export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     let queryParams: any = {};
     
+    // STRICT VALIDATION
     try {
         const parsed = schemas.feedFilters.parse({ query: req.query });
         queryParams = parsed.query;
     } catch (e) {
         console.warn("⚠️ Feed Validation Failed. Using Defaults.");
-        queryParams = { limit: 20, offset: 0, category: 'All Categories' };
+        queryParams = {
+            limit: 20,
+            offset: 0,
+            category: 'All Categories'
+        };
     }
 
+    // Ensure numeric types for pagination
     if (queryParams.limit) queryParams.limit = Number(queryParams.limit) || 20;
     if (queryParams.offset) queryParams.offset = Number(queryParams.offset) || 0;
 
-    const result = await articleService.getMainFeed(queryParams);
+    // CACHE LOGIC for Default Feed (Page 0 only)
+    // FIX: Added limit check AND 'All' category check
+    const isDefaultPage = queryParams.offset === 0 && 
+                          queryParams.limit === 20 && 
+                          (queryParams.category === 'All Categories' || queryParams.category === 'All') && 
+                          (!queryParams.lean || queryParams.lean === 'All Leans');
     
-    // UI/UX IMPROVEMENT:
-    // Added 'stale-while-revalidate=60'. 
-    // This serves slightly old content INSTANTLY while updating in the background.
-    res.set('Cache-Control', 'public, max-age=300, stale-while-revalidate=60');
+    const CACHE_KEY = 'feed:default:page0';
+
+    let result;
+
+    if (isDefaultPage) {
+        // REFACTOR: Use getOrFetch only for the default page
+        result = await redisClient.getOrFetch(
+            CACHE_KEY,
+            async () => await articleService.getMainFeed(queryParams),
+            300 // 5 minutes
+        );
+        // Add Hit/Miss header if needed, though getOrFetch abstracts the "Hit" logic away.
+        // We assume freshness here.
+    } else {
+        // Dynamic filters (not cached)
+        result = await articleService.getMainFeed(queryParams);
+    }
+    
+    // Set headers for Browser Caching
+    res.set('Cache-Control', 'public, max-age=300');
     res.status(200).json(result);
 });
 
@@ -70,7 +103,10 @@ export const getForYouFeed = asyncHandler(async (req: Request, res: Response) =>
         const result = await articleService.getForYouFeed(userId);
         res.status(200).json(result);
     } catch (error: any) {
+        // Log specifically for monitoring
         console.error(`[PERSONALIZATION_FAILURE] User: ${userId} - ${error.message}`);
+        
+        // Fallback to avoid crushing the app
         res.status(200).json({ 
             articles: [], 
             meta: { basedOnCategory: 'General', usualLean: 'Neutral' } 
@@ -91,6 +127,7 @@ export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Respon
         res.status(200).json(result);
     } catch (error: any) {
          console.error(`[PERSONALIZATION_FAILURE] User: ${userId} - ${error.message}`);
+         // Graceful fallback
          res.status(200).json({ articles: [], meta: { topCategories: [] } });
     }
 });
@@ -106,6 +143,7 @@ export const getSavedArticles = asyncHandler(async (req: Request, res: Response)
 
 // --- 7. Toggle Save ---
 export const toggleSaveArticle = asyncHandler(async (req: Request, res: Response) => {
+    // Validate ID format
     const { params } = schemas.saveArticle.parse({ params: req.params });
     const userId = req.user?.uid;
     if (!userId) throw new AppError('User not authenticated', 401);
