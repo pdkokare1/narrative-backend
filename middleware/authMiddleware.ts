@@ -5,11 +5,11 @@ import logger from '../utils/logger';
 import config from '../utils/config';
 import { CONSTANTS } from '../utils/constants';
 import AppError from '../utils/AppError';
+import { IUserRole } from '../types';
 
 // --- App Check (Security Gate) ---
 // Enforces that requests come from YOUR specific frontend app.
 export const checkAppCheck = async (req: Request, res: Response, next: NextFunction) => {
-  // If explicitly disabled in config (e.g. for testing), skip
   if (!config.enableAppCheck) return next();
 
   const appCheckToken = req.header('X-Firebase-AppCheck');
@@ -19,7 +19,6 @@ export const checkAppCheck = async (req: Request, res: Response, next: NextFunct
           logger.warn(`🛑 Blocked Request: Missing App Check Token [IP: ${req.ip}]`);
           return next(new AppError('Unauthorized: App Check Token Missing', 401, CONSTANTS.ERROR_CODES.AUTH_NO_APP_CHECK));
       } else {
-          // Dev Mode: Allow with warning
           logger.debug('⚠️ Missing App Check Token (Allowed in Dev)');
           return next();
       }
@@ -30,8 +29,6 @@ export const checkAppCheck = async (req: Request, res: Response, next: NextFunct
     next(); 
   } catch (err: any) {
     logger.warn(`🛑 App Check Validation Failed: ${err.message} [IP: ${req.ip}]`);
-    
-    // In production, this is a hard stop.
     if (config.isProduction) {
         return next(new AppError('Forbidden: Invalid App Check Token', 403, CONSTANTS.ERROR_CODES.AUTH_INVALID_TOKEN));
     }
@@ -53,7 +50,6 @@ export const checkAuth = async (req: Request, res: Response, next: NextFunction)
     next();
   } catch (error: any) {
     logger.warn(`Auth Error: ${error.code || 'Unknown'} - ${error.message}`);
-    
     if (error.code === 'auth/id-token-expired') {
          return next(new AppError('Unauthorized: Token Expired', 401, CONSTANTS.ERROR_CODES.AUTH_INVALID_TOKEN));
     }
@@ -77,33 +73,29 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
 };
 
 // --- Role Based Access Control (RBAC) ---
-// Universal middleware to check for ANY role
-export const requireRole = (role: string) => {
+// IMPROVED: Strictly checks Custom Claims. No DB calls.
+export const requireRole = (role: IUserRole) => {
     return async (req: Request, res: Response, next: NextFunction) => {
-        // 1. Ensure user is logged in first
+        // 1. Ensure user is logged in
         if (!req.user) {
             return next(new AppError('Unauthorized: Login required', 401, CONSTANTS.ERROR_CODES.AUTH_MISSING_TOKEN));
         }
 
-        // 2. Check hardcoded Super Admins (Always allowed)
+        // 2. Check hardcoded Super Admins (Emergency Access)
         if (config.adminUids.includes(req.user.uid)) {
             return next();
         }
 
-        // 3. Check Custom Claims (Recommended way for Firebase)
-        // Note: You need to set custom claims on the user object in Firebase
+        // 3. Check Custom Claims (Fastest, Secure)
+        // Ensure you set these claims in your Cloud Functions or Admin scripts
         if (req.user[role] === true || req.user.role === role) {
             return next();
         }
 
-        // 4. Fallback: Check Profile in DB (Slower, but easier to manage initially)
-        // We skip this for now to keep middleware fast. Use Custom Claims or AdminUIDs.
-
-        logger.warn(`🛑 Access Denied: User ${req.user.uid} needs role '${role}'`);
+        // 4. Deny
+        logger.warn(`🛑 Access Denied: User ${req.user.uid} attempted ${role} action without claims.`);
         return next(new AppError(`Forbidden: Requires ${role} privileges`, 403, CONSTANTS.ERROR_CODES.ACCESS_DENIED));
     };
 };
 
-// --- Admin Authentication (Legacy Wrapper) ---
-// Uses the new requireRole but keeps specific admin logic if needed
 export const checkAdmin = requireRole('admin');
