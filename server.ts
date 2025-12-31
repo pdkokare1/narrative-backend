@@ -13,7 +13,6 @@ import config from './utils/config';
 import logger from './utils/logger';
 import redisClient from './utils/redisClient'; 
 import dbLoader from './utils/dbLoader';
-import queueManager from './jobs/queueManager';
 import { registerShutdownHandler } from './utils/shutdownHandler';
 
 // Services & Middleware
@@ -27,7 +26,6 @@ import shareRoutes from './routes/shareRoutes';
 const app = express();
 
 // --- 1. Trust Proxy (Critical for Railway/Vercel) ---
-// Must be set BEFORE rate limiters or logging that relies on IPs
 app.set('trust proxy', config.trustProxyLevel);
 
 // --- 2. Request Logging ---
@@ -39,13 +37,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 // --- 3. Security Middleware ---
-// SECURITY: Hide Express signature
 app.disable('x-powered-by');
 
-// SECURITY: Strict Content Security Policy
 app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
-    contentSecurityPolicy: config.csp // Load strict CSP from config
+    contentSecurityPolicy: config.csp
 }));
 
 app.use(compression());
@@ -60,7 +56,8 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json({ limit: '200kb' }));
+// SECURITY: Reduced limit to prevent DoS (was 200kb)
+app.use(express.json({ limit: '10kb' }));
 
 // --- 5. System Routes ---
 app.get('/', (req: Request, res: Response) => { res.status(200).send('Narrative Backend Running'); });
@@ -111,7 +108,7 @@ app.use(errorHandler);
 // --- 10. Database & Server Start ---
 const startServer = async () => {
     try {
-        logger.info('🚀 Starting Server Initialization...');
+        logger.info('🚀 Starting API Server Initialization...');
 
         // 1. Connect to Infrastructure (DB & Redis)
         await dbLoader.connect();
@@ -121,16 +118,13 @@ const startServer = async () => {
         const HOST = '0.0.0.0'; 
 
         const server = app.listen(Number(PORT), HOST, () => {
-            logger.info(`✅ Server running on http://${HOST}:${PORT}`);
+            logger.info(`✅ Web Server running on http://${HOST}:${PORT}`);
         });
 
-        // 3. Initialize Queue (Only if needed by this instance)
-        // In a perfect microservices world, this would be in workerEntry.ts
-        // But for now, we keep it here to ensure jobs run on the main instance if no worker is present.
-        await queueManager.initialize();
-        logger.info('✨ Infrastructure Fully Initialized');
+        // Note: Worker/Queue initialization is now handled in workerEntry.ts
+        // This ensures Web and Worker roles can scale independently.
 
-        // 4. Register Graceful Shutdown
+        // 3. Register Graceful Shutdown
         registerShutdownHandler('API Server', [
             () => new Promise<void>((resolve, reject) => {
                 server.close((err) => {
@@ -141,7 +135,6 @@ const startServer = async () => {
                     }
                 });
             }),
-            async () => { await queueManager.shutdown(); },
             async () => { await dbLoader.disconnect(); }
         ]);
 
