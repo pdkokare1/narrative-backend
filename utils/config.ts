@@ -13,14 +13,10 @@ const envSchema = z.object({
   
   // Database & Cache
   MONGODB_URI: z.string().url(),
-  // Scaling: Optional separate URI for read operations (e.g. MongoDB Atlas Secondary)
   MONGODB_READ_URI: z.string().url().optional(),
-  
   MONGO_POOL_SIZE: z.string().transform(Number).default('10'),
   
-  // Redis - Primary (Cache/Rate Limits)
   REDIS_URL: z.string().optional(),
-  // Redis - Queue (Background Jobs) - Optional, falls back to REDIS_URL
   REDIS_QUEUE_URL: z.string().optional(),
 
   // Worker Configuration
@@ -36,15 +32,22 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().min(1),
   CLOUDINARY_API_SECRET: z.string().min(1),
 
-  // AI & News Keys
+  // AI & News Keys (Now supports JSON arrays in env vars)
   GEMINI_API_KEY: z.string().optional(),
+  GEMINI_KEYS: z.string().optional(), // JSON Array string
   
+  ELEVENLABS_API_KEY: z.string().optional(),
+  ELEVENLABS_KEYS: z.string().optional(), // JSON Array string
+  
+  GNEWS_API_KEY: z.string().optional(),
+  GNEWS_KEYS: z.string().optional(), // JSON Array string
+
   // AI Performance
   AI_CONCURRENCY: z.string().transform(Number).default('5'),
   
   // Security
   ADMIN_SECRET: z.string().min(32, "Admin secret must be at least 32 chars long"),
-  ADMIN_UIDS: z.string().optional(),
+  ADMIN_UIDS: z.string().optional(), // JSON Array or Comma Separated
   CORS_ORIGINS: z.string().default(''), 
   
   // Trust Proxy Configuration
@@ -53,7 +56,7 @@ const envSchema = z.object({
   // Feature Flags
   ENABLE_APP_CHECK: z.enum(['true', 'false']).default('true'),
   
-  // AI Model Configuration - STRICT 2.5 DEFAULTS
+  // AI Model Configuration
   AI_MODEL_EMBEDDING: z.string().default('text-embedding-004'),
   AI_MODEL_PRO: z.string().default('gemini-2.5-pro'),
   AI_MODEL_FAST: z.string().default('gemini-2.5-flash'),
@@ -81,31 +84,46 @@ const parseConfig = () => {
 
 const env = parseConfig();
 
-// Helper: Scan environment for API keys
+// Helper: Scan environment for API keys (Robust JSON support)
 const extractApiKeys = (prefix: string): string[] => {
     const keys: string[] = [];
     
-    // 1. Check for JSON list
+    // 1. Check for JSON list (e.g. GEMINI_KEYS=["key1", "key2"])
     const jsonKeys = process.env[`${prefix}_KEYS`];
     if (jsonKeys) {
         try {
             const parsed = JSON.parse(jsonKeys);
-            if (Array.isArray(parsed)) return parsed;
-        } catch(e) { /* ignore */ }
-    }
-
-    // 2. Check for Standard Single Key
-    const defaultKey = process.env[`${prefix}_API_KEY`]?.trim();
-    if (defaultKey) keys.push(defaultKey);
-
-    // 3. Check for Numbered Keys (1-20)
-    for (let i = 1; i <= 20; i++) {
-        const key = process.env[`${prefix}_API_KEY_${i}`]?.trim();
-        if (key && !keys.includes(key)) {
-            keys.push(key);
+            if (Array.isArray(parsed)) {
+                parsed.forEach(k => { if(typeof k === 'string' && k.trim()) keys.push(k.trim()); });
+            }
+        } catch(e) { 
+            logger.warn(`⚠️ Could not parse ${prefix}_KEYS as JSON. Checking single key.`);
         }
     }
+
+    // 2. Check for Standard Single Key if list is empty
+    if (keys.length === 0) {
+        const defaultKey = process.env[`${prefix}_API_KEY`]?.trim();
+        if (defaultKey) keys.push(defaultKey);
+    }
+
     return keys;
+};
+
+// Helper: Parse Admin UIDs safely
+const getAdminUids = (): string[] => {
+    if (!env.ADMIN_UIDS) return [];
+    try {
+        // Try JSON first
+        if (env.ADMIN_UIDS.startsWith('[')) {
+            return JSON.parse(env.ADMIN_UIDS);
+        }
+        // Fallback to comma-separated
+        return env.ADMIN_UIDS.split(',').map(s => s.trim()).filter(Boolean);
+    } catch (e) {
+        logger.error('❌ Failed to parse ADMIN_UIDS');
+        return [];
+    }
 };
 
 // Helper to parse Firebase Config safely
@@ -181,7 +199,7 @@ const getBullMQConfig = () => {
 const config = {
   port: env.PORT,
   mongoUri: env.MONGODB_URI,
-  mongoReadUri: env.MONGODB_READ_URI || env.MONGODB_URI, // Fallback to primary if no read replica
+  mongoReadUri: env.MONGODB_READ_URI || env.MONGODB_URI,
   mongoPoolSize: env.MONGO_POOL_SIZE,
   redisUrl: env.REDIS_URL,
   redisOptions: getRedisConfig(),
@@ -189,14 +207,10 @@ const config = {
   frontendUrl: env.FRONTEND_URL,
   isProduction: env.NODE_ENV === 'production',
   adminSecret: env.ADMIN_SECRET,
-  adminUids: [
-    ...(env.ADMIN_UIDS ? env.ADMIN_UIDS.split(',').map(id => id.trim()) : []),
-    'z5uKireLhcffRWvocrrYMZaLbZw1'
-  ],
+  adminUids: getAdminUids(), // Dynamic loading
   corsOrigins: getCorsOrigins(),
   trustProxyLevel: env.TRUST_PROXY_LVL, 
   
-  // Feature Flags
   enableAppCheck: env.ENABLE_APP_CHECK === 'true',
 
   worker: {
@@ -235,7 +249,6 @@ const config = {
     serviceAccount: getFirebaseConfig(),
   },
   
-  // Content Security Policy
   csp: {
       directives: {
           defaultSrc: ["'self'"],
