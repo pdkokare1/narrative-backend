@@ -61,7 +61,8 @@ const createRedisLimiter = (maxRequests: number, windowMs: number, type: string)
             },
             skipFailedRequests: true,
             handler: (req: Request, res: Response, next: NextFunction, options) => {
-                logger.warn(`Rate Limit Exceeded (${type}): ${keyGenerator(req)}`);
+                // CHANGED: Use debug level to prevent log flooding during attacks/spikes
+                logger.debug(`Rate Limit Exceeded (${type}): ${keyGenerator(req)}`);
                 res.status(options.statusCode).send(options.message);
             },
         });
