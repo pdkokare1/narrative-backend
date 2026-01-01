@@ -106,6 +106,13 @@ const extractApiKeys = (prefix: string): string[] => {
         const defaultKey = process.env[`${prefix}_API_KEY`]?.trim();
         if (defaultKey) keys.push(defaultKey);
     }
+    
+    // Logging for debugging (masked)
+    if (keys.length > 0) {
+        logger.info(`✅ Loaded ${keys.length} keys for ${prefix}`);
+    } else {
+        logger.warn(`⚠️ No keys found for ${prefix}. Services may fail.`);
+    }
 
     return keys;
 };
