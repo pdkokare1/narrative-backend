@@ -38,15 +38,15 @@ export const fetchWeather = async (lat: number, lon: number): Promise<WeatherDat
                 count: 1, 
                 language: 'en'
             },
-            timeout: 3000 // Shorter timeout for name lookup
+            timeout: 4000 // Increased timeout slightly
         });
 
         if (locationResponse.data.results && locationResponse.data.results.length > 0) {
             cityName = locationResponse.data.results[0].name || locationResponse.data.results[0].admin1 || "Local Weather";
         }
     } catch (geoError) {
-        // Silently fail on city name, just log it as a warning
-        logger.warn('⚠️ Weather Geo-lookup failed, using default name.');
+        // Silently fail on city name (Debug level to avoid log spam)
+        logger.debug('⚠️ Weather Geo-lookup failed, using default name.');
     }
 
     return {
