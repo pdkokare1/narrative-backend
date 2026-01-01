@@ -32,15 +32,17 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().min(1),
   CLOUDINARY_API_SECRET: z.string().min(1),
 
-  // AI & News Keys (Now supports JSON arrays in env vars)
+  // AI & News Keys
+  // Note: We use a helper to extract these, so we mark them optional here
+  // to prevent Zod from failing if the user uses _1, _2 variants instead of the base one.
   GEMINI_API_KEY: z.string().optional(),
-  GEMINI_KEYS: z.string().optional(), // JSON Array string
+  GEMINI_KEYS: z.string().optional(),
   
   ELEVENLABS_API_KEY: z.string().optional(),
-  ELEVENLABS_KEYS: z.string().optional(), // JSON Array string
+  ELEVENLABS_KEYS: z.string().optional(),
   
   GNEWS_API_KEY: z.string().optional(),
-  GNEWS_KEYS: z.string().optional(), // JSON Array string
+  GNEWS_KEYS: z.string().optional(),
 
   // AI Performance
   AI_CONCURRENCY: z.string().transform(Number).default('5'),
@@ -84,7 +86,7 @@ const parseConfig = () => {
 
 const env = parseConfig();
 
-// Helper: Scan environment for API keys (Robust JSON support)
+// Helper: Scan environment for API keys (Supports JSON, Single, and Numbered _1, _2...)
 const extractApiKeys = (prefix: string): string[] => {
     const keys: string[] = [];
     
@@ -97,21 +99,31 @@ const extractApiKeys = (prefix: string): string[] => {
                 parsed.forEach(k => { if(typeof k === 'string' && k.trim()) keys.push(k.trim()); });
             }
         } catch(e) { 
-            logger.warn(`⚠️ Could not parse ${prefix}_KEYS as JSON. Checking single key.`);
+            logger.warn(`⚠️ Could not parse ${prefix}_KEYS as JSON. Checking other formats.`);
         }
     }
 
-    // 2. Check for Standard Single Key if list is empty
-    if (keys.length === 0) {
-        const defaultKey = process.env[`${prefix}_API_KEY`]?.trim();
-        if (defaultKey) keys.push(defaultKey);
+    // 2. Check for Numbered Keys (e.g. GEMINI_API_KEY_1, GEMINI_API_KEY_2...)
+    // We scan 1 through 20 to catch all your keys.
+    for (let i = 1; i <= 20; i++) {
+        const keyVal = process.env[`${prefix}_API_KEY_${i}`];
+        if (keyVal && keyVal.trim()) {
+            keys.push(keyVal.trim());
+        }
     }
-    
-    // Logging for debugging (masked)
+
+    // 3. Check for Standard Single Key (e.g. GEMINI_API_KEY)
+    // Only add if not already in the list to avoid duplicates
+    const defaultKey = process.env[`${prefix}_API_KEY`]?.trim();
+    if (defaultKey && !keys.includes(defaultKey)) {
+        keys.push(defaultKey);
+    }
+
+    // Log the result to help debug
     if (keys.length > 0) {
         logger.info(`✅ Loaded ${keys.length} keys for ${prefix}`);
     } else {
-        logger.warn(`⚠️ No keys found for ${prefix}. Services may fail.`);
+        logger.warn(`⚠️ No keys found for ${prefix}. Checked: ${prefix}_KEYS, ${prefix}_API_KEY_1..N, and ${prefix}_API_KEY`);
     }
 
     return keys;
