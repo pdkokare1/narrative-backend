@@ -29,11 +29,16 @@ export class GNewsProvider implements INewsProvider {
 
     constructor() {
         // Register keys specifically for this provider
-        // config.keys.gnews is an array of strings (e.g., [PaidKey, FreeKey1, FreeKey2...])
         KeyManager.registerProviderKeys('GNEWS', config.keys.gnews);
     }
 
     async fetchArticles(params: any): Promise<INewsSourceArticle[]> {
+        // FAIL FAST: If no keys are configured, do not attempt to fetch
+        if (!config.keys.gnews || config.keys.gnews.length === 0) {
+            logger.warn('❌ GNews Fetch Skipped: No API keys configured (GNEWS_API_KEY or GNEWS_KEYS).');
+            return [];
+        }
+
         return KeyManager.executeWithRetry<INewsSourceArticle[]>('GNEWS', async (apiKey) => {
             
             // ⚡ SMART OPTIMIZATION: Check if this is the Paid Essential Key (Key #1)
