@@ -222,13 +222,13 @@ class ClusteringService {
                                       .limit(10) // Analyze max 10 top articles
                                       .lean();
 
-        // 3. Threshold: Need at least 3 distinct sources to be worth synthesizing
-        if (articles.length < 3) return;
+        // 3. Threshold: Need MORE THAN 3 distinct sources (>= 4)
+        if (articles.length <= 3) return; // Count check
 
         const distinctSources = new Set(articles.map(a => a.source));
-        if (distinctSources.size < 2) return; // Need at least 2 viewpoints
+        if (distinctSources.size <= 3) return; // Strict source uniqueness check
 
-        logger.info(`🧠 Triggering Narrative Synthesis for Cluster ${clusterId} (${articles.length} articles)...`);
+        logger.info(`🧠 Triggering Narrative Synthesis for Cluster ${clusterId} (${articles.length} articles, ${distinctSources.size} sources)...`);
 
         // 4. Generate Narrative using Gemini 2.5 Pro
         // @ts-ignore
