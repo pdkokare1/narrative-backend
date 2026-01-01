@@ -13,10 +13,10 @@ router.post('/get-audio', validate(schemas.getAudio), asyncHandler(async (req: R
     const { text, voiceId, articleId, prefetch } = req.body;
 
     // 1. Check Database first (Cache Hit)
+    // We check this even for prefetch to avoid unnecessary API calls
     const article = await Article.findById(articleId);
     
     if (article && article.audioUrl) {
-        // If audio exists, return it immediately
         return res.status(200).json({ audioUrl: article.audioUrl, status: 'cached' });
     }
 
@@ -24,7 +24,7 @@ router.post('/get-audio', validate(schemas.getAudio), asyncHandler(async (req: R
 
     // 2. Handle Prefetch (Fire and Forget)
     if (prefetch) {
-        // Start generation in background, don't wait
+        // Start generation in background and DO NOT await it
         ttsService.generateAndUpload(text, targetVoiceId, articleId)
             .then(async (url) => {
                 if (article) {
@@ -35,12 +35,12 @@ router.post('/get-audio', validate(schemas.getAudio), asyncHandler(async (req: R
             })
             .catch(err => console.error(`❌ Prefetch Failed for ${articleId}:`, err.message));
 
-        // Return immediately
+        // Return immediately with 202 Accepted
         return res.status(202).json({ message: 'Audio generation started in background', status: 'processing' });
     }
 
     // 3. Normal Request (Wait for generation)
-    // If user clicked "Listen" and it wasn't ready, they wait here.
+    // If user clicked "Listen" and it wasn't ready, we must wait.
     try {
         const newAudioUrl = await ttsService.generateAndUpload(text, targetVoiceId, articleId);
         
