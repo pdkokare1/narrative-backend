@@ -284,6 +284,7 @@ class AIService {
     try {
         const BATCH_SIZE = 100;
         // FORCE SEQUENTIAL PROCESSING to avoid rate limits
+        // Changed from parallel to single-threaded processing for safety
         const CONCURRENCY_LIMIT = 1; 
         
         const allEmbeddings: number[][] = new Array(texts.length).fill([]);
@@ -297,7 +298,7 @@ class AIService {
              chunks.push(chunk);
         }
 
-        // Process chunks sequentially
+        // Process chunks sequentially to respect rate limits
         for (const chunk of chunks) {
             const requests = chunk.map(item => ({
                 model: `models/${EMBEDDING_MODEL}`,
