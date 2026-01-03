@@ -14,7 +14,7 @@ const cleanupQueue = new Queue('cleanup-queue', {
   connection: config.redis
 });
 
-// Simple memory lock to prevent local overlap
+// Simple memory lock to prevent local overlap (in case cron fires faster than execution)
 const jobLocks: Record<string, boolean> = {};
 
 /**
@@ -28,16 +28,20 @@ const cleanupGhostJobs = async () => {
         // List of old job IDs or names seen in logs that we want to kill
         const ghostKeys = ['cron-day', 'fetch-feed-day', 'fetch-feed-morning', 'fetch-feed-night'];
 
+        let cleanedCount = 0;
         for (const job of repeatableJobs) {
-            // Check if the job name/key matches our ghost list OR if it doesn't match our new naming convention
+            // Check if the job name/key matches our ghost list
+            // We look for partial matches because keys often contain timestamps/IDs
             const isGhost = ghostKeys.some(key => job.key.includes(key) || job.name === key);
             
-            // Also clean up any job that runs at the "old" times (like :00 flat) if necessary
-            // For safety, we primarily target by name/key found in logs.
             if (isGhost) {
                 logger.warn(`👻 Removing Ghost Job from Redis: ${job.name} (Key: ${job.key})`);
                 await newsQueue.removeRepeatableByKey(job.key);
+                cleanedCount++;
             }
+        }
+        if (cleanedCount > 0) {
+            logger.info(`🧹 Cleaned up ${cleanedCount} ghost jobs.`);
         }
     } catch (error) {
         logger.error('⚠️ Failed to cleanup ghost jobs:', error);
@@ -66,7 +70,7 @@ const safeSchedule = (name: string, cronExpression: string, task: () => Promise<
 export const initScheduler = async () => {
   logger.info('⏰ Scheduler initializing...');
 
-  // 1. CLEANUP FIRST
+  // 1. CLEANUP FIRST: Kill the ghost jobs causing the crash
   await cleanupGhostJobs();
 
   // 2. High Frequency: Update Trending Topics
