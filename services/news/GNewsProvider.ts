@@ -67,12 +67,30 @@ export class GNewsProvider implements INewsProvider {
             } catch (error: any) {
                 // EXPLICIT DEBUGGING for GNews Errors
                 const status = error.response?.status;
+                let errorMessage = error.message || 'Unknown GNews Error';
+
+                // Try to extract detailed GNews error message
+                if (error.response?.data?.errors) {
+                    const gnewsErrors = error.response.data.errors;
+                    if (Array.isArray(gnewsErrors)) {
+                        errorMessage = gnewsErrors.join(', ');
+                    } else if (typeof gnewsErrors === 'object') {
+                         errorMessage = JSON.stringify(gnewsErrors);
+                    } else {
+                        errorMessage = String(gnewsErrors);
+                    }
+                }
+
                 if (status === 401 || status === 403) {
-                    logger.error(`❌ GNews Auth Failed (${status}). Check API Key.`);
+                    logger.error(`❌ GNews Auth Failed (${status}): ${errorMessage}`);
                 } else if (status === 429) {
                     logger.warn(`⏳ GNews Rate Limited (429). Key: ...${apiKey.slice(-4)}`);
+                } else {
+                    logger.error(`❌ GNews Fetch Failed (${status || 'Local'}): ${errorMessage}`);
                 }
-                throw error;
+
+                // Throw a new error with the detailed message so KeyManager logs it
+                throw new Error(`[GNews ${status || 'NET'}] ${errorMessage}`);
             }
         });
     }
