@@ -1,66 +1,77 @@
 // jobs/scheduler.ts
+import cron from 'node-cron';
 import logger from '../utils/logger';
-import queueManager from './queueManager';
+import { Queue } from 'bullmq';
+import config from '../utils/config';
+import { CONSTANTS } from '../utils/constants';
 
-/**
- * Distributed Scheduler (Redis + BullMQ)
- * Ensures jobs run exactly once across all server instances.
- */
-export const startScheduler = async () => {
-  logger.info('⏰ Initializing Distributed Smart Scheduler...');
+// Define queues
+const newsQueue = new Queue('news-queue', {
+  connection: config.redis
+});
 
-  // --- 0. NUCLEAR CLEANUP: Remove Specific Zombie Jobs ---
-  // We explicitly list old job names that might be stuck in Redis
-  const ZOMBIE_JOBS = ['fetch-feed', 'cron-day', 'cron-night', 'scheduled-news-fetch'];
+const cleanupQueue = new Queue('cleanup-queue', {
+  connection: config.redis
+});
 
-  try {
-      const queue = (queueManager as any).queues?.[(queueManager as any).NEWS_QUEUE_NAME];
-      if (queue) {
-          const existingJobs = await queue.getRepeatableJobs();
-          
-          for (const job of existingJobs) {
-              // 1. Remove if it's in our Zombie list
-              // 2. Remove if it's a duplicate of our current jobs (cleanup overlapping schedules)
-              if (ZOMBIE_JOBS.includes(job.name)) {
-                  logger.info(`🔥 NUKING Zombie Job: ${job.name} (Key: ${job.key})`);
-                  await queue.removeRepeatableByKey(job.key);
-              }
-          }
-      }
-  } catch (e: any) {
-      logger.warn(`⚠️ Cleanup Warning: ${e.message}`);
-  }
+// Simple memory lock to prevent local overlap (in case cron fires faster than execution)
+const jobLocks: Record<string, boolean> = {};
 
-  // --- 1. Day Mode: High Frequency (6:00 AM - 11:59 PM) ---
-  // Runs every 30 minutes
-  await queueManager.scheduleRepeatableJob(
-    'fetch-feed-day', 
-    '*/30 6-23 * * *', 
-    { type: 'auto-fetch', source: 'scheduler-day' }
-  );
+const safeSchedule = (name: string, cronExpression: string, task: () => Promise<void>) => {
+    cron.schedule(cronExpression, async () => {
+        if (jobLocks[name]) {
+            logger.warn(`⚠️ Skipping ${name}: Previous run still active.`);
+            return;
+        }
+        
+        jobLocks[name] = true;
+        try {
+            logger.info(`⏰ Cron Trigger: ${name}`);
+            await task();
+        } catch (err: any) {
+            logger.error(`❌ Cron ${name} Failed: ${err.message}`);
+        } finally {
+            jobLocks[name] = false;
+        }
+    });
+};
 
-  // --- 2. Night Mode: Low Frequency (12:00 AM - 5:59 AM) ---
-  // Runs every 2 hours
-  await queueManager.scheduleRepeatableJob(
-    'fetch-feed-night',
-    '0 0-5/2 * * *',
-    { type: 'auto-fetch', source: 'scheduler-night' }
-  );
+export const initScheduler = () => {
+  logger.info('⏰ Scheduler initialized...');
 
-  // --- 3. Trending Topics Update (Every 2 Hours) ---
-  await queueManager.scheduleRepeatableJob(
-    'update-trending',
-    '30 */2 * * *',
-    { type: 'stats-update' }
-  );
+  // 1. High Frequency: Update Trending Topics (Every 30 mins at :00 and :30)
+  // Keeps the dashboard fresh without heavy article fetching.
+  safeSchedule('update-trending', '0,30 * * * *', async () => {
+      await newsQueue.add('update-trending', {}, {
+          removeOnComplete: true,
+          removeOnFail: 100
+      });
+  });
 
-  // --- 4. Startup Check ---
-  setTimeout(() => {
-    logger.info('🚀 Startup: Triggering initial News Fetch check...');
-    queueManager.addFetchJob(
-        'fetch-feed-day', 
-        { reason: 'startup' }, 
-        'startup-init' 
-    );
-  }, 5000);
+  // 2. Medium Frequency: Main Feed Fetch (Every 2 hours at :15 past the hour)
+  // OFFSET by 15 mins to avoid conflict with trending updates.
+  safeSchedule('fetch-feed', '15 */2 * * *', async () => {
+      await newsQueue.add('fetch-feed', {}, {
+          removeOnComplete: true,
+          removeOnFail: 100
+      });
+  });
+
+  // 3. Low Frequency: Morning/Night Briefings (Specific Times)
+  // Running at :05 to avoid the top-of-the-hour rush.
+  safeSchedule('fetch-feed-morning', '5 8 * * *', async () => { // 8:05 AM
+      await newsQueue.add('fetch-feed-morning', {}, { removeOnComplete: true });
+  });
+
+  safeSchedule('fetch-feed-night', '5 20 * * *', async () => { // 8:05 PM
+      await newsQueue.add('fetch-feed-night', {}, { removeOnComplete: true });
+  });
+
+  // 4. Daily Maintenance: Cleanup (Midnight :45)
+  // Way off-peak to ensure resources are free.
+  safeSchedule('daily-cleanup', '45 0 * * *', async () => {
+      await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
+  });
+
+  logger.info('✅ Schedules registered: Trending(:00,:30), Feed(:15 bi-hourly), Briefings(8:05, 20:05)');
 };
