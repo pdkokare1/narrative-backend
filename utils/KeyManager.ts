@@ -182,7 +182,11 @@ class KeyManager {
             }
         }
         
-        throw new Error(`Failed to execute ${provider} operation after ${MAX_ATTEMPTS} attempts. Last error: ${errors.pop()?.message}`);
+        // Improve error logging: Extract the message from the last error
+        const lastError = errors[errors.length - 1];
+        const lastErrorMessage = lastError instanceof Error ? lastError.message : JSON.stringify(lastError);
+
+        throw new Error(`Failed to execute ${provider} operation after ${MAX_ATTEMPTS} attempts. Last error: ${lastErrorMessage}`);
     }
 }
 
