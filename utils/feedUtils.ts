@@ -66,8 +66,8 @@ export const buildNarrativeQuery = (filters: FeedFilters) => {
         narrativeQuery.country = 'India';
     }
 
-    // Only show active narratives from the last 24 hours
-    narrativeQuery.lastUpdated = { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) };
+    // UPDATED: Extended window to 7 days to ensure narratives appear during dev/testing
+    narrativeQuery.lastUpdated = { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) };
 
     return narrativeQuery;
 };
