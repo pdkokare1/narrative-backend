@@ -7,11 +7,11 @@ import { CONSTANTS } from '../utils/constants';
 
 // Define queues
 const newsQueue = new Queue('news-queue', {
-  connection: config.redis
+  connection: config.bullMQConnection
 });
 
 const cleanupQueue = new Queue('cleanup-queue', {
-  connection: config.redis
+  connection: config.bullMQConnection
 });
 
 // Simple memory lock to prevent local overlap (in case cron fires faster than execution)
@@ -67,7 +67,7 @@ const safeSchedule = (name: string, cronExpression: string, task: () => Promise<
     });
 };
 
-export const initScheduler = async () => {
+export const startScheduler = async () => {
   logger.info('⏰ Scheduler initializing...');
 
   // 1. CLEANUP FIRST: Kill the ghost jobs causing the crash
