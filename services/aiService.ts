@@ -283,7 +283,8 @@ class AIService {
 
     try {
         const BATCH_SIZE = 100;
-        const CONCURRENCY_LIMIT = config.ai.concurrency || 5; 
+        // FORCE SEQUENTIAL PROCESSING to avoid rate limits
+        const CONCURRENCY_LIMIT = 1; 
         
         const allEmbeddings: number[][] = new Array(texts.length).fill([]);
         const chunks: { text: string; index: number }[][] = [];
@@ -296,33 +297,35 @@ class AIService {
              chunks.push(chunk);
         }
 
-        for (let i = 0; i < chunks.length; i += CONCURRENCY_LIMIT) {
-            const parallelBatch = chunks.slice(i, i + CONCURRENCY_LIMIT);
-            
-            await Promise.all(parallelBatch.map(async (chunk) => {
-                const requests = chunk.map(item => ({
-                    model: `models/${EMBEDDING_MODEL}`,
-                    content: { parts: [{ text: item.text }] }
-                }));
-
-                try {
-                    // Wrap EACH batch request in retry logic!
-                    await KeyManager.executeWithRetry('GEMINI', async (apiKey) => {
-                        const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
-                        const response = await apiClient.post<{ embeddings?: { values: number[] }[] }>(url, { requests }, { timeout: 45000 });
-                        
-                        if (response.data.embeddings) {
-                            response.data.embeddings.forEach((emb, localIdx) => {
-                                const originalIndex = chunk[localIdx].index;
-                                allEmbeddings[originalIndex] = emb.values;
-                            });
-                        }
-                        return response.data;
-                    });
-                } catch (err: any) {
-                    logger.warn(`Partial Batch Failure: ${err.message}`);
-                }
+        // Process chunks sequentially
+        for (const chunk of chunks) {
+            const requests = chunk.map(item => ({
+                model: `models/${EMBEDDING_MODEL}`,
+                content: { parts: [{ text: item.text }] }
             }));
+
+            try {
+                // Wrap EACH batch request in retry logic!
+                await KeyManager.executeWithRetry('GEMINI', async (apiKey) => {
+                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_MODEL}:batchEmbedContents?key=${apiKey}`;
+                    const response = await apiClient.post<{ embeddings?: { values: number[] }[] }>(url, { requests }, { timeout: 45000 });
+                    
+                    if (response.data.embeddings) {
+                        response.data.embeddings.forEach((emb, localIdx) => {
+                            const originalIndex = chunk[localIdx].index;
+                            allEmbeddings[originalIndex] = emb.values;
+                        });
+                    }
+                    return response.data;
+                });
+
+                // Add delay between batches to respect rate limits
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+            } catch (err: any) {
+                logger.warn(`Partial Batch Failure: ${err.message}`);
+                // Continue to next chunk even if this one failed
+            }
         }
 
         await CircuitBreaker.recordSuccess('GEMINI');
