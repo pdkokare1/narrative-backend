@@ -222,11 +222,12 @@ class ClusteringService {
                                       .limit(10) // Analyze max 10 top articles
                                       .lean();
 
-        // 3. Threshold: Need MORE THAN 3 distinct sources (>= 4)
-        if (articles.length <= 3) return; // Count check
+        // 3. Threshold: Need 3 or more distinct sources to form a narrative
+        // UPDATED: Changed from <= 3 (requiring 4) to < 3 (requiring 3)
+        if (articles.length < 3) return; // Count check
 
         const distinctSources = new Set(articles.map(a => a.source));
-        if (distinctSources.size <= 3) return; // Strict source uniqueness check
+        if (distinctSources.size < 3) return; // Strict source uniqueness check
 
         logger.info(`🧠 Triggering Narrative Synthesis for Cluster ${clusterId} (${articles.length} articles, ${distinctSources.size} sources)...`);
 
