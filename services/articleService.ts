@@ -111,6 +111,11 @@ class ArticleService {
     const fetchFeedData = async () => {
         // A. Build Queries (Using Utils)
         const query = buildArticleQuery(filters);
+        
+        // CRITICAL FIX: Filter out pending analysis to prevent incomplete data
+        // This query object is a mongoose filter, so we can extend it directly.
+        (query as any).analysisVersion = { $ne: 'pending' };
+
         const narrativeQuery = buildNarrativeQuery(filters);
 
         // B. Fetch Narratives
@@ -124,7 +129,7 @@ class ArticleService {
         // C. Smart Dedup (Filter out articles belonging to fetched narratives)
         const narrativeClusterIds = narratives.map(n => n.clusterId);
         if (narrativeClusterIds.length > 0) {
-            query.clusterId = { $nin: narrativeClusterIds };
+            (query as any).clusterId = { $nin: narrativeClusterIds };
         }
 
         // D. Sort Options
