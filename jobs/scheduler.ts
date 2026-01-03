@@ -14,8 +14,35 @@ const cleanupQueue = new Queue('cleanup-queue', {
   connection: config.redis
 });
 
-// Simple memory lock to prevent local overlap (in case cron fires faster than execution)
+// Simple memory lock to prevent local overlap
 const jobLocks: Record<string, boolean> = {};
+
+/**
+ * Removes old/stale repeatable jobs that might be lingering in Redis
+ * from previous deployments (e.g., 'cron-day', 'fetch-feed-day').
+ */
+const cleanupGhostJobs = async () => {
+    try {
+        const repeatableJobs = await newsQueue.getRepeatableJobs();
+        
+        // List of old job IDs or names seen in logs that we want to kill
+        const ghostKeys = ['cron-day', 'fetch-feed-day', 'fetch-feed-morning', 'fetch-feed-night'];
+
+        for (const job of repeatableJobs) {
+            // Check if the job name/key matches our ghost list OR if it doesn't match our new naming convention
+            const isGhost = ghostKeys.some(key => job.key.includes(key) || job.name === key);
+            
+            // Also clean up any job that runs at the "old" times (like :00 flat) if necessary
+            // For safety, we primarily target by name/key found in logs.
+            if (isGhost) {
+                logger.warn(`👻 Removing Ghost Job from Redis: ${job.name} (Key: ${job.key})`);
+                await newsQueue.removeRepeatableByKey(job.key);
+            }
+        }
+    } catch (error) {
+        logger.error('⚠️ Failed to cleanup ghost jobs:', error);
+    }
+};
 
 const safeSchedule = (name: string, cronExpression: string, task: () => Promise<void>) => {
     cron.schedule(cronExpression, async () => {
@@ -36,20 +63,24 @@ const safeSchedule = (name: string, cronExpression: string, task: () => Promise<
     });
 };
 
-export const initScheduler = () => {
-  logger.info('⏰ Scheduler initialized...');
+export const initScheduler = async () => {
+  logger.info('⏰ Scheduler initializing...');
 
-  // 1. High Frequency: Update Trending Topics (Every 30 mins at :00 and :30)
-  // Keeps the dashboard fresh without heavy article fetching.
-  safeSchedule('update-trending', '0,30 * * * *', async () => {
+  // 1. CLEANUP FIRST
+  await cleanupGhostJobs();
+
+  // 2. High Frequency: Update Trending Topics
+  // Changed from :00/:30 to :05/:35 to give breathing room after the hour
+  safeSchedule('update-trending', '5,35 * * * *', async () => {
       await newsQueue.add('update-trending', {}, {
           removeOnComplete: true,
           removeOnFail: 100
       });
   });
 
-  // 2. Medium Frequency: Main Feed Fetch (Every 2 hours at :15 past the hour)
-  // OFFSET by 15 mins to avoid conflict with trending updates.
+  // 3. Medium Frequency: Main Feed Fetch
+  // Runs at :15 past the hour (every 2 hours)
+  // No overlap with trending (which is at :05 and :35)
   safeSchedule('fetch-feed', '15 */2 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, {
           removeOnComplete: true,
@@ -57,21 +88,21 @@ export const initScheduler = () => {
       });
   });
 
-  // 3. Low Frequency: Morning/Night Briefings (Specific Times)
-  // Running at :05 to avoid the top-of-the-hour rush.
-  safeSchedule('fetch-feed-morning', '5 8 * * *', async () => { // 8:05 AM
+  // 4. Low Frequency: Morning/Night Briefings
+  // Moved to :10 to avoid conflict with trending (:05) and feed (:15)
+  safeSchedule('fetch-briefing-morning', '10 8 * * *', async () => { // 8:10 AM
       await newsQueue.add('fetch-feed-morning', {}, { removeOnComplete: true });
   });
 
-  safeSchedule('fetch-feed-night', '5 20 * * *', async () => { // 8:05 PM
+  safeSchedule('fetch-briefing-night', '10 20 * * *', async () => { // 8:10 PM
       await newsQueue.add('fetch-feed-night', {}, { removeOnComplete: true });
   });
 
-  // 4. Daily Maintenance: Cleanup (Midnight :45)
-  // Way off-peak to ensure resources are free.
+  // 5. Daily Maintenance: Cleanup
+  // Moved to :45 to be far away from everything else
   safeSchedule('daily-cleanup', '45 0 * * *', async () => {
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
   });
 
-  logger.info('✅ Schedules registered: Trending(:00,:30), Feed(:15 bi-hourly), Briefings(8:05, 20:05)');
+  logger.info('✅ Schedules registered: Trending(:05,:35), Feed(:15 bi-hourly), Briefings(8:10, 20:10)');
 };
