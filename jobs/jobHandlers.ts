@@ -8,7 +8,6 @@ import redisClient from '../utils/redisClient';
 
 /**
  * Handler: Update Trending Topics
- * Recalculates trending topics based on recent article clusters.
  */
 export const handleUpdateTrending = async (job: Job) => {
     logger.info(`👷 Job ${job.id}: Updating Trending Topics...`);
@@ -18,15 +17,12 @@ export const handleUpdateTrending = async (job: Job) => {
 
 /**
  * Handler: Fetch Feed (Batch Producer)
- * Fetches news from external APIs and creates individual processing jobs.
  */
 export const handleFetchFeed = async (job: Job) => {
     logger.info(`👷 Job ${job.id}: Fetching Feed (${job.name})...`);
     
-    // 1. Fetch Raw Articles (with Batch Embeddings pre-calculated)
     const articles = await newsFetcher.fetchFeed();
 
-    // 2. Dispatch to Batch Processing Queue
     if (articles.length > 0) {
         const jobs = articles.map(article => ({
             name: 'process-article',
@@ -46,22 +42,22 @@ export const handleFetchFeed = async (job: Job) => {
 
 /**
  * Handler: Process Single Article (Consumer)
- * Runs the AI Pipeline for a single article.
  */
 export const handleProcessArticle = async (job: Job) => {
-    // This calls the pipeline service (which handles deduplication & analysis)
-    const result = await newsFetcher.processArticleJob(job.data);
-    
-    // LOGGING: Explicitly log the result since the Worker suppresses completion logs
-    if (result === 'SAVED_FRESH' || result === 'SAVED_INHERITED') {
-        // Success is logged in Pipeline, no need to duplicate spam
+    // DEBUG LOG: Confirm worker actually entered the function
+    // logger.info(`⚙️ Processing Article Job [${job.id}]: "${job.data.title?.substring(0, 30)}..."`);
 
-        // --- CACHE INVALIDATION ---
-        // FIX: Invalidate Feed Cache immediately so new content appears on Frontend
-        await redisClient.del('feed:default:page0');
-    } else {
-        logger.info(`⚠️ Article Result [${job.id}]: ${result}`);
+    try {
+        const result = await newsFetcher.processArticleJob(job.data);
+        
+        if (result === 'SAVED_FRESH' || result === 'SAVED_INHERITED') {
+            await redisClient.del('feed:default:page0');
+        } else {
+            logger.info(`⚠️ Article Result [${job.id}]: ${result}`);
+        }
+        return result;
+    } catch (err: any) {
+        logger.error(`❌ Job Handler Failed [${job.id}]: ${err.message}`);
+        throw err;
     }
-    
-    return result;
 };
