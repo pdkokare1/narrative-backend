@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { inspect } from 'util'; // Added for deep error inspection
 import { INewsProvider } from './INewsProvider';
 import { INewsSourceArticle } from '../../types';
 import KeyManager from '../../utils/KeyManager';
@@ -6,7 +7,6 @@ import apiClient from '../../utils/apiClient';
 import config from '../../utils/config';
 import logger from '../../utils/logger';
 import { normalizeUrl } from '../../utils/helpers';
-import { CONSTANTS } from '../../utils/constants';
 
 // Specific Schema for GNews Response
 const GNewsArticleSchema = z.object({
@@ -15,7 +15,7 @@ const GNewsArticleSchema = z.object({
     description: z.string().nullable().optional(),
     content: z.string().nullable().optional(),
     url: z.string().url(),
-    image: z.string().nullable().optional(), // GNews uses 'image'
+    image: z.string().nullable().optional(),
     publishedAt: z.string().optional()
 });
 
@@ -28,12 +28,11 @@ export class GNewsProvider implements INewsProvider {
     name = 'GNews';
 
     constructor() {
-        // Register keys specifically for this provider
         KeyManager.registerProviderKeys('GNEWS', config.keys.gnews);
     }
 
     async fetchArticles(params: any): Promise<INewsSourceArticle[]> {
-        // FAIL FAST: If no keys are configured, do not attempt to fetch
+        // FAIL FAST: If no keys are configured
         if (!config.keys.gnews || config.keys.gnews.length === 0) {
             logger.warn('❌ GNews Fetch Skipped: No API keys configured (GNEWS_API_KEY or GNEWS_KEYS).');
             return [];
@@ -41,9 +40,13 @@ export class GNewsProvider implements INewsProvider {
 
         return KeyManager.executeWithRetry<INewsSourceArticle[]>('GNEWS', async (apiKey) => {
             
-            // ⚡ SMART OPTIMIZATION: Check if this is the Paid Essential Key (Key #1)
-            // Essential Plan allows 25 articles. Free Plan allows 10.
-            const isPaidKey = config.keys.gnews.length > 0 && apiKey === config.keys.gnews[0];
+            // Validation: Ensure key is usable
+            if (!apiKey || typeof apiKey !== 'string' || apiKey.trim().length === 0) {
+                throw new Error('GNews Internal Error: Invalid API Key provided by KeyManager.');
+            }
+
+            const cleanKey = apiKey.trim();
+            const isPaidKey = config.keys.gnews.length > 0 && cleanKey === config.keys.gnews[0];
             const dynamicMax = isPaidKey ? 25 : 10;
 
             if (isPaidKey) {
@@ -55,21 +58,31 @@ export class GNewsProvider implements INewsProvider {
             const queryParams = { 
                 lang: 'en', 
                 sortby: 'publishedAt', 
-                max: dynamicMax, // Use the dynamic limit
+                max: dynamicMax,
                 ...params, 
-                apikey: apiKey 
+                apikey: cleanKey 
             };
+            
             const url = 'https://gnews.io/api/v4/top-headlines';
 
             try {
-                const response = await apiClient.get<unknown>(url, { params: queryParams });
+                // OVERRIDE User-Agent to prevent blocking
+                const response = await apiClient.get<unknown>(url, { 
+                    params: queryParams,
+                    timeout: 15000, // 15s Hard timeout for GNews
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                });
+                
                 return this.normalize(response.data);
-            } catch (error: any) {
-                // EXPLICIT DEBUGGING for GNews Errors
-                const status = error.response?.status;
-                let errorMessage = error.message || 'Unknown GNews Error';
 
-                // Try to extract detailed GNews error message
+            } catch (error: any) {
+                const status = error.response?.status;
+                let errorMessage = error.message || 'Unknown Error';
+                const errorCode = error.code || 'UNKNOWN_CODE';
+
+                // 1. Try to extract API-specific error message
                 if (error.response?.data?.errors) {
                     const gnewsErrors = error.response.data.errors;
                     if (Array.isArray(gnewsErrors)) {
@@ -81,16 +94,21 @@ export class GNewsProvider implements INewsProvider {
                     }
                 }
 
+                // 2. Log based on Error Type
                 if (status === 401 || status === 403) {
                     logger.error(`❌ GNews Auth Failed (${status}): ${errorMessage}`);
                 } else if (status === 429) {
-                    logger.warn(`⏳ GNews Rate Limited (429). Key: ...${apiKey.slice(-4)}`);
+                    logger.warn(`⏳ GNews Rate Limited (429). Key ending in ...${cleanKey.slice(-4)}`);
                 } else {
-                    logger.error(`❌ GNews Fetch Failed (${status || 'Local'}): ${errorMessage}`);
+                    // CRITICAL: Log the full error object for "Local" errors
+                    logger.error(`❌ GNews Fetch Failed [${errorCode}]: ${errorMessage}`);
+                    if (!status) {
+                        logger.error(`🔍 Full Error Details: ${inspect(error, { depth: 2, colors: false })}`);
+                    }
                 }
 
-                // Throw a new error with the detailed message so KeyManager logs it
-                throw new Error(`[GNews ${status || 'NET'}] ${errorMessage}`);
+                // 3. Throw descriptive error for KeyManager
+                throw new Error(`[GNews ${status || errorCode}] ${errorMessage}`);
             }
         });
     }
