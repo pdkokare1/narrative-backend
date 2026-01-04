@@ -4,6 +4,7 @@ import logger from '../utils/logger';
 import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import queueManager from './queueManager';
+import redisClient from '../utils/redisClient';
 
 /**
  * Handler: Update Trending Topics
@@ -54,6 +55,10 @@ export const handleProcessArticle = async (job: Job) => {
     // LOGGING: Explicitly log the result since the Worker suppresses completion logs
     if (result === 'SAVED_FRESH' || result === 'SAVED_INHERITED') {
         // Success is logged in Pipeline, no need to duplicate spam
+
+        // --- CACHE INVALIDATION ---
+        // FIX: Invalidate Feed Cache immediately so new content appears on Frontend
+        await redisClient.del('feed:default:page0');
     } else {
         logger.info(`⚠️ Article Result [${job.id}]: ${result}`);
     }
