@@ -7,7 +7,6 @@ import { CONSTANTS } from '../utils/constants';
 
 // Define queues
 // FIX: Use the central CONSTANTS name so the Worker can find these jobs.
-// Previously this was 'news-queue' which caused a mismatch.
 const newsQueue = new Queue(CONSTANTS.QUEUE.NAME, {
   connection: config.bullMQConnection
 });
@@ -34,7 +33,6 @@ const cleanupGhostJobs = async () => {
         let cleanedCount = 0;
         for (const job of repeatableJobs) {
             // Check if the job name/key matches our ghost list
-            // We look for partial matches because keys often contain timestamps/IDs
             const isGhost = ghostKeys.some(key => job.key.includes(key) || job.name === key);
             
             if (isGhost) {
@@ -77,7 +75,7 @@ export const startScheduler = async () => {
   await cleanupGhostJobs();
 
   // 2. High Frequency: Update Trending Topics
-  // Changed from :00/:30 to :05/:35 to give breathing room after the hour
+  // Runs at :05 and :35 (every 30 mins, offset from main feed)
   safeSchedule('update-trending', '5,35 * * * *', async () => {
       await newsQueue.add('update-trending', {}, {
           removeOnComplete: true,
@@ -85,31 +83,41 @@ export const startScheduler = async () => {
       });
   });
 
-  // 3. Medium Frequency: Main Feed Fetch
-  // Runs at :15 past the hour (every 2 hours)
-  // No overlap with trending (which is at :05 and :35)
-  safeSchedule('fetch-feed', '15 */2 * * *', async () => {
+  // 3. Main Feed Fetch (Day Mode)
+  // 6:00 AM to 11:00 PM -> Every 30 minutes (:15 and :45)
+  // Provides fresh news throughout the active day.
+  safeSchedule('fetch-feed-day', '15,45 6-22 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, {
           removeOnComplete: true,
           removeOnFail: 100
       });
   });
 
-  // 4. Low Frequency: Morning/Night Briefings
-  // Moved to :10 to avoid conflict with trending (:05) and feed (:15)
-  safeSchedule('fetch-briefing-morning', '10 8 * * *', async () => { // 8:10 AM
+  // 4. Main Feed Fetch (Night Mode)
+  // 11:00 PM to 6:00 AM -> Every 2 hours
+  // Runs at 23:15, 01:15, 03:15, 05:15
+  safeSchedule('fetch-feed-night', '15 23,1,3,5 * * *', async () => {
+      await newsQueue.add('fetch-feed', {}, {
+          removeOnComplete: true,
+          removeOnFail: 100
+      });
+  });
+
+  // 5. Low Frequency: Morning/Night Briefings
+  // Specific briefing generation at 8:10 AM and 8:10 PM
+  safeSchedule('fetch-briefing-morning', '10 8 * * *', async () => {
       await newsQueue.add('fetch-feed-morning', {}, { removeOnComplete: true });
   });
 
-  safeSchedule('fetch-briefing-night', '10 20 * * *', async () => { // 8:10 PM
+  safeSchedule('fetch-briefing-night', '10 20 * * *', async () => {
       await newsQueue.add('fetch-feed-night', {}, { removeOnComplete: true });
   });
 
-  // 5. Daily Maintenance: Cleanup
-  // Moved to :45 to be far away from everything else
+  // 6. Daily Maintenance: Cleanup
+  // Runs at 00:45 AM
   safeSchedule('daily-cleanup', '45 0 * * *', async () => {
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
   });
 
-  logger.info('✅ Schedules registered: Trending(:05,:35), Feed(:15 bi-hourly), Briefings(8:10, 20:10)');
+  logger.info('✅ Schedules registered: Trending(30m), Feed(Day:30m, Night:2h), Briefings(8:10/20:10)');
 };
