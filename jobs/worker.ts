@@ -23,8 +23,7 @@ export const startWorker = () => {
     }
 
     try {
-        // FIX: Force Concurrency to 1 to prevent OOM (Out of Memory) crashes
-        // Running 5 AI pipelines in parallel was killing the container.
+        // Force Concurrency to 1 for stability
         const concurrency = 1;
 
         // @ts-ignore
@@ -32,22 +31,20 @@ export const startWorker = () => {
             connection: connectionConfig as ConnectionOptions,
             concurrency: concurrency,
             
-            // Lock Duration: 2 mins to recover faster if a worker crashes
-            lockDuration: 120000, 
+            // INCREASED: 5 Minutes Lock Duration
+            // Critical for "Inline Batch Processing" where one job handles 5-10 articles
+            lockDuration: 300000, 
             
-            // Retries: If the worker crashes, retry the job up to 3 times
+            // Recovery settings
             maxStalledCount: 3, 
         });
 
         // --- Event Listeners ---
         newsWorker.on('completed', (job: Job) => {
-            if (job.name !== 'process-article') { 
-                logger.info(`✅ Job ${job.id} (${job.name}) completed.`);
-            }
+            logger.info(`✅ Job ${job.id} (${job.name}) completed successfully.`);
         });
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
-            // Log specifically to see WHY it failed
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
         });
         
@@ -59,7 +56,7 @@ export const startWorker = () => {
             logger.info("✅ Worker is READY and processing.");
         });
 
-        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency})`);
+        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency}, Lock: 5m)`);
 
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
