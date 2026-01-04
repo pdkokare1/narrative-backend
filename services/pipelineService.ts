@@ -1,4 +1,5 @@
 // services/pipelineService.ts
+import crypto from 'crypto';
 import sanitizeHtml from 'sanitize-html';
 import gatekeeper from './gatekeeperService'; 
 import aiService from './aiService'; 
@@ -106,13 +107,36 @@ class PipelineService {
             let existingMatch = await clusteringService.findSimilarHeadline(article.headline!);
             let usedFuzzyMatch = !!existingMatch;
             
-            // Use pre-calculated embedding if available
+            // --- EMBEDDING RETRIEVAL (Sidecar Pattern) ---
             let embedding: number[] | null = null;
+
+            // Strategy A: Passed directly (legacy/fallback)
             if (rawArticle.embedding && Array.isArray(rawArticle.embedding)) {
                  embedding = rawArticle.embedding;
             }
 
+            // Strategy B: Retrieve from Redis Sidecar (Fixes Queue Serialization)
+            if ((!embedding || embedding.length === 0) && redisClient.isReady()) {
+                try {
+                    const client = redisClient.getClient();
+                    if (client) {
+                        const urlHash = crypto.createHash('md5').update(rawArticle.url).digest('hex');
+                        const key = `temp:embedding:${urlHash}`;
+                        const cachedRaw = await client.get(key);
+                        
+                        if (cachedRaw) {
+                            embedding = JSON.parse(cachedRaw);
+                            // Cleanup immediately
+                            await client.del(key);
+                        }
+                    }
+                } catch (err) {
+                    // Ignore cache read errors, fallback to generation
+                }
+            }
+
             if (!existingMatch) {
+                // Strategy C: Generate Fresh (Fallback)
                 if (!embedding || embedding.length === 0) {
                     embedding = await this.getEmbeddingSafe(article);
                 }
