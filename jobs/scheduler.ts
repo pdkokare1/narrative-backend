@@ -24,11 +24,19 @@ const cleanupGhostJobs = async () => {
     try {
         const repeatableJobs = await newsQueue.getRepeatableJobs();
         
-        // Removed old 'morning/night' specific jobs as they are now unified
-        const ghostKeys = ['cron-day', 'fetch-feed-day', 'fetch-feed-morning', 'fetch-feed-night'];
+        // UPDATED: Added 'fetch-feed' and 'update-trending' to catch raw BullMQ jobs
+        const ghostKeys = [
+            'cron-day', 
+            'fetch-feed-day', 
+            'fetch-feed-morning', 
+            'fetch-feed-night',
+            'fetch-feed',      // Added: Catches old generic fetch jobs
+            'update-trending'  // Added: Catches old trending jobs
+        ];
 
         let cleanedCount = 0;
         for (const job of repeatableJobs) {
+            // Check if key includes ghost key OR name matches exactly
             const isGhost = ghostKeys.some(key => job.key.includes(key) || job.name === key);
             
             if (isGhost) {
@@ -67,7 +75,7 @@ const safeSchedule = (name: string, cronExpression: string, task: () => Promise<
 export const startScheduler = async () => {
   logger.info('⏰ Scheduler initializing...');
 
-  // 1. CLEANUP FIRST: Kill the ghost jobs
+  // 1. CLEANUP FIRST: Kill the ghost jobs to prevent double-execution
   await cleanupGhostJobs();
 
   // 2. High Frequency: Update Trending Topics
@@ -80,8 +88,8 @@ export const startScheduler = async () => {
   });
 
   // 3. Main Feed Fetch (Day Mode)
-  // 6:00 AM to 11:00 PM -> Every 30 minutes (:15 and :45)
-  safeSchedule('fetch-feed-day', '15,45 6-22 * * *', async () => {
+  // 6:00 AM to 11:00 PM -> UPDATED: Runs every 15 minutes (*/15)
+  safeSchedule('fetch-feed-day', '*/15 6-22 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, {
           removeOnComplete: true,
           removeOnFail: 100
@@ -98,7 +106,6 @@ export const startScheduler = async () => {
   });
 
   // 5. Briefings (Morning/Night)
-  // FIXED: Changed job name from 'fetch-feed-morning' to 'fetch-feed' so the worker recognizes it.
   safeSchedule('fetch-briefing-morning', '10 8 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, { removeOnComplete: true });
   });
@@ -112,5 +119,5 @@ export const startScheduler = async () => {
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
   });
 
-  logger.info('✅ Schedules registered: Trending(30m), Feed(Day:30m, Night:2h), Briefings(8:10/20:10)');
+  logger.info('✅ Schedules registered: Trending(30m), Feed(Day:15m, Night:2h), Briefings(8:10/20:10)');
 };
