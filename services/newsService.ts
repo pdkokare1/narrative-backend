@@ -11,7 +11,6 @@ import articleProcessor from './articleProcessor';
 
 // Strategies
 import { GNewsProvider } from './news/GNewsProvider';
-// REMOVED: NewsApiProvider import
 
 class NewsService {
   private gnews: GNewsProvider;
@@ -30,11 +29,10 @@ class NewsService {
       if (redisClient.isReady()) {
           try {
               const newValue = await redisClient.incr(redisKey);
-              // Reset periodically to prevent overflow (though unlikely in Redis)
+              // Reset periodically to prevent overflow
               if (newValue > 1000000) { 
                   await redisClient.set(redisKey, '0');
               }
-              // Safety: Ensure FETCH_CYCLES has length to avoid division by zero
               const length = FETCH_CYCLES.length || 1; 
               const index = Math.abs((newValue - 1) % length);
               return index;
@@ -48,38 +46,39 @@ class NewsService {
 
   async fetchNews(): Promise<INewsSourceArticle[]> {
     const allArticles: INewsSourceArticle[] = [];
-    const cycleIndex = await this.getAndAdvanceCycleIndex();
-    const currentCycle = FETCH_CYCLES[cycleIndex];
     
-    logger.info(`🔄 News Fetch Cycle: ${currentCycle.name} (Index: ${cycleIndex})`);
+    // FIX 1: Broader Fetching
+    // Fetch 2 different cycles per run to ensure we cover 'Top' and 'Categories' frequently
+    // This prevents the feed from looking stale if we get stuck on a slow category.
+    const CYCLES_TO_RUN = 2;
 
-    // 1. Single Strategy: GNews
-    try {
-        // GNewsProvider now handles the Paid/Free logic internally
-        const gnewsArticles = await this.gnews.fetchArticles(currentCycle.gnews);
+    for (let i = 0; i < CYCLES_TO_RUN; i++) {
+        const cycleIndex = await this.getAndAdvanceCycleIndex();
+        const currentCycle = FETCH_CYCLES[cycleIndex];
         
-        if (gnewsArticles.length > 0) {
-            allArticles.push(...gnewsArticles);
-            logger.info(`✅ GNews retrieved ${gnewsArticles.length} articles.`);
-        } else {
-            logger.warn(`⚠️ GNews returned 0 articles for this cycle.`);
-        }
+        logger.info(`🔄 News Fetch Cycle (${i+1}/${CYCLES_TO_RUN}): ${currentCycle.name}`);
 
-    } catch (err: any) {
-        // No fallback available, just log the error
-        logger.error(`❌ GNews fetch failed: ${err.message}`);
+        try {
+            const gnewsArticles = await this.gnews.fetchArticles(currentCycle.gnews);
+            if (gnewsArticles.length > 0) {
+                allArticles.push(...gnewsArticles);
+            }
+        } catch (err: any) {
+            logger.error(`❌ GNews fetch failed for ${currentCycle.name}: ${err.message}`);
+        }
     }
 
-    // 2. Processing Pipeline
-    // Filter -> Check DB -> Process -> Cache
     if (allArticles.length === 0) {
-        logger.warn("❌ CRITICAL: No articles fetched from GNews this cycle.");
+        logger.warn("❌ CRITICAL: No articles fetched from GNews in this run.");
         return [];
     }
 
+    // 2. Processing Pipeline
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
     const finalUnique = articleProcessor.processBatch(dbUnseenArticles);
+    
+    // Mark as seen so we don't fetch them again immediately
     await this.markAsSeenInRedis(finalUnique);
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
@@ -123,8 +122,9 @@ class NewsService {
               const multi = client.multi();
               for (const article of articles) {
                   const key = this.getRedisKey(article.url);
-                  // Fixed: Reduced from 48h to 24h to allow re-reporting of evolving stories
-                  multi.set(key, '1', { EX: 86400 }); 
+                  // FIX 2: Reduced TTL from 24h (86400) to 4h (14400)
+                  // This allows "stuck" or failed articles to be retried much sooner
+                  multi.set(key, '1', { EX: 14400 }); 
               }
               await multi.exec();
           } catch (e: any) {
