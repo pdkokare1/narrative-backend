@@ -1,5 +1,6 @@
 // jobs/workerProcessor.ts
 import { Job } from 'bullmq';
+import mongoose from 'mongoose';
 import logger from '../utils/logger';
 import dbLoader from '../utils/dbLoader';
 import { 
@@ -10,34 +11,41 @@ import {
 
 /**
  * Worker Processor (Threaded Mode)
- * This function runs in the MAIN process now.
- * It is called directly by the worker, saving memory.
+ * This function runs in the MAIN process.
  */
 export default async function workerProcessor(job: Job) {
-    // 1. Ensure Database Connection
-    await dbLoader.connect();
+    // DEBUG: Confirm job pickup immediately
+    if (job.name === 'process-article') {
+        logger.info(`📥 Worker Picked Up: "${job.data.title?.substring(0, 40)}..." (ID: ${job.id})`);
+    }
+
+    // 1. Ensure Database Connection (Safe Check)
+    // In threaded mode, we might already be connected.
+    if (mongoose.connection.readyState !== 1) {
+        await dbLoader.connect();
+    }
 
     // 2. Route Job to Handler
-    switch (job.name) {
-        case 'update-trending':
-            return await handleUpdateTrending(job);
+    try {
+        switch (job.name) {
+            case 'update-trending':
+                return await handleUpdateTrending(job);
 
-        // --- Fetch Handlers ---
-        case 'fetch-feed':       // Legacy
-        case 'fetch-feed-day':   // Current Day
-        case 'fetch-feed-night': // Current Night
-        case 'scheduled-news-fetch': // Legacy
-        case 'cron-day':         // Zombie from logs
-        case 'cron-night':       // Zombie from logs
-        case 'manual-fetch':
-            return await handleFetchFeed(job);
+            case 'fetch-feed':       
+            case 'fetch-feed-day':   
+            case 'fetch-feed-night': 
+            case 'manual-fetch':
+                return await handleFetchFeed(job);
 
-        // --- Processing Handlers ---
-        case 'process-article':
-            return await handleProcessArticle(job);
+            case 'process-article':
+                return await handleProcessArticle(job);
 
-        default:
-            logger.warn(`⚠️ Unknown Job Type in Processor: ${job.name}`);
-            return null;
+            default:
+                logger.warn(`⚠️ Unknown Job Type in Processor: ${job.name}`);
+                return null;
+        }
+    } catch (error: any) {
+        logger.error(`❌ Worker Processor Error [${job.name}]: ${error.message}`);
+        throw error;
     }
 }
