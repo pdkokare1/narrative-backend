@@ -1,5 +1,7 @@
+// services/news/GNewsProvider.ts
 import { z } from 'zod';
-import { inspect } from 'util'; // Added for deep error inspection
+import https from 'https'; // Added for custom agent
+import { inspect } from 'util';
 import { INewsProvider } from './INewsProvider';
 import { INewsSourceArticle } from '../../types';
 import KeyManager from '../../utils/KeyManager';
@@ -65,13 +67,21 @@ export class GNewsProvider implements INewsProvider {
             
             const url = 'https://gnews.io/api/v4/top-headlines';
 
+            // NETWORK FIX: Force IPv4 and Disable Keep-Alive
+            // This bypasses common sticky-connection blocks on shared cloud IPs (Railway/Vercel)
+            const agent = new https.Agent({
+                keepAlive: false, 
+                family: 4 
+            });
+
             try {
-                // OVERRIDE User-Agent to prevent blocking
                 const response = await apiClient.get<unknown>(url, { 
                     params: queryParams,
-                    timeout: 15000, // 15s Hard timeout for GNews
+                    timeout: 30000, // Increased to 30s
+                    httpsAgent: agent,
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Connection': 'close' // Explicitly close connection
                     }
                 });
                 
@@ -103,6 +113,7 @@ export class GNewsProvider implements INewsProvider {
                     // CRITICAL: Log the full error object for "Local" errors
                     logger.error(`❌ GNews Fetch Failed [${errorCode}]: ${errorMessage}`);
                     if (!status) {
+                        // Log full network error for debugging (DNS/Timeout)
                         logger.error(`🔍 Full Error Details: ${inspect(error, { depth: 2, colors: false })}`);
                     }
                 }
