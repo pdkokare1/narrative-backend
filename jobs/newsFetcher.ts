@@ -64,7 +64,8 @@ async function fetchFeed() {
                     const key = `temp:embedding:${urlHash}`;
 
                     // Save embedding to Redis (Expire in 10 mins/600s - ample time for job to start)
-                    await client.set(key, JSON.stringify(embeddings[i]), 'EX', 600);
+                    // FIXED: Use options object syntax { EX: 600 } instead of spread arguments
+                    await client.set(key, JSON.stringify(embeddings[i]), { EX: 600 });
                     savedCount++;
                 } catch (redisErr) {
                     logger.warn(`⚠️ Failed to cache embedding for ${article.title}: ${redisErr}`);
