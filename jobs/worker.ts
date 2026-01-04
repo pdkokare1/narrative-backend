@@ -5,8 +5,6 @@ import config from '../utils/config';
 import { CONSTANTS } from '../utils/constants';
 
 // DIRECT IMPORT for Monolithic/Threaded mode
-// This saves memory by NOT spawning a separate process per job.
-// Critical for Railway deployments with limited RAM (512MB/1GB).
 import workerProcessor from './workerProcessor';
 
 const connectionConfig = config.bullMQConnection;
@@ -27,18 +25,16 @@ export const startWorker = () => {
     try {
         const concurrency = config.worker.concurrency || 1;
 
-        // OPTIMIZATION: Use Function Processor (Threaded) instead of File Path (Sandboxed)
-        // This keeps everything in one process, saving ~100MB RAM per concurrency slot.
         // @ts-ignore
         newsWorker = new Worker(CONSTANTS.QUEUE.NAME, workerProcessor, { 
             connection: connectionConfig as ConnectionOptions,
             concurrency: concurrency,
             
-            // Lock Duration: 5 mins for complex AI tasks
-            lockDuration: 300000, 
+            // Reduced Lock Duration to 2 mins (was 5) to recover faster if a worker crashes
+            lockDuration: 120000, 
             
-            // Retries
-            maxStalledCount: 1, 
+            // Critical for recovery
+            maxStalledCount: 2,
         });
 
         // --- Event Listeners ---
@@ -50,13 +46,15 @@ export const startWorker = () => {
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
-            if (job && job.attemptsMade >= (job.opts.attempts || 0)) {
-                logger.error(`🚨 DEAD LETTER: Job ${job.id} has permanently failed.`);
-            }
         });
         
         newsWorker.on('error', (err) => {
              logger.error(`⚠️ Worker Connection Error: ${err.message}`);
+        });
+        
+        // ADDED: Log when worker resumes or is ready
+        newsWorker.on('ready', () => {
+            logger.info("✅ Worker is READY and processing.");
         });
 
         logger.info(`✅ Background Worker Started (Threaded Mode, Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency})`);
