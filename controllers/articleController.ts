@@ -51,20 +51,20 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     } catch (e) {
         console.warn("⚠️ Feed Validation Failed. Using Defaults.");
         queryParams = {
-            limit: 20,
+            limit: 24, // Updated default to match frontend
             offset: 0,
             category: 'All Categories'
         };
     }
 
     // Ensure numeric types for pagination
-    if (queryParams.limit) queryParams.limit = Number(queryParams.limit) || 20;
+    if (queryParams.limit) queryParams.limit = Number(queryParams.limit) || 24;
     if (queryParams.offset) queryParams.offset = Number(queryParams.offset) || 0;
 
     // CACHE LOGIC for Default Feed (Page 0 only)
-    // FIX: Added limit check AND 'All' category check
+    // FIX: Updated to accept 20 or 24 limit to match Frontend BATCH_SIZE
     const isDefaultPage = queryParams.offset === 0 && 
-                          queryParams.limit === 20 && 
+                          (queryParams.limit === 20 || queryParams.limit === 24) && 
                           (queryParams.category === 'All Categories' || queryParams.category === 'All') && 
                           (!queryParams.lean || queryParams.lean === 'All Leans');
     
@@ -73,16 +73,15 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     let result;
 
     if (isDefaultPage) {
-        // REFACTOR: Use getOrFetch only for the default page
+        // Use Controller-level caching (5 mins). 
+        // This is the primary defense against high traffic.
         result = await redisClient.getOrFetch(
             CACHE_KEY,
             async () => await articleService.getMainFeed(queryParams),
-            300 // 5 minutes
+            300 // 5 minutes TTL
         );
-        // Add Hit/Miss header if needed, though getOrFetch abstracts the "Hit" logic away.
-        // We assume freshness here.
     } else {
-        // Dynamic filters (not cached)
+        // Dynamic filters or deeper pages (not cached at controller level)
         result = await articleService.getMainFeed(queryParams);
     }
     
