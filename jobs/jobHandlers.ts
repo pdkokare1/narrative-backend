@@ -21,8 +21,10 @@ export const handleUpdateTrending = async (job: Job) => {
 export const handleFetchFeed = async (job: Job) => {
     logger.info(`👷 Job ${job.id}: Fetching Feed (${job.name})...`);
     
+    // 1. Fetch Raw Articles (with Batch Embeddings pre-calculated)
     const articles = await newsFetcher.fetchFeed();
 
+    // 2. Dispatch to Batch Processing Queue
     if (articles.length > 0) {
         const jobs = articles.map(article => ({
             name: 'process-article',
@@ -44,20 +46,26 @@ export const handleFetchFeed = async (job: Job) => {
  * Handler: Process Single Article (Consumer)
  */
 export const handleProcessArticle = async (job: Job) => {
-    // DEBUG LOG: Confirm worker actually entered the function
-    // logger.info(`⚙️ Processing Article Job [${job.id}]: "${job.data.title?.substring(0, 30)}..."`);
+    // Explicit Start Log
+    logger.info(`⚙️ Processing Pipeline Starting [${job.id}]`);
 
     try {
+        // This calls the pipeline service (deduplication & analysis)
         const result = await newsFetcher.processArticleJob(job.data);
         
+        // Success Logic
         if (result === 'SAVED_FRESH' || result === 'SAVED_INHERITED') {
+            // FIX: Invalidate Feed Cache immediately so new content appears on Frontend
             await redisClient.del('feed:default:page0');
+            logger.info(`✅ Article Saved [${job.id}]: ${result}`);
         } else {
-            logger.info(`⚠️ Article Result [${job.id}]: ${result}`);
+            logger.info(`⚠️ Article Skipped/Result [${job.id}]: ${result}`);
         }
+        
         return result;
-    } catch (err: any) {
-        logger.error(`❌ Job Handler Failed [${job.id}]: ${err.message}`);
-        throw err;
+
+    } catch (error: any) {
+        logger.error(`❌ Pipeline Failed [${job.id}]: ${error.message}`);
+        throw error; // Throw to trigger BullMQ retry
     }
 };
