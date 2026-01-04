@@ -1,8 +1,10 @@
 // jobs/newsFetcher.ts
+import crypto from 'crypto';
 import newsService from '../services/newsService';
 import pipelineService from '../services/pipelineService';
 import aiService from '../services/aiService'; 
 import logger from '../utils/logger'; 
+import redisClient from '../utils/redisClient';
 import { cleanText } from '../utils/helpers';
 import Article from '../models/articleModel'; // Added for deduplication check
 
@@ -44,11 +46,34 @@ async function fetchFeed() {
     const embeddings = await aiService.createBatchEmbeddings(textsToEmbed);
 
     if (embeddings && embeddings.length === newArticles.length) {
-        // Attach embeddings to the articles before dispatching
-        for (let i = 0; i < newArticles.length; i++) {
-            newArticles[i].embedding = embeddings[i];
+        // OPTIMIZATION: "Sidecar" Pattern
+        // Instead of putting heavy embeddings into the Queue Job (which can cause serialization issues),
+        // we save them to Redis temporarily. The worker will pick them up via the URL hash.
+        
+        let savedCount = 0;
+        const client = redisClient.getClient(); // Ensure we have the raw client for simple set
+
+        if (client && redisClient.isReady()) {
+            for (let i = 0; i < newArticles.length; i++) {
+                const article = newArticles[i];
+                if (!article.url) continue;
+
+                try {
+                    // Create Hash of URL (Same logic as PipelineService)
+                    const urlHash = crypto.createHash('md5').update(article.url).digest('hex');
+                    const key = `temp:embedding:${urlHash}`;
+
+                    // Save embedding to Redis (Expire in 10 mins/600s - ample time for job to start)
+                    await client.set(key, JSON.stringify(embeddings[i]), 'EX', 600);
+                    savedCount++;
+                } catch (redisErr) {
+                    logger.warn(`⚠️ Failed to cache embedding for ${article.title}: ${redisErr}`);
+                }
+            }
+            logger.info(`⚡ Cached ${savedCount} embeddings in Redis (Sidecar) for Worker retrieval.`);
+        } else {
+            logger.warn('⚠️ Redis not ready. Skipping embedding cache (Pipeline will generate fresh).');
         }
-        logger.info(`⚡ Successfully attached ${embeddings.length} batch embeddings.`);
     } else {
         logger.warn('⚠️ Batch embedding failed or mismatched. Pipeline will fallback to individual fetching.');
     }
