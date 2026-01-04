@@ -24,14 +24,13 @@ const cleanupGhostJobs = async () => {
     try {
         const repeatableJobs = await newsQueue.getRepeatableJobs();
         
-        // UPDATED: Added 'fetch-feed' and 'update-trending' to catch raw BullMQ jobs
         const ghostKeys = [
             'cron-day', 
             'fetch-feed-day', 
             'fetch-feed-morning', 
             'fetch-feed-night',
-            'fetch-feed',      // Added: Catches old generic fetch jobs
-            'update-trending'  // Added: Catches old trending jobs
+            'fetch-feed',      
+            'update-trending'
         ];
 
         let cleanedCount = 0;
@@ -88,8 +87,9 @@ export const startScheduler = async () => {
   });
 
   // 3. Main Feed Fetch (Day Mode)
-  // 6:00 AM to 11:00 PM -> UPDATED: Runs every 15 minutes (*/15)
-  safeSchedule('fetch-feed-day', '*/15 6-22 * * *', async () => {
+  // 6:00 AM to 11:00 PM -> UPDATED: Runs every 10 minutes (*/10)
+  // This ensures fresher content and faster rotation through categories
+  safeSchedule('fetch-feed-day', '*/10 6-22 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, {
           removeOnComplete: true,
           removeOnFail: 100
@@ -97,8 +97,8 @@ export const startScheduler = async () => {
   });
 
   // 4. Main Feed Fetch (Night Mode)
-  // 11:00 PM to 6:00 AM -> Every 2 hours
-  safeSchedule('fetch-feed-night', '15 23,1,3,5 * * *', async () => {
+  // 11:00 PM to 6:00 AM -> Runs every hour (at minute 0)
+  safeSchedule('fetch-feed-night', '0 23,0-5 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, {
           removeOnComplete: true,
           removeOnFail: 100
@@ -119,5 +119,5 @@ export const startScheduler = async () => {
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
   });
 
-  logger.info('✅ Schedules registered: Trending(30m), Feed(Day:15m, Night:2h), Briefings(8:10/20:10)');
+  logger.info('✅ Schedules registered: Trending(30m), Feed(Day:10m, Night:1h), Briefings(8:10/20:10)');
 };
