@@ -23,18 +23,20 @@ export const startWorker = () => {
     }
 
     try {
-        const concurrency = config.worker.concurrency || 1;
+        // FIX: Force Concurrency to 1 to prevent OOM (Out of Memory) crashes
+        // Running 5 AI pipelines in parallel was killing the container.
+        const concurrency = 1;
 
         // @ts-ignore
         newsWorker = new Worker(CONSTANTS.QUEUE.NAME, workerProcessor, { 
             connection: connectionConfig as ConnectionOptions,
             concurrency: concurrency,
             
-            // Reduced Lock Duration to 2 mins (was 5) to recover faster if a worker crashes
+            // Lock Duration: 2 mins to recover faster if a worker crashes
             lockDuration: 120000, 
             
-            // Critical for recovery
-            maxStalledCount: 2,
+            // Retries: If the worker crashes, retry the job up to 3 times
+            maxStalledCount: 3, 
         });
 
         // --- Event Listeners ---
@@ -45,19 +47,19 @@ export const startWorker = () => {
         });
 
         newsWorker.on('failed', (job: Job | undefined, err: Error) => {
+            // Log specifically to see WHY it failed
             logger.error(`🔥 Job ${job?.id || 'unknown'} (${job?.name}) failed: ${err.message}`);
         });
         
         newsWorker.on('error', (err) => {
              logger.error(`⚠️ Worker Connection Error: ${err.message}`);
         });
-        
-        // ADDED: Log when worker resumes or is ready
+
         newsWorker.on('ready', () => {
             logger.info("✅ Worker is READY and processing.");
         });
 
-        logger.info(`✅ Background Worker Started (Threaded Mode, Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency})`);
+        logger.info(`✅ Background Worker Started (Queue: ${CONSTANTS.QUEUE.NAME}, Concurrency: ${concurrency})`);
 
     } catch (err: any) {
         logger.error(`❌ Failed to start Worker: ${err.message}`);
