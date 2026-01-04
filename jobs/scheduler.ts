@@ -6,11 +6,14 @@ import config from '../utils/config';
 import { CONSTANTS } from '../utils/constants';
 
 // Define queues
-const newsQueue = new Queue('news-queue', {
+// FIX: Use the central CONSTANTS name so the Worker can find these jobs.
+// Previously this was 'news-queue' which caused a mismatch.
+const newsQueue = new Queue(CONSTANTS.QUEUE.NAME, {
   connection: config.bullMQConnection
 });
 
-const cleanupQueue = new Queue('cleanup-queue', {
+// FIX: Consolidating cleanup into the main queue since we have a single worker.
+const cleanupQueue = new Queue(CONSTANTS.QUEUE.NAME, {
   connection: config.bullMQConnection
 });
 
