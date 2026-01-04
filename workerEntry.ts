@@ -9,18 +9,18 @@ import { registerShutdownHandler } from './utils/shutdownHandler';
 // Imported Background Services
 import emergencyService from './services/emergencyService';
 import gatekeeperService from './services/gatekeeperService';
+import { Queue } from 'bullmq'; // Added import
+import { CONSTANTS } from './utils/constants'; // Added import
+import config from './utils/config'; // Added import
 
 const initWorkerService = async () => {
   logger.info('🛠️ Starting Background Worker...');
 
   try {
     // 1. Unified Database & Redis Connection
-    // This now handles both Mongo and Redis in parallel
     await dbLoader.connect();
 
-    // 2. Initialize Background Logic (Fail Fast)
-    // We use Promise.all to ensure that if Gatekeeper/Emergency fails, 
-    // the worker restarts immediately rather than running in a broken state.
+    // 2. Initialize Background Logic
     await Promise.all([
         emergencyService.initializeEmergencyContacts(),
         gatekeeperService.initialize()
@@ -28,15 +28,34 @@ const initWorkerService = async () => {
 
     logger.info('✨ Background Services Initialized');
 
-    // 3. Start the Scheduler (Cron Jobs)
+    // 3. RECOVERY: Kickstart Stalled Jobs
+    // If the previous container crashed, jobs might be stuck in "Active" state.
+    // This forces them back to "Wait" or "Failed" so they can be picked up again.
+    if (config.bullMQConnection) {
+        try {
+            const recoveryQueue = new Queue(CONSTANTS.QUEUE.NAME, { 
+                connection: config.bullMQConnection 
+            });
+            // Clean jobs that have been stuck for > 5 minutes
+            const cleaned = await recoveryQueue.clean(300000, 0, 'active'); 
+            if (cleaned && cleaned.length > 0) {
+                 logger.info(`🚑 Recovered ${cleaned.length} stalled jobs from previous crash.`);
+            }
+            await recoveryQueue.close();
+        } catch (e) {
+            logger.warn("⚠️ Job Recovery skipped (Redis connection issue).");
+        }
+    }
+
+    // 4. Start the Scheduler (Cron Jobs)
     startScheduler();
 
-    // 4. Initialize Queue Consumer
+    // 5. Initialize Queue Consumer
     startWorker();
     
     logger.info('🚀 Background Worker Fully Operational & Listening for Jobs');
 
-    // 5. Register Graceful Shutdown
+    // 6. Register Graceful Shutdown
     registerShutdownHandler('Worker Service', [
         async () => { await queueManager.shutdown(); },
         async () => { await shutdownWorker(); },
@@ -49,11 +68,10 @@ const initWorkerService = async () => {
     } else {
         logger.error('❌ Worker Startup Failed: Unknown error');
     }
-    process.exit(1); // Exit so Railway/Docker can restart it
+    process.exit(1); 
   }
 };
 
-// Check if this module is being run directly
 if (require.main === module) {
     initWorkerService();
 }
