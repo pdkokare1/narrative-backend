@@ -4,6 +4,7 @@ import sanitizeHtml from 'sanitize-html';
 import gatekeeper from './gatekeeperService'; 
 import aiService from './aiService'; 
 import clusteringService from './clusteringService';
+import statsService from './statsService'; // RESTORED
 import Article from '../models/articleModel';
 import logger from '../utils/logger'; 
 import redisClient from '../utils/redisClient';
@@ -44,6 +45,18 @@ class PipelineService {
     }
 
     /**
+     * Basic validation to ensure we don't save broken image links.
+     */
+    private validateImageUrl(url?: string): string | undefined {
+        if (!url) return undefined;
+        if (url.length > 500) return undefined; // Too long
+        if (!url.startsWith('http')) return undefined;
+        // Filter out common "tracker" pixels or tiny icons
+        if (url.includes('1x1') || url.includes('pixel')) return undefined;
+        return url;
+    }
+
+    /**
      * Retrieves embedding safely without memory-risk batching.
      * Used ONLY as a fallback if batch embedding was missed.
      */
@@ -61,62 +74,67 @@ class PipelineService {
 
     /**
      * Main Pipeline Logic
+     * Now includes detailed metrics and timing.
      */
     async processSingleArticle(rawArticle: any): Promise<string> {
-        // DEBUG LOG: confirms worker reached this service
-        logger.info(`🔄 Pipeline: Analyzing "${rawArticle.title?.substring(0, 30)}..."`);
+        const startTime = Date.now();
+        const shortTitle = rawArticle.title?.substring(0, 40) || 'Unknown';
+
+        // DEBUG LOG: Start
+        logger.info(`🚀 [Pipeline] Start: "${shortTitle}..."`);
 
         try {
+            // --- STEP 1: Validation ---
             if (!rawArticle?.url || !rawArticle?.title) {
-                logger.warn(`[Pipeline] Invalid Article Data: Missing URL/Title`);
+                logger.warn(`[Pipeline] ❌ Invalid Data: Missing URL/Title`);
                 return 'ERROR_INVALID';
             }
 
-            // ⚡ OPTIMIZATION: Early Duplicate Detection (Redis)
+            // ⚡ OPTIMIZATION: Early Duplicate Detection
             if (await this.isDuplicate(rawArticle.url)) {
+                await statsService.increment('pipeline_duplicate_url');
                 return 'DUPLICATE_REDIS';
             }
 
-            // ⚡ OPTIMIZATION: Syndication Detection (Title)
             if (await this.isTitleDuplicate(rawArticle.title)) {
+                await statsService.increment('pipeline_duplicate_title');
+                logger.info(`[Pipeline] ⏭️ Syndicated Title Detected: "${shortTitle}"`);
                 return 'DUPLICATE_TITLE';
             }
             
-            // ⚡ OPTIMIZATION: Traffic Staggering
-            await new Promise(resolve => setTimeout(resolve, Math.random() * 400 + 100));
+            // ⚡ Traffic Staggering (Prevent API Spikes)
+            await new Promise(resolve => setTimeout(resolve, Math.random() * 300 + 100));
 
-            // 1. Prep & Sanitize
+            // --- STEP 2: Sanitization ---
             const article: Partial<IArticle> = {
                 url: rawArticle.url,
                 headline: this.sanitizeContent(rawArticle.title),
                 summary: this.sanitizeContent(rawArticle.description),
                 source: rawArticle.source?.name || 'Unknown',
-                imageUrl: rawArticle.image || rawArticle.urlToImage,
+                imageUrl: this.validateImageUrl(rawArticle.image || rawArticle.urlToImage),
                 publishedAt: rawArticle.publishedAt ? new Date(rawArticle.publishedAt) : new Date(),
                 content: rawArticle.content
             } as any;
 
-            // 2. Gatekeeper (Is this news?)
+            // --- STEP 3: Gatekeeper ---
             const gatekeeperResult = await gatekeeper.evaluateArticle(article);
             
             if (gatekeeperResult.isJunk) {
-                logger.info(`[Pipeline] Gatekeeper Rejected [${gatekeeperResult.reason || 'Junk'}]: "${article.headline}"`);
+                logger.info(`[Pipeline] 🛑 Gatekeeper Rejected [${gatekeeperResult.reason}]: "${shortTitle}"`);
+                await statsService.increment('pipeline_junk_rejected');
                 return 'JUNK_CONTENT';
             }
 
-            // 3. Similarity Check & Embeddings
+            // --- STEP 4: Similarity & Embeddings ---
             let existingMatch = await clusteringService.findSimilarHeadline(article.headline!);
             let usedFuzzyMatch = !!existingMatch;
             
-            // --- EMBEDDING RETRIEVAL (Sidecar Pattern) ---
+            // Retrieve from Redis Sidecar
             let embedding: number[] | null = null;
-
-            // Strategy A: Passed directly (legacy/fallback)
             if (rawArticle.embedding && Array.isArray(rawArticle.embedding)) {
                  embedding = rawArticle.embedding;
             }
 
-            // Strategy B: Retrieve from Redis Sidecar (Fixes Queue Serialization)
             if ((!embedding || embedding.length === 0) && redisClient.isReady()) {
                 try {
                     const client = redisClient.getClient();
@@ -124,20 +142,15 @@ class PipelineService {
                         const urlHash = crypto.createHash('md5').update(rawArticle.url).digest('hex');
                         const key = `temp:embedding:${urlHash}`;
                         const cachedRaw = await client.get(key);
-                        
                         if (cachedRaw) {
                             embedding = JSON.parse(cachedRaw);
-                            // Cleanup immediately
-                            await client.del(key);
+                            await client.del(key); // Cleanup
                         }
                     }
-                } catch (err) {
-                    // Ignore cache read errors, fallback to generation
-                }
+                } catch (err) { /* Silent Fail */ }
             }
 
             if (!existingMatch) {
-                // Strategy C: Generate Fresh (Fallback)
                 if (!embedding || embedding.length === 0) {
                     embedding = await this.getEmbeddingSafe(article);
                 }
@@ -146,7 +159,7 @@ class PipelineService {
                 }
             }
 
-            // 4. Analysis (Fresh vs Inherited)
+            // --- STEP 5: Analysis (AI vs Inheritance) ---
             let analysis: Partial<IArticle>;
             let isSemanticSkip = false;
 
@@ -154,8 +167,8 @@ class PipelineService {
                 const hoursDiff = (new Date().getTime() - new Date(existingMatch.createdAt!).getTime()) / (1000 * 60 * 60);
                 
                 if (hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS) {
-                    const matchType = usedFuzzyMatch ? "Fuzzy" : "Semantic";
                     isSemanticSkip = true;
+                    logger.info(`[Pipeline] 🧬 Inheriting Analysis from Match (ID: ${existingMatch._id})`);
                     
                     analysis = {
                         summary: existingMatch.summary, 
@@ -175,24 +188,25 @@ class PipelineService {
                         keyFindings: existingMatch.keyFindings,
                         recommendations: existingMatch.recommendations
                     };
+                    await statsService.increment('pipeline_analysis_inherited');
                 } else {
                     analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
+                    await statsService.increment('pipeline_analysis_fresh');
                 }
             } else {
                 analysis = await aiService.analyzeArticle(article, gatekeeperResult.recommendedModel);
+                await statsService.increment('pipeline_analysis_fresh');
             }
 
-            // --- CRITICAL FIX FOR PENDING STATE ---
-            // If AI failed (Rate Limit/Circuit Breaker), mark as 'pending' to hide from frontend
+            // Check for AI Failures
             let finalAnalysisVersion = isSemanticSkip ? '3.8-Inherited' : '3.8-Full';
-            
             if (analysis.summary && analysis.summary.includes("Analysis unavailable (System Error)")) {
-                logger.warn(`⚠️ Marking article as PENDING (AI Failure): "${article.headline}"`);
+                logger.warn(`⚠️ [Pipeline] AI Failure. Marking as PENDING.`);
                 finalAnalysisVersion = 'pending';
+                await statsService.increment('pipeline_ai_failure');
             }
-            // --------------------------------------
 
-            // 5. Merge & Save
+            // --- STEP 6: Database Save ---
             const newArticleData: Partial<IArticle> = {
                 ...article,
                 ...analysis,
@@ -209,24 +223,22 @@ class PipelineService {
                 await Article.create(newArticleData);
 
                 // Cache Invalidation
-                const client = redisClient.getClient();
-                if (client && redisClient.isReady()) {
-                    await client.del('feed:default:page0');
+                if (redisClient.isReady()) {
+                    await redisClient.del('feed:default:page0');
                 }
-                
-                const logStatus = finalAnalysisVersion === 'pending' ? 'Saved (Pending)' : 'Saved';
+
+                const duration = Date.now() - startTime;
+                logger.info(`✅ [Pipeline] Saved: "${shortTitle}" (${duration}ms)`);
 
             } catch (dbError: any) {
                 if (dbError.code === 11000) {
-                    logger.warn(`[Pipeline] Duplicate URL detected at save: ${article.url}`);
                     await redisClient.sAdd('processed_urls', article.url!);
                     return 'DUPLICATE_URL';
                 }
                 throw dbError; 
             }
 
-            // 6. Post-Save Caching (RESTORED)
-            // This ensures we don't re-process this URL/Title in the next run
+            // --- STEP 7: Post-Processing & Cleanup ---
             if (redisClient.isReady()) {
                 await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
                 await redisClient.sAdd('processed_urls', article.url!);
@@ -238,6 +250,10 @@ class PipelineService {
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
         } catch (error: any) {
+            const duration = Date.now() - startTime;
+            logger.error(`❌ [Pipeline] Failed after ${duration}ms: ${error.message}`);
+            await statsService.increment('pipeline_errors');
+            
             if (error instanceof AppError) throw error;
             throw new AppError(`Pipeline Error: ${error.message}`, 500);
         }
