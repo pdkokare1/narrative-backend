@@ -63,6 +63,9 @@ class PipelineService {
      * Main Pipeline Logic
      */
     async processSingleArticle(rawArticle: any): Promise<string> {
+        // DEBUG LOG: confirms worker reached this service
+        logger.info(`🔄 Pipeline: Analyzing "${rawArticle.title?.substring(0, 30)}..."`);
+
         try {
             if (!rawArticle?.url || !rawArticle?.title) {
                 logger.warn(`[Pipeline] Invalid Article Data: Missing URL/Title`);
@@ -71,13 +74,11 @@ class PipelineService {
 
             // ⚡ OPTIMIZATION: Early Duplicate Detection (Redis)
             if (await this.isDuplicate(rawArticle.url)) {
-                logger.info(`⏭️ Skipped Duplicate URL: ${rawArticle.url}`);
                 return 'DUPLICATE_REDIS';
             }
 
             // ⚡ OPTIMIZATION: Syndication Detection (Title)
             if (await this.isTitleDuplicate(rawArticle.title)) {
-                logger.info(`⏭️ Skipped Syndicated Title: "${rawArticle.title}"`);
                 return 'DUPLICATE_TITLE';
             }
             
@@ -154,7 +155,6 @@ class PipelineService {
                 
                 if (hoursDiff < SEMANTIC_SIMILARITY_MAX_AGE_HOURS) {
                     const matchType = usedFuzzyMatch ? "Fuzzy" : "Semantic";
-                    logger.info(`💰 Inheriting analysis from ${matchType} match (ID: ${existingMatch._id})`);
                     isSemanticSkip = true;
                     
                     analysis = {
@@ -215,7 +215,6 @@ class PipelineService {
                 }
                 
                 const logStatus = finalAnalysisVersion === 'pending' ? 'Saved (Pending)' : 'Saved';
-                logger.info(`✅ [Pipeline] ${logStatus}: "${article.headline}"`);
 
             } catch (dbError: any) {
                 if (dbError.code === 11000) {
@@ -226,12 +225,15 @@ class PipelineService {
                 throw dbError; 
             }
 
-            // 6. Post-Save Caching
-            await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
-            await redisClient.sAdd('processed_urls', article.url!);
-            
-            const titleSlug = article.headline!.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
-            await redisClient.sAdd('processed_titles', titleSlug);
+            // 6. Post-Save Caching (RESTORED)
+            // This ensures we don't re-process this URL/Title in the next run
+            if (redisClient.isReady()) {
+                await redisClient.set(`processed:${article.url}`, '1', 48 * 60 * 60);
+                await redisClient.sAdd('processed_urls', article.url!);
+                
+                const titleSlug = article.headline!.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-');
+                await redisClient.sAdd('processed_titles', titleSlug);
+            }
 
             return isSemanticSkip ? 'SAVED_INHERITED' : 'SAVED_FRESH';
 
