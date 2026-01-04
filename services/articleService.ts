@@ -103,84 +103,66 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Main Feed (Refactored & Modularized) ---
+  // --- 3. Main Feed (Refactored) ---
   async getMainFeed(filters: FeedFilters) {
     const { sort, limit = 20, offset = 0 } = filters;
-    const isFirstPage = Number(offset) === 0;
+    
+    // A. Build Queries (Using Utils)
+    const query = buildArticleQuery(filters);
+    
+    // CRITICAL: Filter out pending analysis to prevent incomplete data
+    (query as any).analysisVersion = { $ne: 'pending' };
 
-    const fetchFeedData = async () => {
-        // A. Build Queries (Using Utils)
-        const query = buildArticleQuery(filters);
-        
-        // CRITICAL FIX: Filter out pending analysis to prevent incomplete data
-        // This query object is a mongoose filter, so we can extend it directly.
-        (query as any).analysisVersion = { $ne: 'pending' };
+    const narrativeQuery = buildNarrativeQuery(filters);
 
-        const narrativeQuery = buildNarrativeQuery(filters);
+    // B. Fetch Narratives
+    const narratives = await Narrative.find(narrativeQuery)
+                                      .select('-articles -vector') 
+                                      .sort({ lastUpdated: -1 })
+                                      .limit(5)
+                                      .lean()
+                                      .read('secondaryPreferred'); 
 
-        // B. Fetch Narratives
-        const narratives = await Narrative.find(narrativeQuery)
-                                          .select('-articles -vector') 
-                                          .sort({ lastUpdated: -1 })
-                                          .limit(5)
-                                          .lean()
-                                          .read('secondaryPreferred'); 
-
-        // C. Smart Dedup (Filter out articles belonging to fetched narratives)
-        const narrativeClusterIds = narratives.map(n => n.clusterId);
-        if (narrativeClusterIds.length > 0) {
-            (query as any).clusterId = { $nin: narrativeClusterIds };
-        }
-
-        // D. Sort Options
-        let sortOptions: any = { publishedAt: -1 };
-        if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
-        else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
-        else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
-
-        // E. Fetch Articles
-        const articles = await Article.find(query)
-            .select('-content -embedding -keyFindings -recommendations')
-            .sort(sortOptions)
-            .skip(Number(offset))
-            .limit(Number(limit))
-            .lean()
-            .read('secondaryPreferred'); 
-
-        // F. Combine
-        const feedItems = [
-            ...narratives.map(n => ({ ...n, type: 'Narrative', publishedAt: n.lastUpdated })),
-            ...articles.map(a => ({ 
-                ...a, 
-                type: 'Article',
-                imageUrl: optimizeImageUrl(a.imageUrl)
-            }))
-        ];
-
-        feedItems.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
-
-        const totalArticles = await Article.countDocuments(query).read('secondaryPreferred');
-        
-        return { 
-            articles: feedItems.slice(0, Number(limit)), 
-            pagination: { total: totalArticles + narratives.length } 
-        };
-    };
-
-    // Stale-While-Revalidate Pattern for First Page
-    if (isFirstPage) {
-        // Construct a unique cache key based on filters
-        const CACHE_KEY = `feed_v3:${JSON.stringify(filters)}`;
-        
-        const cachedData = await redis.get(CACHE_KEY);
-        if (cachedData) return cachedData;
-
-        const freshData = await fetchFeedData();
-        await redis.set(CACHE_KEY, freshData, CONSTANTS.CACHE.TTL_FEED);
-        return freshData;
-    } else {
-        return fetchFeedData();
+    // C. Smart Dedup (Filter out articles belonging to fetched narratives)
+    const narrativeClusterIds = narratives.map(n => n.clusterId);
+    if (narrativeClusterIds.length > 0) {
+        (query as any).clusterId = { $nin: narrativeClusterIds };
     }
+
+    // D. Sort Options
+    let sortOptions: any = { publishedAt: -1 };
+    if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
+    else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
+    else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
+
+    // E. Fetch Articles
+    const articles = await Article.find(query)
+        .select('-content -embedding -keyFindings -recommendations')
+        .sort(sortOptions)
+        .skip(Number(offset))
+        .limit(Number(limit))
+        .lean()
+        .read('secondaryPreferred'); 
+
+    // F. Combine
+    const feedItems = [
+        ...narratives.map(n => ({ ...n, type: 'Narrative', publishedAt: n.lastUpdated })),
+        ...articles.map(a => ({ 
+            ...a, 
+            type: 'Article',
+            imageUrl: optimizeImageUrl(a.imageUrl)
+        }))
+    ];
+
+    feedItems.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+
+    const totalArticles = await Article.countDocuments(query).read('secondaryPreferred');
+    
+    // FIX: Removed blocking cache here. We rely on Controller cache or direct fetch.
+    return { 
+        articles: feedItems.slice(0, Number(limit)), 
+        pagination: { total: totalArticles + narratives.length } 
+    };
   }
 
   // --- 4. For You Feed ---
