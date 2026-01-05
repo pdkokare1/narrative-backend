@@ -61,6 +61,11 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
     if (queryParams.limit) queryParams.limit = Number(queryParams.limit) || 24;
     if (queryParams.offset) queryParams.offset = Number(queryParams.offset) || 0;
 
+    // --- FEED OPTIMIZATION FIX ---
+    // Enforce "Last One Standing" logic. 
+    // This ensures only the latest article from a cluster is shown in the feed.
+    queryParams.isLatest = true;
+
     // CACHE LOGIC for Default Feed (Page 0 only)
     // FIX: Updated to accept 20 or 24 limit to match Frontend BATCH_SIZE
     const isDefaultPage = queryParams.offset === 0 && 
