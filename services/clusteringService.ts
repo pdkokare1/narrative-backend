@@ -206,6 +206,39 @@ class ClusteringService {
         return finalClusterId;
     }
 
+    // --- Stage 3.5: Feed Optimization (Last One Standing) ---
+    // Enforces that only the newest article in a cluster is shown in the main feed
+    async optimizeClusterFeed(clusterId: number): Promise<void> {
+        if (!clusterId || clusterId === 0) return;
+
+        try {
+            // Find all articles in this cluster, sorted by newest first
+            const articles = await Article.find({ clusterId })
+                                          .sort({ publishedAt: -1 })
+                                          .select('_id publishedAt')
+                                          .lean();
+
+            if (articles.length <= 1) return; // Nothing to optimize
+
+            // The first one is the winner (latest)
+            const latestId = articles[0]._id;
+            
+            // All others are losers (hidden)
+            const olderIds = articles.slice(1).map(a => a._id);
+
+            // Bulk update to enforce visibility
+            await Promise.all([
+                Article.updateOne({ _id: latestId }, { isLatest: true }),
+                Article.updateMany({ _id: { $in: olderIds } }, { isLatest: false })
+            ]);
+
+            logger.info(`🧹 Cluster ${clusterId} Optimized: 1 Visible, ${olderIds.length} Hidden`);
+
+        } catch (error: any) {
+            logger.warn(`Optimization failed for cluster ${clusterId}: ${error.message}`);
+        }
+    }
+
     // --- Stage 4: Narrative Synthesis (The "Brain") ---
     // Checks if we have enough articles to form a "Meta-Narrative"
     async processClusterForNarrative(clusterId: number): Promise<void> {
