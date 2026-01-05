@@ -62,6 +62,11 @@ const articleSchema = new Schema<ArticleDocument>({
   country: { type: String, index: true, trim: true, default: 'Global' }, 
   primaryNoun: { type: String, trim: true, default: null },
   secondaryNoun: { type: String, trim: true, default: null },
+
+  // Feed Optimization Flag
+  // true = This is the latest version of the story in its cluster
+  // false = This is an older version and should be hidden from the main feed
+  isLatest: { type: Boolean, default: true, index: true },
   
   // Vector Embedding (Hidden by default to save bandwidth)
   embedding: { type: [Number], select: false }, 
@@ -94,8 +99,8 @@ articleSchema.index({
 // --- 2. COMPOUND INDEXES (Performance Boosters) ---
 // These are "shortcuts" for specific queries your app runs often.
 
-// A. "For You" Feed: Filter by Category + Lean + Date
-articleSchema.index({ category: 1, politicalLean: 1, publishedAt: -1 });
+// A. "For You" Feed: Filter by Category + Lean + Date + Latest Only
+articleSchema.index({ category: 1, politicalLean: 1, isLatest: 1, publishedAt: -1 });
 
 // B. "Trusted News" Feed: Filter by Lean + High Trust + Date
 articleSchema.index({ politicalLean: 1, trustScore: -1, publishedAt: -1 });
@@ -103,8 +108,8 @@ articleSchema.index({ politicalLean: 1, trustScore: -1, publishedAt: -1 });
 // C. "Cluster View": Quickly find all articles in a specific event cluster
 articleSchema.index({ clusterId: 1, publishedAt: -1 });
 
-// D. "Regional News": Filter by Country + Category + Date
-articleSchema.index({ country: 1, category: 1, publishedAt: -1 });
+// D. "Regional News": Filter by Country + Category + Date + Latest Only
+articleSchema.index({ country: 1, category: 1, isLatest: 1, publishedAt: -1 });
 
 // E. "Viral/Trending" - DISABLED FOR PERFORMANCE (Too heavy)
 // articleSchema.index({ publishedAt: -1, trustScore: -1, biasScore: -1 });
