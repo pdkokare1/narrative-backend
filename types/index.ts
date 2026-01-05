@@ -51,6 +51,9 @@ export interface IArticle {
   primaryNoun?: string;
   secondaryNoun?: string;
   
+  // Feed Optimization (FIXED: Added this field)
+  isLatest?: boolean;
+
   // AI Vector
   embedding?: number[];
   
@@ -120,6 +123,7 @@ export interface IGeminiPart {
 export interface IGeminiContent {
   parts: IGeminiPart[];
   role?: string;
+  parts_count?: number; // Optional helper
 }
 
 export interface IGeminiCandidate {
