@@ -8,6 +8,7 @@ import { FETCH_CYCLES, CONSTANTS } from '../utils/constants';
 
 // Centralized processor
 import articleProcessor from './articleProcessor';
+import clusteringService from './clusteringService';
 
 // Strategies
 import { GNewsProvider } from './news/GNewsProvider';
@@ -76,10 +77,39 @@ class NewsService {
     // 2. Processing Pipeline
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
-    const finalUnique = articleProcessor.processBatch(dbUnseenArticles);
+    
+    // Process Batch (Saves to DB) - Added AWAIT here as per requirement
+    const finalUnique = await articleProcessor.processBatch(dbUnseenArticles);
     
     // Mark as seen so we don't fetch them again immediately
     await this.markAsSeenInRedis(finalUnique);
+
+    // 3. POST-PROCESSING: OPTIMIZE FEEDS (Hide duplicates in clusters)
+    // We do this immediately after ingestion to ensure the feed stays clean
+    if (finalUnique.length > 0) {
+        const uniqueUrls = finalUnique.map(a => a.url);
+        
+        // Retrieve the newly saved articles to get their assigned clusterIds
+        const savedArticles = await Article.find({ url: { $in: uniqueUrls } })
+                                           .select('clusterId')
+                                           .lean();
+
+        // Get unique Cluster IDs that need optimization
+        const impactedClusterIds = new Set<number>();
+        savedArticles.forEach(a => {
+            if (a.clusterId && a.clusterId > 0) {
+                impactedClusterIds.add(a.clusterId);
+            }
+        });
+
+        // Run optimization for each affected cluster (Hide old versions)
+        for (const clusterId of impactedClusterIds) {
+             // We don't await this inside the loop to avoid blocking, 
+             // or we can await if strict consistency is required.
+             // Given the batch nature, awaiting is safer.
+             await clusteringService.optimizeClusterFeed(clusterId);
+        }
+    }
 
     logger.info(`✅ Fetched & Cleaned: ${finalUnique.length} new articles (from ${allArticles.length} raw)`);
     return finalUnique;
