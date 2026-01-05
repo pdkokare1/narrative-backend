@@ -85,8 +85,20 @@ export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
         result = await articleService.getMainFeed(queryParams);
     }
     
-    // Set headers for Browser Caching
-    res.set('Cache-Control', 'public, max-age=300');
+    // --- CACHE HEADER STRATEGY (CRITICAL FIX) ---
+    // 1. Polling Requests (limit=1): DISABLE CACHE to ensure "New Articles" pill appears instantly.
+    if (queryParams.limit === 1) {
+        res.set('Cache-Control', 'no-store, max-age=0');
+    }
+    // 2. Default Page: Cache for 5 mins (Matches Redis TTL)
+    else if (isDefaultPage) {
+        res.set('Cache-Control', 'public, max-age=300');
+    }
+    // 3. Filtered Pages: Cache for 1 min (Short lived)
+    else {
+        res.set('Cache-Control', 'public, max-age=60');
+    }
+
     res.status(200).json(result);
 });
 
