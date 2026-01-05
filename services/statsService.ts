@@ -68,6 +68,28 @@ class StatsService {
         await redisClient.set(CACHE_KEY, result, 3600 * 4); // Cache for 4 hours
         return result;
     }
+
+    // 3. Increment Counter (FIX for Pipeline)
+    async increment(metric: string) {
+        try {
+            if (!redisClient.isReady()) return;
+            
+            const client = redisClient.getClient();
+            if (!client) return;
+
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            const key = `stats:${today}:${metric}`;
+            
+            // Atomic increment
+            await client.incr(key);
+            // Ensure it cleans up after 7 days
+            await client.expire(key, 60 * 60 * 24 * 7);
+
+        } catch (error) {
+            // Silent fail is acceptable for stats to avoid breaking the main flow
+            // console.warn('Stats increment failed', error);
+        }
+    }
 }
 
 export default new StatsService();
