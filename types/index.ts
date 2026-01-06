@@ -208,12 +208,17 @@ export type IUserRole = 'user' | 'admin' | 'moderator';
 export interface FeedFilters {
     category?: string;
     lean?: string;
+    politicalLean?: string; // ADDED
+    sentiment?: string;     // ADDED
+    source?: string;        // ADDED
     region?: string;
     articleType?: string;
     quality?: string;
     sort?: string;
     limit?: number | string;
     offset?: number | string;
+    startDate?: string;     // ADDED
+    endDate?: string;       // ADDED
 }
 
 export interface IServiceResponse<T> {
