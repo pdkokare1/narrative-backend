@@ -1,9 +1,9 @@
 // controllers/articleController.ts
 import { Request, Response, NextFunction } from 'express';
-import { Article } from '../models/articleModel';
+import Article from '../models/articleModel'; // FIXED: Default import
 import aiService from '../services/aiService'; // Default import
 import articleService from '../services/articleService'; // Default import
-import { catchAsync } from '../utils/asyncHandler';
+import catchAsync from '../utils/asyncHandler'; // FIXED: Default import
 import AppError from '../utils/AppError'; // FIXED: Default import
 import { FeedFilters } from '../types';
 
