@@ -1,169 +1,190 @@
-// controllers/articleController.ts
-import { Request, Response } from 'express';
-import asyncHandler from '../utils/asyncHandler';
-import articleService from '../services/articleService';
-import schemas from '../utils/validationSchemas';
-import AppError from '../utils/AppError';
-import redisClient from '../utils/redisClient'; 
+import { Request, Response, NextFunction } from 'express';
+import { Article } from '../models/articleModel';
+import { aiService } from '../services/aiService';
+import { catchAsync } from '../utils/asyncHandler';
+import { AppError } from '../utils/AppError';
 
-// --- 1. Smart Trending Topics ---
-export const getTrendingTopics = asyncHandler(async (req: Request, res: Response) => {
-    // Validate
-    schemas.trending.parse({ query: req.query });
+// Get all articles with filtering, sorting, and pagination
+export const getArticles = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  const page = parseInt(req.query.page as string) || 1;
+  const limit = parseInt(req.query.limit as string) || 20;
+  const skip = (page - 1) * limit;
 
-    const CACHE_KEY = 'trending:topics';
-    
-    // REFACTOR: Use centralized getOrFetch logic
-    // Automatically handles: Cache Hit -> Return, Cache Miss -> Fetch -> Cache -> Return
-    // Also handles anti-stampede (multiple users hitting same endpoint simultaneously)
-    const topics = await redisClient.getOrFetch(
-        CACHE_KEY, 
-        async () => await articleService.getTrendingTopics(), 
-        600 // 10 minutes
-    );
+  // Build filter object
+  const filter: any = {};
+  
+  // Filter by category
+  if (req.query.category && req.query.category !== 'All') {
+    filter.category = req.query.category;
+  }
 
-    // Cache-Control Header for Browser/CDN
-    res.set('Cache-Control', 'public, max-age=300'); 
-    res.status(200).json({ topics });
+  // Filter by sentiment
+  if (req.query.sentiment) {
+    filter['analysis.sentiment'] = req.query.sentiment;
+  }
+
+  // Filter by source
+  if (req.query.source) {
+    filter['source.name'] = req.query.source;
+  }
+
+  // Search query
+  if (req.query.search) {
+    filter.$text = { $search: req.query.search as string };
+  }
+
+  // Date range
+  if (req.query.startDate || req.query.endDate) {
+    filter.publishedAt = {};
+    if (req.query.startDate) filter.publishedAt.$gte = new Date(req.query.startDate as string);
+    if (req.query.endDate) filter.publishedAt.$lte = new Date(req.query.endDate as string);
+  }
+
+  const articles = await Article.find(filter)
+    .sort({ publishedAt: -1 })
+    .skip(skip)
+    .limit(limit);
+
+  const total = await Article.countDocuments(filter);
+
+  res.status(200).json({
+    status: 'success',
+    results: articles.length,
+    total,
+    page,
+    totalPages: Math.ceil(total / limit),
+    data: articles
+  });
 });
 
-// --- 2. Intelligent Search ---
-export const searchArticles = asyncHandler(async (req: Request, res: Response) => {
-    // Strict Validation
-    const { query } = schemas.search.parse({ query: req.query });
-    
-    const searchTerm = query.q || '';
-    const limit = query.limit || 20;
+// Get single article by ID
+export const getArticle = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  const article = await Article.findById(req.params.id);
 
-    const result = await articleService.searchArticles(searchTerm, limit);
+  if (!article) {
+    return next(new AppError('No article found with that ID', 404));
+  }
 
-    res.status(200).json({ articles: result.articles, pagination: { total: result.total } });
+  res.status(200).json({
+    status: 'success',
+    data: article
+  });
 });
 
-// --- 3. Main Feed ---
-export const getMainFeed = asyncHandler(async (req: Request, res: Response) => {
-    let queryParams: any = {};
-    
-    // STRICT VALIDATION
-    try {
-        const parsed = schemas.feedFilters.parse({ query: req.query });
-        queryParams = parsed.query;
-    } catch (e) {
-        console.warn("⚠️ Feed Validation Failed. Using Defaults.");
-        queryParams = {
-            limit: 24, // Updated default to match frontend
-            offset: 0,
-            category: 'All Categories'
-        };
-    }
+// Create new article (usually internal use or via scraper)
+export const createArticle = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  const newArticle = await Article.create(req.body);
 
-    // Ensure numeric types for pagination
-    if (queryParams.limit) queryParams.limit = Number(queryParams.limit) || 24;
-    if (queryParams.offset) queryParams.offset = Number(queryParams.offset) || 0;
-
-    // --- FEED OPTIMIZATION FIX ---
-    // Enforce "Last One Standing" logic. 
-    // This ensures only the latest article from a cluster is shown in the feed.
-    queryParams.isLatest = true;
-
-    // CACHE LOGIC for Default Feed (Page 0 only)
-    // FIX: Updated to accept 20 or 24 limit to match Frontend BATCH_SIZE
-    const isDefaultPage = queryParams.offset === 0 && 
-                          (queryParams.limit === 20 || queryParams.limit === 24) && 
-                          (queryParams.category === 'All Categories' || queryParams.category === 'All') && 
-                          (!queryParams.lean || queryParams.lean === 'All Leans');
-    
-    const CACHE_KEY = 'feed:default:page0';
-
-    let result;
-
-    if (isDefaultPage) {
-        // Use Controller-level caching (5 mins). 
-        // This is the primary defense against high traffic.
-        result = await redisClient.getOrFetch(
-            CACHE_KEY,
-            async () => await articleService.getMainFeed(queryParams),
-            300 // 5 minutes TTL
-        );
-    } else {
-        // Dynamic filters or deeper pages (not cached at controller level)
-        result = await articleService.getMainFeed(queryParams);
-    }
-    
-    // --- CACHE HEADER STRATEGY (CRITICAL FIX) ---
-    // 1. Polling Requests (limit=1): DISABLE CACHE to ensure "New Articles" pill appears instantly.
-    if (queryParams.limit === 1) {
-        res.set('Cache-Control', 'no-store, max-age=0');
-    }
-    // 2. Default Page: Cache for 5 mins (Matches Redis TTL)
-    else if (isDefaultPage) {
-        res.set('Cache-Control', 'public, max-age=300');
-    }
-    // 3. Filtered Pages: Cache for 1 min (Short lived)
-    else {
-        res.set('Cache-Control', 'public, max-age=60');
-    }
-
-    res.status(200).json(result);
+  res.status(201).json({
+    status: 'success',
+    data: newArticle
+  });
 });
 
-// --- 4. "For You" Feed ---
-export const getForYouFeed = asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.user?.uid;
-    
-    if (!userId) {
-        throw new AppError('User not authenticated for personalized feed', 401);
-    }
+// Update article
+export const updateArticle = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  const article = await Article.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+    runValidators: true
+  });
 
-    try {
-        const result = await articleService.getForYouFeed(userId);
-        res.status(200).json(result);
-    } catch (error: any) {
-        // Log specifically for monitoring
-        console.error(`[PERSONALIZATION_FAILURE] User: ${userId} - ${error.message}`);
-        
-        // Fallback to avoid crushing the app
-        res.status(200).json({ 
-            articles: [], 
-            meta: { basedOnCategory: 'General', usualLean: 'Neutral' } 
-        });
-    }
+  if (!article) {
+    return next(new AppError('No article found with that ID', 404));
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: article
+  });
 });
 
-// --- 5. Personalized "My Mix" Feed ---
-export const getPersonalizedFeed = asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.user?.uid;
-    
-    if (!userId) {
-        throw new AppError('User not authenticated for personalized feed', 401);
-    }
+// Delete article
+export const deleteArticle = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  const article = await Article.findByIdAndDelete(req.params.id);
 
-    try {
-        const result = await articleService.getPersonalizedFeed(userId);
-        res.status(200).json(result);
-    } catch (error: any) {
-         console.error(`[PERSONALIZATION_FAILURE] User: ${userId} - ${error.message}`);
-         // Graceful fallback
-         res.status(200).json({ articles: [], meta: { topCategories: [] } });
-    }
+  if (!article) {
+    return next(new AppError('No article found with that ID', 404));
+  }
+
+  res.status(204).json({
+    status: 'success',
+    data: null
+  });
 });
 
-// --- 6. Saved Articles ---
-export const getSavedArticles = asyncHandler(async (req: Request, res: Response) => {
-    const userId = req.user?.uid;
-    if (!userId) throw new AppError('User not authenticated', 401);
+// Get trending articles (simplified logic for now)
+export const getTrendingArticles = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  // Logic: recently published + high engagement score (if available) or simply recent
+  const articles = await Article.find()
+    .sort({ publishedAt: -1 })
+    .limit(5);
 
-    const articles = await articleService.getSavedArticles(userId);
-    res.status(200).json({ articles });
+  res.status(200).json({
+    status: 'success',
+    data: articles
+  });
 });
 
-// --- 7. Toggle Save ---
-export const toggleSaveArticle = asyncHandler(async (req: Request, res: Response) => {
-    // Validate ID format
-    const { params } = schemas.saveArticle.parse({ params: req.params });
-    const userId = req.user?.uid;
-    if (!userId) throw new AppError('User not authenticated', 401);
+// GENERATE SMART BRIEFING
+export const getSmartBriefing = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  // 1. Fetch top relevant articles from the last 24 hours
+  const oneDayAgo = new Date();
+  oneDayAgo.setDate(oneDayAgo.getDate() - 1);
+
+  const recentArticles = await Article.find({
+    publishedAt: { $gte: oneDayAgo }
+  })
+  .sort({ 'metrics.viralityScore': -1 }) // Assuming metrics exist, otherwise sort by date
+  .limit(10)
+  .select('title summary category source');
+
+  if (!recentArticles || recentArticles.length === 0) {
+    return res.status(200).json({
+      status: 'success',
+      data: {
+        title: "Daily Briefing",
+        content: "No significant updates found for the last 24 hours.",
+        keyPoints: []
+      }
+    });
+  }
+
+  // 2. Prepare context for AI
+  const articlesContext = recentArticles.map(a => `- ${a.title} (${a.source.name}): ${a.summary}`).join('\n');
+
+  // 3. Generate Briefing
+  const prompt = `
+    You are an expert news analyst. Create a "Smart Briefing" based on the following top news headlines from the last 24 hours.
     
-    const result = await articleService.toggleSaveArticle(userId, params.id);
-    res.status(200).json(result);
+    Headlines:
+    ${articlesContext}
+
+    Format the output as a valid JSON object with the following keys:
+    - "title": A catchy title for today's briefing (e.g., "Market Shifts & Tech Breakthroughs").
+    - "content": A concise paragraph summarizing the overall mood and major themes (approx 80-100 words).
+    - "keyPoints": An array of strings, each being a bullet point of a critical update (max 5 points).
+
+    Do not include markdown code blocks in the output, just the raw JSON string.
+  `;
+
+  let briefingData;
+  try {
+    const aiResponse = await aiService.generateText(prompt);
+    // Clean up potential markdown formatting from AI (e.g., ```json ... ```)
+    const cleanedResponse = aiResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+    briefingData = JSON.parse(cleanedResponse);
+  } catch (error) {
+    console.error("Error parsing AI briefing response:", error);
+    // Fallback if AI fails to return valid JSON
+    briefingData = {
+      title: "Today's Headlines",
+      content: "Here is a summary of the latest news based on recent reporting.",
+      keyPoints: recentArticles.slice(0, 5).map(a => a.title)
+    };
+  }
+
+  res.status(200).json({
+    status: 'success',
+    data: briefingData
+  });
 });
