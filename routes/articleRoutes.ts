@@ -15,7 +15,8 @@ import {
     getForYouFeed,
     getPersonalizedFeed,
     getSavedArticles,
-    toggleSaveArticle
+    toggleSaveArticle,
+    getSmartBriefing // <--- IMPORTED
 } from '../controllers/articleController';
 
 const router = express.Router();
@@ -25,23 +26,27 @@ const router = express.Router();
 // 1. Trending Topics (Cached via Service)
 router.get('/trending', getTrendingTopics);
 
-// 2. Search (Atlas Search -> Text Fallback)
+// 2. Smart Briefing (AI Generated Daily Summary)
+// Must be defined before generic routes
+router.get('/articles/smart-briefing', getSmartBriefing);
+
+// 3. Search (Atlas Search -> Text Fallback)
 // FIXED: Removed 'query' arg to enable strict mode validation
 router.get('/search', searchLimiter, validate(schemas.search), searchArticles);
 
-// 3. Main Feed (Filterable & Cached)
+// 4. Main Feed (Filterable & Cached)
 // FIXED: Removed 'query' arg to enable strict mode validation
 router.get('/articles', validate(schemas.feedFilters), getMainFeed);
 
-// 4. For You (Challenger Feed - Personalized for Guests & Users)
+// 5. For You (Challenger Feed - Personalized for Guests & Users)
 router.get('/articles/for-you', optionalAuth, getForYouFeed);
 
 // --- Protected Routes (Require Login) ---
 
-// 5. Personalized Feed (Vector AI Match)
+// 6. Personalized Feed (Vector AI Match)
 router.get('/articles/personalized', checkAuth, getPersonalizedFeed);
 
-// 6. Saved Articles
+// 7. Saved Articles
 router.get('/saved', checkAuth, getSavedArticles);
 
 // FIXED: Removed 'params' arg to match the schema structure { params: { id: ... } }
