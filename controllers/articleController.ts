@@ -1,11 +1,12 @@
 // controllers/articleController.ts
 import { Request, Response, NextFunction } from 'express';
-import Article from '../models/articleModel'; // FIXED: Default import
-import aiService from '../services/aiService'; // Default import
-import articleService from '../services/articleService'; // Default import
-import catchAsync from '../utils/asyncHandler'; // FIXED: Default import
-import AppError from '../utils/AppError'; // FIXED: Default import
+import Article from '../models/articleModel'; 
+import aiService from '../services/aiService'; 
+import articleService from '../services/articleService'; 
+import catchAsync from '../utils/asyncHandler'; 
+import AppError from '../utils/AppError'; 
 import { FeedFilters } from '../types';
+import Narrative from '../models/narrativeModel';
 
 // --- 1. Trending Topics ---
 export const getTrendingTopics = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
@@ -111,8 +112,52 @@ export const toggleSaveArticle = catchAsync(async (req: Request, res: Response, 
   });
 });
 
-// --- 8. Smart Briefing (Daily AI Summary) ---
+// --- 8. Smart Briefing (Dual Mode: Single Article OR Global) ---
 export const getSmartBriefing = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+    const articleId = req.query.articleId as string;
+
+    // --- MODE A: Single Article Briefing (Pre-calculated) ---
+    if (articleId) {
+        const article = await Article.findById(articleId).select('headline summary keyFindings recommendations clusterId trustScore politicalLean source');
+
+        if (!article) {
+            return next(new AppError('Article not found', 404));
+        }
+
+        // Check if article is part of a cluster with a narrative (Optional check, currently allows briefing)
+        /*
+        if (article.clusterId) {
+            const narrativeExists = await Narrative.exists({ clusterId: article.clusterId });
+            // Logic to redirect to narrative could go here
+        }
+        */
+
+        // Fallback if AI hasn't generated specific findings yet (old articles)
+        const points = (article.keyFindings && article.keyFindings.length > 0) 
+            ? article.keyFindings 
+            : ["Analysis in progress. Key findings will appear shortly."];
+            
+        const recommendations = (article.recommendations && article.recommendations.length > 0)
+            ? article.recommendations
+            : ["Follow this topic for updates.", "Compare sources to verify details."];
+
+        return res.status(200).json({
+            status: 'success',
+            data: {
+                title: article.headline,
+                content: article.summary,
+                keyPoints: points,
+                recommendations: recommendations,
+                meta: {
+                    trustScore: article.trustScore,
+                    politicalLean: article.politicalLean,
+                    source: article.source
+                }
+            }
+        });
+    }
+
+    // --- MODE B: Global Daily Narrative (Legacy/Global) ---
     // 1. Fetch top significant articles from last 24h
     const oneDayAgo = new Date();
     oneDayAgo.setDate(oneDayAgo.getDate() - 1);
@@ -140,7 +185,6 @@ export const getSmartBriefing = catchAsync(async (req: Request, res: Response, n
     }
   
     // 2. Use existing Narrative AI logic to synthesize them
-    // We map the "Narrative" format to "Briefing" format
     try {
         const narrative = await aiService.generateNarrative(topArticles as any[]);
         
