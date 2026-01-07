@@ -81,6 +81,7 @@ class ArticleService {
                             "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1,
                             "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1,
                             "clusterTopic": 1, "audioUrl": 1,
+                            "keyFindings": 1, // UPDATED: Include keyFindings for instant access
                             "score": { "$meta": "vectorSearchScore" }
                         }
                     }
@@ -137,7 +138,8 @@ class ArticleService {
 
     // E. Fetch Articles
     const articles = await Article.find(query)
-        .select('-content -embedding -keyFindings -recommendations')
+        // UPDATED: Removed '-keyFindings' from exclusion list
+        .select('-content -embedding -recommendations') 
         .sort(sortOptions)
         .skip(Number(offset))
         .limit(Number(limit))
@@ -280,7 +282,9 @@ class ArticleService {
                             "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, 
                             "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, 
                             "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, 
-                            "audioUrl": 1, "score": { "$meta": "vectorSearchScore" } 
+                            "audioUrl": 1, 
+                            "keyFindings": 1, // UPDATED: Include keyFindings
+                            "score": { "$meta": "vectorSearchScore" } 
                         } 
                     }
                 ];
