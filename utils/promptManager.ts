@@ -3,7 +3,7 @@ import Prompt from '../models/aiPrompts';
 import redis from './redisClient';
 import logger from './logger';
 
-// --- RICH DEFAULT PROMPTS (Merged from utils/prompts.ts) ---
+// --- RICH DEFAULT PROMPTS ---
 
 const AI_PERSONALITY = {
     MAX_WORDS: 75, 
@@ -25,7 +25,7 @@ Style Guidelines:
 
 const DEFAULT_ANALYSIS_PROMPT = `
 Role: You are a Lead Editor for a global news wire.
-Task: Rewrite the following story into a breaking news brief.
+Task: Analyze the following story and structure the data for our database.
 
 Input Article:
 Headline: "{{headline}}"
@@ -47,7 +47,11 @@ Date: {{date}}
    - Bias Score (0-100): 0 = Neutral, 100 = Propaganda.
    - Trust Score (0-100): Based on source history and tone.
 
-4. **Extract Entities**:
+4. **Smart Briefing (CRITICAL)**:
+   - **Key Findings**: Extract exactly 5 distinct, bullet-point facts that summarize the core events.
+   - **Recommendations**: Provide 3 actionable tips for the reader to stay better informed on this specific topic (e.g., "Monitor central bank announcements," "Follow local election results," "Read the full bill text").
+
+5. **Extract Entities**:
    - Primary Noun: The main subject (Person, Country, or Org).
    - Secondary Noun: The context or second party.
 
@@ -77,8 +81,18 @@ Respond ONLY in valid JSON. Do not add markdown blocks.
   "reliabilityScore": 90, "reliabilityGrade": "A",
   "reliabilityComponents": {"consistency": 0, "temporalStability": 0, "qualityControl": 0, "publicationStandards": 0, "correctionsPolicy": 0, "updateMaintenance": 0},
   "trustLevel": "High",
-  "keyFindings": ["Finding 1", "Finding 2"],
-  "recommendations": []
+  "keyFindings": [
+    "Fact 1: The event occurred at 5 PM.",
+    "Fact 2: The primary driver was economic.",
+    "Fact 3: 500 people were affected.",
+    "Fact 4: The official statement was released today.",
+    "Fact 5: Markets reacted with a 2% drop."
+  ],
+  "recommendations": [
+    "Tip 1: Check the official government website for updates.",
+    "Tip 2: Compare this report with international coverage.",
+    "Tip 3: Watch for the press conference at noon."
+  ]
 }`;
 
 const SUMMARY_ONLY_PROMPT = `
@@ -145,13 +159,12 @@ class PromptManager {
         const template = await this.getTemplate(templateType);
         
         // Use the optimized summary created in aiService
-        // Removed .replace(/\n/g, " ") to allow Gemini 2.5 to see paragraph structure
         const articleContent = article.summary || article.content || "";
         
         const data = {
             headline: article.title || "No Title",
             description: article.description || "No Description",
-            content: articleContent, // Preserving newlines for better context
+            content: articleContent, 
             date: new Date().toISOString().split('T')[0]
         };
 
