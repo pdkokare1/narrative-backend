@@ -2,15 +2,11 @@
 import express, { Request, Response } from 'express';
 import mongoose from 'mongoose'; // Added for ObjectId validation
 import asyncHandler from '../utils/asyncHandler';
-// Removed specific validation middleware here to allow flexible IDs (Article ID or Cluster ID)
-// import validate from '../middleware/validate'; 
-// import schemas from '../utils/validationSchemas';
 import Article from '../models/articleModel';
 
 const router = express.Router();
 
 // GET /api/cluster/:identifier
-// Changed param name conceptually to 'identifier' but keeping path as :clusterId for compatibility
 router.get('/:clusterId', asyncHandler(async (req: Request, res: Response) => {
     const { clusterId: identifier } = req.params;
 
@@ -47,26 +43,47 @@ router.get('/:clusterId', asyncHandler(async (req: Request, res: Response) => {
         return res.status(404).json({ message: 'No articles found for this cluster' });
     }
 
-    // Bucketize them by political lean
+    // --- BUCKETIZE ARTICLES ---
+    // We categorize them to help the frontend, but we must ensure NO article is lost.
+    
+    const leftArticles = articles.filter(a => 
+        a.analysisType !== 'SentimentOnly' && 
+        (a.politicalLean === 'Left' || a.politicalLean === 'Left-Leaning')
+    );
+
+    const centerArticles = articles.filter(a => 
+        a.analysisType !== 'SentimentOnly' && 
+        a.politicalLean === 'Center'
+    );
+
+    const rightArticles = articles.filter(a => 
+        a.analysisType !== 'SentimentOnly' && 
+        (a.politicalLean === 'Right' || a.politicalLean === 'Right-Leaning')
+    );
+
+    const reviewArticles = articles.filter(a => 
+        a.analysisType === 'SentimentOnly'
+    );
+
+    // COLLECT IDS OF CLASSIFIED ARTICLES TO FIND THE REMAINDER
+    const classifiedIds = new Set([
+        ...leftArticles.map(a => a._id.toString()),
+        ...centerArticles.map(a => a._id.toString()),
+        ...rightArticles.map(a => a._id.toString()),
+        ...reviewArticles.map(a => a._id.toString())
+    ]);
+
+    // ANYTHING ELSE (Neutral, Undefined, Satire, etc.) GOES HERE
+    const otherArticles = articles.filter(a => !classifiedIds.has(a._id.toString()));
+
     const response = {
-        left: articles.filter(a => 
-            a.analysisType !== 'SentimentOnly' && 
-            (a.politicalLean === 'Left' || a.politicalLean === 'Left-Leaning')
-        ),
-        center: articles.filter(a => 
-            a.analysisType !== 'SentimentOnly' && 
-            a.politicalLean === 'Center'
-        ),
-        right: articles.filter(a => 
-            a.analysisType !== 'SentimentOnly' && 
-            (a.politicalLean === 'Right' || a.politicalLean === 'Right-Leaning')
-        ),
-        reviews: articles.filter(a => 
-            a.analysisType === 'SentimentOnly'
-        ),
+        left: leftArticles,
+        center: centerArticles,
+        right: rightArticles,
+        reviews: reviewArticles,
+        others: otherArticles, // New Bucket
         stats: {
             total: articles.length,
-            // Use optional chaining just in case the first article is missing a topic
             topic: articles[0]?.clusterTopic || 'Unknown Topic'
         }
     };
