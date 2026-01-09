@@ -233,10 +233,9 @@ class ArticleService {
   async getInFocusFeed(filters: FeedFilters) {
      const { offset = 0, limit = 20 } = filters;
      
-     // UPDATED: Extended window to 90 days to ensure data availability during testing
-     const query: any = {
-         lastUpdated: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) }
-     };
+     // UPDATED: Completely removed date filter.
+     // Fetches ALL narratives regardless of age.
+     const query: any = {};
      
      if (filters.category && filters.category !== 'All') {
          query.category = filters.category;
