@@ -20,6 +20,20 @@ const optimizeImageUrl = (url?: string) => {
     return url;
 };
 
+// Helper: Cosine Similarity for Vector Matching
+const calculateSimilarity = (vecA: number[], vecB: number[]) => {
+    if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+    let dotProduct = 0;
+    let normA = 0;
+    let normB = 0;
+    for (let i = 0; i < vecA.length; i++) {
+        dotProduct += vecA[i] * vecB[i];
+        normA += vecA[i] * vecA[i];
+        normB += vecB[i] * vecB[i];
+    }
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+};
+
 class ArticleService {
   
   // --- 1. Smart Trending Topics ---
@@ -104,17 +118,17 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. NEW: Triple-Zone Latest Feed ---
+  // --- 3. Weighted Merge Main Feed (Triple Zone) ---
+  // Strategy: 40% Trending + 40% Personalized + 20% Latest
   async getMainFeed(filters: FeedFilters, userId?: string) {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
 
-    // ZONE 3: Deep Scrolling (Strict Chronological)
-    // If paging deep, we skip the heavy math and just return time-sorted articles
-    if (page >= 30) {
+    // ZONE 3: Deep Scrolling (Optimized)
+    // If paging deep (> 20 items), skip the heavy math and return strictly chronological
+    if (page >= 20) {
          const query = buildArticleQuery(filters);
          (query as any).analysisVersion = { $ne: 'pending' };
-         // Explicitly exclude Narratives (they are in In Focus now)
          
          const articles = await Article.find(query)
             .select('-content -embedding -recommendations')
@@ -126,67 +140,81 @@ class ArticleService {
 
          return { 
              articles: articles.map(a => ({...a, type: 'Article', imageUrl: optimizeImageUrl(a.imageUrl)})), 
-             pagination: { total: 1000 } // Estimate
+             pagination: { total: 1000 }
          };
     }
 
-    // ZONE 1 & 2: The "Smart Head" (Only computed on first load)
-    // 1. Fetch Candidates (Mix of Trending & Latest)
-    const [latestCandidates, userProfile] = await Promise.all([
-        Article.find({ analysisVersion: { $ne: 'pending' } })
-           .sort({ publishedAt: -1 }) // Get recent first
-           .limit(60) // Pool to select from
-           .select('-content -embedding')
+    // ZONE 1 & 2: Weighted Construction (First Page Load)
+    
+    // 1. Fetch Candidates (Pool of ~80 recent articles)
+    // We fetch 'embedding' here to calculate personalization on the fly
+    const [latestCandidates, userProfile, userStats] = await Promise.all([
+        Article.find({ 
+            analysisVersion: { $ne: 'pending' },
+            publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } // Last 48h
+        })
+           .sort({ publishedAt: -1 })
+           .limit(80) 
+           .select('+embedding') // Needed for math
            .lean(),
-        userId ? Profile.findOne({ userId }).select('userEmbedding') : null
+        userId ? Profile.findOne({ userId }).select('userEmbedding') : null,
+        userId ? UserStats.findOne({ userId }).select('leanExposure topicInterest') : null
     ]);
 
-    // 2. Score Candidates (Weighted Merge Logic)
+    // 2. Score Candidates
     const scoredCandidates = latestCandidates.map((article: any) => {
         let score = 0;
         
-        // A. Recency Score (0-50 pts) - Decay over 24h
+        // A. Recency Score (Base: 0-40 pts)
+        // Decays linearly over 24 hours
         const hoursOld = (Date.now() - new Date(article.publishedAt).getTime()) / (1000 * 60 * 60);
-        score += Math.max(0, 50 - (hoursOld * 2));
+        score += Math.max(0, 40 - (hoursOld * 1.5));
 
-        // B. Importance Score (0-30 pts)
-        if (article.trustScore > 80) score += 10;
-        if (article.clusterCount > 3) score += 10;
-        if (article.biasScore < 20) score += 10;
+        // B. Importance/Trending Score (0-30 pts)
+        if (article.trustScore > 85) score += 10;
+        if (article.clusterId && article.isLatest) score += 10; // Part of a cluster
+        if (article.biasScore < 15) score += 5; // Neutrality bonus
 
-        // C. Personalization Score (Fake implementation for speed, assumes vector search already filtered if we used it)
-        // In a real implementation, we would do a dot product here if we had the vector loaded.
-        
-        return { article, score };
+        // C. Personalization Score (0-40 pts)
+        if (userProfile?.userEmbedding && article.embedding) {
+            // Precise Vector Match
+            const sim = calculateSimilarity(userProfile.userEmbedding, article.embedding);
+            // Sim is usually 0.6 to 0.9 for matches. Normalize to 0-40.
+            score += Math.max(0, (sim - 0.5) * 100); 
+        } else if (userStats) {
+            // Heuristic Match (Fallback)
+            if (userStats.topicInterest && userStats.topicInterest[article.category] > 60) score += 20;
+            const lean = article.politicalLean;
+            if (userStats.leanExposure[lean] > userStats.leanExposure.Center) score += 10;
+        }
+
+        // Cleanup heavy embedding before returning
+        const { embedding, ...cleanArticle } = article;
+        return { article: cleanArticle, score };
     });
 
-    // 3. Zone 1: The "Must Know" (Top 15 by Score)
-    // We pick the best 15, BUT we sort them by Time (Latest First) as requested.
-    const sortedByScore = [...scoredCandidates].sort((a, b) => b.score - a.score);
-    const zone1 = sortedByScore.slice(0, 15).map(i => i.article)
-        .sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+    // 3. Construct Zones
+    // Sort by Total Score
+    const sorted = scoredCandidates.sort((a, b) => b.score - a.score);
 
+    // Zone 1: Top 10 "Must Reads" (Highest Weighted Score)
+    const zone1 = sorted.slice(0, 10).map(i => i.article);
     const zone1Ids = new Set(zone1.map(a => a._id.toString()));
 
-    // 4. Zone 2: The "Mix Tape" (Next 15 Shuffled)
-    const remainder = scoredCandidates.filter(i => !zone1Ids.has(i.article._id.toString()));
-    const zone2Pool = remainder.slice(0, 15);
-    const zone2 = zone2Pool.map(i => i.article).sort(() => Math.random() - 0.5);
+    // Zone 2: "Discovery Mix" (Next 20 candidates, shuffled for variety)
+    const zone2Candidates = sorted.slice(10, 30).filter(i => !zone1Ids.has(i.article._id.toString()));
+    const zone2 = zone2Candidates
+        .map(i => i.article)
+        .sort(() => Math.random() - 0.5); // Shuffle
 
-    // 5. Zone 3: The Rest (Time Sorted)
-    const usedIds = new Set([...zone1Ids, ...zone2.map(a => a._id.toString())]);
-    const zone3 = latestCandidates
-        .filter(a => !usedIds.has(a._id.toString()))
-        .sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
-
-    // Assemble Full Feed
-    const feed = [...zone1, ...zone2, ...zone3];
-
-    // Handle Slice for this specific request
-    const pagedFeed = feed.slice(page, page + Number(limit));
+    // Assemble
+    const mixedFeed = [...zone1, ...zone2];
+    
+    // Ensure we respect the requested limit (likely 20)
+    const resultFeed = mixedFeed.slice(0, Number(limit));
 
     return { 
-        articles: pagedFeed.map(a => ({ 
+        articles: resultFeed.map(a => ({ 
             ...a, 
             type: 'Article', 
             imageUrl: optimizeImageUrl(a.imageUrl) 
@@ -195,7 +223,7 @@ class ArticleService {
     };
   }
 
-  // --- 4. NEW: In Focus Feed (Narratives Only) ---
+  // --- 4. In Focus Feed (Narratives Only) ---
   async getInFocusFeed(filters: FeedFilters) {
      const query: any = {
          lastUpdated: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
@@ -206,7 +234,7 @@ class ArticleService {
      }
 
      const narratives = await Narrative.find(query)
-         .select('-articles -vector') // Keep it light
+         .select('-articles -vector') 
          .sort({ lastUpdated: -1 })
          .limit(20)
          .lean();
@@ -221,14 +249,12 @@ class ArticleService {
      };
   }
 
-  // --- 5. NEW: Balanced Feed (Anti-Echo Chamber) ---
-  // Replaces the old "For You" Logic with smarter UserStats logic
+  // --- 5. Balanced Feed (Anti-Echo Chamber) ---
   async getBalancedFeed(userId: string) {
       if (!userId) return this.getMainFeed({ limit: 20 }, undefined);
 
       const stats = await UserStats.findOne({ userId });
       
-      // Default Query
       let query: any = { 
           analysisVersion: { $ne: 'pending' },
           publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) }
@@ -240,20 +266,20 @@ class ArticleService {
           const { Left, Right } = stats.leanExposure;
           const total = Left + Right + stats.leanExposure.Center;
           
-          if (total > 5) { // Only calculate if we have >5 mins of data
+          if (total > 300) { // >5 mins of data (300s)
               if (Left > Right * 1.5) {
-                  // User is Heavy Left -> Show High Quality Right/Center
+                  // User is Left -> Show Right/Center
                   query.politicalLean = { $in: ['Right', 'Right-Leaning', 'Center'] };
-                  query.trustScore = { $gt: 80 }; // High quality only
+                  query.trustScore = { $gt: 80 }; 
                   reason = "Perspectives from Center & Right";
               } else if (Right > Left * 1.5) {
-                  // User is Heavy Right -> Show High Quality Left/Center
+                  // User is Right -> Show Left/Center
                   query.politicalLean = { $in: ['Left', 'Left-Leaning', 'Center'] };
                   query.trustScore = { $gt: 80 };
                   reason = "Perspectives from Center & Left";
               } else {
-                  // User is Balanced -> Show "Challenging" complex topics
-                  query.biasScore = { $lt: 15 }; // Extremely neutral/dense
+                  // User is Balanced -> Show Complex/Neutral
+                  query.biasScore = { $lt: 15 }; 
                   reason = "Deep Dive & Neutral Analysis";
               }
           }
@@ -277,7 +303,6 @@ class ArticleService {
   }
 
   // --- 6. Personalized Feed (Legacy / Backup) ---
-  // Kept to ensure we don't break existing endpoints, but mostly covered by Main Feed now.
   async getPersonalizedFeed(userId: string) {
     const CACHE_KEY = `my_mix_v2:${userId}`;
     
@@ -285,7 +310,6 @@ class ArticleService {
         const profile = await Profile.findOne({ userId }).select('userEmbedding').lean();
         if (!profile?.userEmbedding?.length) return { articles: [], meta: { reason: "No profile" }};
 
-        // Standard Vector Search
         try {
             const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
             const pipeline: any = [
