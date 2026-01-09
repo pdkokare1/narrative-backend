@@ -6,15 +6,15 @@ import schemas from '../utils/validationSchemas';
 import ActivityLog from '../models/activityLogModel';
 import Article from '../models/articleModel'; 
 import Profile from '../models/profileModel';
-import UserStats from '../models/userStatsModel'; // NEW: For Time Tracking
+import UserStats from '../models/userStatsModel'; 
 import gamificationService from '../services/gamificationService';
 import ttsService from '../services/ttsService'; 
-import authMiddleware from '../middleware/authMiddleware'; // Ensure Auth is used
+import { checkAuth } from '../middleware/authMiddleware'; // <--- FIXED Import
 
 const router = express.Router();
 
 // Apply Auth Middleware to all routes
-router.use(authMiddleware);
+router.use(checkAuth); // <--- FIXED Usage
 
 // --- HELPER: Update User Personalization Vector ---
 // Calculates the "Average Taste" based on last 50 reads
@@ -144,7 +144,6 @@ router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req:
 }));
 
 // --- 5. NEW: Heartbeat (Time Tracking) ---
-// This is the ONLY new addition to your file
 router.post('/heartbeat', asyncHandler(async (req: Request, res: Response) => {
   const { seconds, category, lean } = req.body;
   const userId = (req as any).user.uid;
