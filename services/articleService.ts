@@ -231,8 +231,11 @@ class ArticleService {
 
   // --- 4. In Focus Feed (Narratives Only) ---
   async getInFocusFeed(filters: FeedFilters) {
+     const { offset = 0, limit = 20 } = filters;
+     
+     // UPDATED: Extended window to 90 days to ensure data availability during testing
      const query: any = {
-         lastUpdated: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+         lastUpdated: { $gte: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) }
      };
      
      if (filters.category && filters.category !== 'All') {
@@ -242,7 +245,8 @@ class ArticleService {
      const narratives = await Narrative.find(query)
          .select('-articles -vector') 
          .sort({ lastUpdated: -1 })
-         .limit(20)
+         .skip(Number(offset))
+         .limit(Number(limit))
          .lean();
 
      return {
