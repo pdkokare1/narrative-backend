@@ -34,6 +34,14 @@ const calculateSimilarity = (vecA: number[], vecB: number[]) => {
     return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
 };
 
+// Helper: Safely map raw political lean strings to UserStats keys
+const mapLeanToKey = (lean: string): 'Left' | 'Right' | 'Center' => {
+    if (!lean) return 'Center';
+    if (lean.includes('Left') || lean.includes('Liberal')) return 'Left';
+    if (lean.includes('Right') || lean.includes('Conservative')) return 'Right';
+    return 'Center';
+};
+
 class ArticleService {
   
   // --- 1. Smart Trending Topics ---
@@ -176,16 +184,21 @@ class ArticleService {
         if (article.biasScore < 15) score += 5; // Neutrality bonus
 
         // C. Personalization Score (0-40 pts)
-        if (userProfile?.userEmbedding && article.embedding) {
+        // Use Type Casting (as any) to avoid build errors if interface is missing userEmbedding
+        const userVec = (userProfile as any)?.userEmbedding;
+        
+        if (userVec && article.embedding) {
             // Precise Vector Match
-            const sim = calculateSimilarity(userProfile.userEmbedding, article.embedding);
+            const sim = calculateSimilarity(userVec, article.embedding);
             // Sim is usually 0.6 to 0.9 for matches. Normalize to 0-40.
             score += Math.max(0, (sim - 0.5) * 100); 
         } else if (userStats) {
             // Heuristic Match (Fallback)
             if (userStats.topicInterest && userStats.topicInterest[article.category] > 60) score += 20;
-            const lean = article.politicalLean;
-            if (userStats.leanExposure[lean] > userStats.leanExposure.Center) score += 10;
+            
+            // Fix: Use helper to map safely to 'Left' | 'Right' | 'Center'
+            const leanKey = mapLeanToKey(article.politicalLean);
+            if (userStats.leanExposure[leanKey] > userStats.leanExposure.Center) score += 10;
         }
 
         // Cleanup heavy embedding before returning
@@ -308,7 +321,7 @@ class ArticleService {
     
     return redis.getOrFetch(CACHE_KEY, async () => {
         const profile = await Profile.findOne({ userId }).select('userEmbedding').lean();
-        if (!profile?.userEmbedding?.length) return { articles: [], meta: { reason: "No profile" }};
+        if (!profile || !(profile as any).userEmbedding?.length) return { articles: [], meta: { reason: "No profile" }};
 
         try {
             const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
@@ -317,7 +330,7 @@ class ArticleService {
                     "$vectorSearch": {
                         "index": "vector_index",
                         "path": "embedding",
-                        "queryVector": profile.userEmbedding,
+                        "queryVector": (profile as any).userEmbedding,
                         "numCandidates": 150,
                         "limit": 50
                     }
