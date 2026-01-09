@@ -46,31 +46,31 @@ class ArticleService {
   
   // --- 1. Smart Trending Topics ---
   async getTrendingTopics() {
+    // CACHE BUST: Hardcoded 'v5' key to force clear any empty cache from previous runs
     return redis.getOrFetch(
-        CONSTANTS.REDIS_KEYS.TRENDING, 
+        'trending_topics_v5', 
         async () => {
-            const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+            // UPDATED: Widen window to 30 days to ensure data shows even in dev/test environments
+            const searchWindow = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
             
-            // UPDATED: Relaxed constraints. 
-            // Removed strict clusterTopic requirement so we can fallback to Categories.
             const results = await Article.aggregate([
                 { 
                     $match: { 
-                        publishedAt: { $gte: twoDaysAgo }, 
-                        analysisVersion: { $ne: 'pending' }
+                        publishedAt: { $gte: searchWindow }, 
+                        // Relaxed: Removed analysisVersion check to show even partial data if needed
                     } 
                 },
                 { 
                     $group: { 
-                        // Logic: If clusterTopic exists, use it. If not, use Category.
-                        _id: { $ifNull: ["$clusterTopic", "$category"] }, 
+                        // Logic: Prefer clusterTopic -> Category -> Source -> "General"
+                        _id: { $ifNull: ["$clusterTopic", "$category", "$source", "General"] }, 
                         count: { $sum: 1 }, 
                         sampleScore: { $max: "$trustScore" } 
                     } 
                 },
-                { $match: { count: { $gte: 2 }, _id: { $ne: null } } }, // Lowered threshold to 2 to ensure data appears
+                { $match: { count: { $gte: 1 }, _id: { $ne: null } } }, // Threshold 1 ensures even single articles create a topic
                 { $sort: { count: -1 } },
-                { $limit: 10 }
+                { $limit: 12 }
             ]).read('secondaryPreferred'); 
 
             return results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
@@ -255,20 +255,19 @@ class ArticleService {
          .limit(Number(limit))
          .lean();
 
-     // UPDATED: FALLBACK LOGIC
-     // If no narratives exist (clustering hasn't run), return high-quality Articles instead.
-     // This prevents the "In Focus" feed from appearing broken/empty.
+     // UPDATED: PERMISSIVE FALLBACK LOGIC
+     // If no narratives, return Articles.
      if (narratives.length === 0) {
          const articleQuery = { 
              ...query, 
-             analysisVersion: { $ne: 'pending' },
-             // Prefer items with high trust score or "isLatest" flag
-             trustScore: { $gt: 75 } 
+             // Removed trustScore requirement entirely to ensure data shows up.
+             // Only require that the article is not stuck in "pending" analysis.
+             analysisVersion: { $ne: 'pending' } 
          };
 
          const fallbackArticles = await Article.find(articleQuery)
              .select('-content -embedding')
-             .sort({ publishedAt: -1 }) // Newest first
+             .sort({ publishedAt: -1 }) // Strictly latest first
              .skip(Number(offset))
              .limit(Number(limit))
              .lean();
