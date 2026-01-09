@@ -25,7 +25,8 @@ router.use('/assets', assetGenRoutes);
 // --- 2. Admin Routes (Firebase Protected) ---
 // These require a logged-in Admin user
 router.use('/migration', checkAdmin, migrationRoutes);
-router.use('/cluster', checkAdmin, clusterRoutes);
+// MOVED: Cluster routes moved to Public section to allow Timeline access
+// router.use('/cluster', checkAdmin, clusterRoutes); 
 
 // --- 3. User Protected Routes ---
 router.use('/profile', checkAppCheck, checkAuth, profileRoutes);
@@ -35,6 +36,7 @@ router.use('/activity', checkAppCheck, checkAuth, activityRoutes);
 router.use('/emergency-resources', emergencyRoutes);
 router.use('/tts', ttsLimiter, ttsRoutes);
 router.use('/weather', weatherRoutes); // [ADDED]
+router.use('/cluster', clusterRoutes); // [MOVED HERE]
 
 // --- 5. Main Content Routes ---
 // Mounted at root to maintain API compatibility:
