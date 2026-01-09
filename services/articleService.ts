@@ -2,14 +2,14 @@
 import mongoose from 'mongoose';
 import Article, { ArticleDocument } from '../models/articleModel';
 import Narrative from '../models/narrativeModel'; 
-import ActivityLog from '../models/activityLogModel';
+import UserStats from '../models/userStatsModel'; 
 import Profile from '../models/profileModel';
 import redis from '../utils/redisClient';
 import logger from '../utils/logger';
 import { CONSTANTS } from '../utils/constants';
 import aiService from './aiService'; 
 import { FeedFilters } from '../types';
-import { buildArticleQuery, buildNarrativeQuery } from '../utils/feedUtils';
+import { buildArticleQuery } from '../utils/feedUtils';
 
 // Helper: Optimize Image URLs for bandwidth
 const optimizeImageUrl = (url?: string) => {
@@ -81,7 +81,7 @@ class ArticleService {
                             "politicalLean": 1, "url": 1, "imageUrl": 1, "publishedAt": 1,
                             "analysisType": 1, "sentiment": 1, "biasScore": 1, "trustScore": 1,
                             "clusterTopic": 1, "audioUrl": 1,
-                            "keyFindings": 1, // UPDATED: Include keyFindings for instant access
+                            "keyFindings": 1,
                             "score": { "$meta": "vectorSearchScore" }
                         }
                     }
@@ -104,246 +104,230 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Main Feed (Refactored) ---
-  async getMainFeed(filters: FeedFilters) {
-    const { sort, limit = 20, offset = 0 } = filters;
-    
-    // A. Build Queries (Using Utils)
-    const query = buildArticleQuery(filters);
-    
-    // CRITICAL: Filter out pending analysis to prevent incomplete data
-    (query as any).analysisVersion = { $ne: 'pending' };
+  // --- 3. NEW: Triple-Zone Latest Feed ---
+  async getMainFeed(filters: FeedFilters, userId?: string) {
+    const { offset = 0, limit = 20 } = filters;
+    const page = Number(offset);
 
-    const narrativeQuery = buildNarrativeQuery(filters);
+    // ZONE 3: Deep Scrolling (Strict Chronological)
+    // If paging deep, we skip the heavy math and just return time-sorted articles
+    if (page >= 30) {
+         const query = buildArticleQuery(filters);
+         (query as any).analysisVersion = { $ne: 'pending' };
+         // Explicitly exclude Narratives (they are in In Focus now)
+         
+         const articles = await Article.find(query)
+            .select('-content -embedding -recommendations')
+            .sort({ publishedAt: -1 })
+            .skip(page)
+            .limit(Number(limit))
+            .lean()
+            .read('secondaryPreferred');
 
-    // B. Fetch Narratives
-    const narratives = await Narrative.find(narrativeQuery)
-                                      .select('-articles -vector') 
-                                      .sort({ lastUpdated: -1 })
-                                      .limit(5)
-                                      .lean()
-                                      .read('secondaryPreferred'); 
-
-    // C. Smart Dedup (Filter out articles belonging to fetched narratives)
-    const narrativeClusterIds = narratives.map(n => n.clusterId);
-    if (narrativeClusterIds.length > 0) {
-        (query as any).clusterId = { $nin: narrativeClusterIds };
+         return { 
+             articles: articles.map(a => ({...a, type: 'Article', imageUrl: optimizeImageUrl(a.imageUrl)})), 
+             pagination: { total: 1000 } // Estimate
+         };
     }
 
-    // D. Sort Options
-    let sortOptions: any = { publishedAt: -1 };
-    if (sort === 'Highest Quality') sortOptions = { trustScore: -1 };
-    else if (sort === 'Most Covered') sortOptions = { clusterCount: -1 };
-    else if (sort === 'Lowest Bias') sortOptions = { biasScore: 1 };
+    // ZONE 1 & 2: The "Smart Head" (Only computed on first load)
+    // 1. Fetch Candidates (Mix of Trending & Latest)
+    const [latestCandidates, userProfile] = await Promise.all([
+        Article.find({ analysisVersion: { $ne: 'pending' } })
+           .sort({ publishedAt: -1 }) // Get recent first
+           .limit(60) // Pool to select from
+           .select('-content -embedding')
+           .lean(),
+        userId ? Profile.findOne({ userId }).select('userEmbedding') : null
+    ]);
 
-    // E. Fetch Articles
-    const articles = await Article.find(query)
-        // UPDATED: Removed '-keyFindings' from exclusion list
-        .select('-content -embedding -recommendations') 
-        .sort(sortOptions)
-        .skip(Number(offset))
-        .limit(Number(limit))
-        .lean()
-        .read('secondaryPreferred'); 
+    // 2. Score Candidates (Weighted Merge Logic)
+    const scoredCandidates = latestCandidates.map((article: any) => {
+        let score = 0;
+        
+        // A. Recency Score (0-50 pts) - Decay over 24h
+        const hoursOld = (Date.now() - new Date(article.publishedAt).getTime()) / (1000 * 60 * 60);
+        score += Math.max(0, 50 - (hoursOld * 2));
 
-    // F. Combine
-    const feedItems = [
-        ...narratives.map(n => ({ ...n, type: 'Narrative', publishedAt: n.lastUpdated })),
-        ...articles.map(a => ({ 
-            ...a, 
-            type: 'Article',
-            imageUrl: optimizeImageUrl(a.imageUrl)
-        }))
-    ];
+        // B. Importance Score (0-30 pts)
+        if (article.trustScore > 80) score += 10;
+        if (article.clusterCount > 3) score += 10;
+        if (article.biasScore < 20) score += 10;
 
-    feedItems.sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+        // C. Personalization Score (Fake implementation for speed, assumes vector search already filtered if we used it)
+        // In a real implementation, we would do a dot product here if we had the vector loaded.
+        
+        return { article, score };
+    });
 
-    const totalArticles = await Article.countDocuments(query).read('secondaryPreferred');
-    
-    // FIX: Removed blocking cache here. We rely on Controller cache or direct fetch.
+    // 3. Zone 1: The "Must Know" (Top 15 by Score)
+    // We pick the best 15, BUT we sort them by Time (Latest First) as requested.
+    const sortedByScore = [...scoredCandidates].sort((a, b) => b.score - a.score);
+    const zone1 = sortedByScore.slice(0, 15).map(i => i.article)
+        .sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+
+    const zone1Ids = new Set(zone1.map(a => a._id.toString()));
+
+    // 4. Zone 2: The "Mix Tape" (Next 15 Shuffled)
+    const remainder = scoredCandidates.filter(i => !zone1Ids.has(i.article._id.toString()));
+    const zone2Pool = remainder.slice(0, 15);
+    const zone2 = zone2Pool.map(i => i.article).sort(() => Math.random() - 0.5);
+
+    // 5. Zone 3: The Rest (Time Sorted)
+    const usedIds = new Set([...zone1Ids, ...zone2.map(a => a._id.toString())]);
+    const zone3 = latestCandidates
+        .filter(a => !usedIds.has(a._id.toString()))
+        .sort((a: any, b: any) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+
+    // Assemble Full Feed
+    const feed = [...zone1, ...zone2, ...zone3];
+
+    // Handle Slice for this specific request
+    const pagedFeed = feed.slice(page, page + Number(limit));
+
     return { 
-        articles: feedItems.slice(0, Number(limit)), 
-        pagination: { total: totalArticles + narratives.length } 
+        articles: pagedFeed.map(a => ({ 
+            ...a, 
+            type: 'Article', 
+            imageUrl: optimizeImageUrl(a.imageUrl) 
+        })), 
+        pagination: { total: 1000 } 
     };
   }
 
-  // --- 4. For You Feed ---
-  async getForYouFeed(userId: string | undefined) {
-    if (!userId) {
-        const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
-            .select('-content -embedding')
-            .sort({ trustScore: -1, publishedAt: -1 })
-            .limit(10)
-            .lean()
-            .read('secondaryPreferred');
-        return { articles: standard, meta: { reason: "Guest User" } };
-    }
+  // --- 4. NEW: In Focus Feed (Narratives Only) ---
+  async getInFocusFeed(filters: FeedFilters) {
+     const query: any = {
+         lastUpdated: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+     };
+     
+     if (filters.category && filters.category !== 'All') {
+         query.category = filters.category;
+     }
 
-    const CACHE_KEY = `feed_foryou_v2:${userId}`;
+     const narratives = await Narrative.find(query)
+         .select('-articles -vector') // Keep it light
+         .sort({ lastUpdated: -1 })
+         .limit(20)
+         .lean();
 
-    return redis.getOrFetch(CACHE_KEY, async () => {
-        const history = await ActivityLog.find({ userId, action: 'view_analysis' })
-            .sort({ timestamp: -1 })
-            .limit(20)
-            .lean();
-        
-        if (history.length === 0) {
-            const standard = await Article.find({ analysisVersion: { $ne: 'pending' } })
-                .select('-content -embedding')
-                .sort({ trustScore: -1, publishedAt: -1 })
-                .limit(10)
-                .lean()
-                .read('secondaryPreferred');
-            return { articles: standard, meta: { reason: "No history" } };
-        }
-
-        const articleIds = history.map(h => h.articleId);
-        const viewedDocs = await Article.find({ _id: { $in: articleIds } }).select('politicalLean').lean();
-        const leanCounts: Record<string, number> = {};
-        viewedDocs.forEach((d: any) => { leanCounts[d.politicalLean] = (leanCounts[d.politicalLean] || 0) + 1; });
-        
-        let dominantLean = 'Center';
-        let maxCount = 0;
-        Object.entries(leanCounts).forEach(([lean, count]) => { 
-            if (count > maxCount) { maxCount = count; dominantLean = lean; } 
-        });
-
-        let targetLean = ['Center'];
-        if (dominantLean.includes('Left')) targetLean = ['Center', 'Right-Leaning', 'Right'];
-        else if (dominantLean.includes('Right')) targetLean = ['Center', 'Left-Leaning', 'Left'];
-
-        let challengerArticles = await Article.find({
-            politicalLean: { $in: targetLean },
-            publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-            analysisVersion: { $ne: 'pending' }
-        })
-        .select('-content -embedding')
-        .sort({ trustScore: -1, publishedAt: -1 })
-        .limit(10)
-        .lean()
-        .read('secondaryPreferred');
-
-        if (challengerArticles.length === 0) {
-            challengerArticles = await Article.find({ 
-                politicalLean: 'Center',
-                analysisVersion: { $ne: 'pending' }
-            })
-            .select('-content -embedding')
-            .sort({ publishedAt: -1 })
-            .limit(10)
-            .lean()
-            .read('secondaryPreferred');
-        }
-
-        return { 
-            articles: challengerArticles.map(a => ({ 
-                ...a, 
-                suggestionType: 'Challenge',
-                imageUrl: optimizeImageUrl(a.imageUrl)
-            })), 
-            meta: { basedOnCategory: 'Your Reading History', usualLean: dominantLean } 
-        };
-    }, CONSTANTS.CACHE.TTL_PERSONAL);
+     return {
+         articles: narratives.map(n => ({
+             ...n,
+             type: 'Narrative',
+             publishedAt: n.lastUpdated 
+         })),
+         meta: { description: "Top Developing Stories" }
+     };
   }
 
-  // --- 5. Personalized "My Mix" Feed ---
+  // --- 5. NEW: Balanced Feed (Anti-Echo Chamber) ---
+  // Replaces the old "For You" Logic with smarter UserStats logic
+  async getBalancedFeed(userId: string) {
+      if (!userId) return this.getMainFeed({ limit: 20 }, undefined);
+
+      const stats = await UserStats.findOne({ userId });
+      
+      // Default Query
+      let query: any = { 
+          analysisVersion: { $ne: 'pending' },
+          publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) }
+      };
+
+      let reason = "Global Perspectives";
+
+      if (stats) {
+          const { Left, Right } = stats.leanExposure;
+          const total = Left + Right + stats.leanExposure.Center;
+          
+          if (total > 5) { // Only calculate if we have >5 mins of data
+              if (Left > Right * 1.5) {
+                  // User is Heavy Left -> Show High Quality Right/Center
+                  query.politicalLean = { $in: ['Right', 'Right-Leaning', 'Center'] };
+                  query.trustScore = { $gt: 80 }; // High quality only
+                  reason = "Perspectives from Center & Right";
+              } else if (Right > Left * 1.5) {
+                  // User is Heavy Right -> Show High Quality Left/Center
+                  query.politicalLean = { $in: ['Left', 'Left-Leaning', 'Center'] };
+                  query.trustScore = { $gt: 80 };
+                  reason = "Perspectives from Center & Left";
+              } else {
+                  // User is Balanced -> Show "Challenging" complex topics
+                  query.biasScore = { $lt: 15 }; // Extremely neutral/dense
+                  reason = "Deep Dive & Neutral Analysis";
+              }
+          }
+      }
+
+      const articles = await Article.find(query)
+          .select('-content -embedding')
+          .sort({ trustScore: -1, publishedAt: -1 })
+          .limit(20)
+          .lean();
+
+      return {
+          articles: articles.map(a => ({ 
+              ...a, 
+              type: 'Article', 
+              imageUrl: optimizeImageUrl(a.imageUrl), 
+              suggestionType: 'Challenge' 
+          })),
+          meta: { reason }
+      };
+  }
+
+  // --- 6. Personalized Feed (Legacy / Backup) ---
+  // Kept to ensure we don't break existing endpoints, but mostly covered by Main Feed now.
   async getPersonalizedFeed(userId: string) {
     const CACHE_KEY = `my_mix_v2:${userId}`;
     
     return redis.getOrFetch(CACHE_KEY, async () => {
         const profile = await Profile.findOne({ userId }).select('userEmbedding').lean();
-        const hasVector = profile && profile.userEmbedding && profile.userEmbedding.length > 0;
+        if (!profile?.userEmbedding?.length) return { articles: [], meta: { reason: "No profile" }};
 
-        let recommendations: any[] = [];
-        let metaReason = "Trending";
-
-        if (hasVector) {
-            try {
-                const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-                const pipeline: any = [
-                    {
-                        "$vectorSearch": {
-                            "index": "vector_index",
-                            "path": "embedding",
-                            "queryVector": profile.userEmbedding,
-                            "numCandidates": 150,
-                            "limit": 50
-                        }
-                    },
-                    { 
-                        "$match": { 
-                            "publishedAt": { "$gte": threeDaysAgo },
-                            "analysisVersion": { "$ne": "pending" }
-                        } 
-                    },
-                    { "$limit": 20 },
-                    { 
-                        "$project": { 
-                            "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, 
-                            "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, 
-                            "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, 
-                            "audioUrl": 1, 
-                            "keyFindings": 1, // UPDATED: Include keyFindings
-                            "score": { "$meta": "vectorSearchScore" } 
-                        } 
+        // Standard Vector Search
+        try {
+            const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+            const pipeline: any = [
+                {
+                    "$vectorSearch": {
+                        "index": "vector_index",
+                        "path": "embedding",
+                        "queryVector": profile.userEmbedding,
+                        "numCandidates": 150,
+                        "limit": 50
                     }
-                ];
-                recommendations = await Article.aggregate(pipeline);
-                metaReason = "AI Curated (Interest Match)";
-            } catch (error) {
-                logger.error(`Vector Search Failed: ${error}`);
-            }
-        }
-
-        if (recommendations.length === 0) {
-            const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' }).sort({ timestamp: -1 }).limit(50).lean();
-            if (recentLogs.length > 0) {
-                const articleIds = recentLogs.map(l => l.articleId);
-                const viewedArticles = await Article.find({ _id: { $in: articleIds } }).select('category').lean();
-                const categoryCounts: Record<string, number> = {};
-                viewedArticles.forEach((a: any) => categoryCounts[a.category] = (categoryCounts[a.category] || 0) + 1);
-                
-                const topCategories = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1]).slice(0, 3).map(x => x[0]);
-                metaReason = `Based on ${topCategories.join(', ')}`;
-                
-                if (topCategories.length > 0) {
-                    recommendations = await Article.aggregate([
-                        { 
-                            $match: { 
-                                category: { $in: topCategories }, 
-                                publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
-                                analysisVersion: { $ne: 'pending' }
-                            } 
-                        },
-                        { $sample: { size: 15 } },
-                        { $project: { embedding: 0, content: 0 } }
-                    ]);
+                },
+                { 
+                    "$match": { 
+                        "publishedAt": { "$gte": threeDaysAgo },
+                        "analysisVersion": { "$ne": "pending" }
+                    } 
+                },
+                { "$limit": 20 },
+                { 
+                    "$project": { 
+                        "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, 
+                        "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, 
+                        "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, 
+                        "audioUrl": 1, "keyFindings": 1,
+                        "score": { "$meta": "vectorSearchScore" } 
+                    } 
                 }
-            }
+            ];
+            const articles = await Article.aggregate(pipeline);
+            return { 
+                articles: articles.map(a => ({ ...a, suggestionType: 'Comfort', imageUrl: optimizeImageUrl(a.imageUrl) })), 
+                meta: { topCategories: ["AI Curated"] } 
+            };
+        } catch (error) {
+            logger.error(`Vector Search Failed: ${error}`);
+            return { articles: [], meta: { reason: "Error" }};
         }
-
-        if (recommendations.length === 0) {
-            recommendations = await Article.find({ analysisVersion: { $ne: 'pending' } })
-                .select('-content -embedding')
-                .sort({ publishedAt: -1 })
-                .limit(15)
-                .lean()
-                .read('secondaryPreferred');
-            metaReason = "Trending (No Data)";
-        }
-
-        return { 
-            articles: recommendations.map(a => ({ 
-                ...a, 
-                suggestionType: 'Comfort',
-                imageUrl: optimizeImageUrl(a.imageUrl)
-            })), 
-            meta: { topCategories: [metaReason] } 
-        };
     }, CONSTANTS.CACHE.TTL_PERSONAL);
   }
 
-  // --- 6. Saved Articles ---
+  // --- 7. Saved Articles ---
   async getSavedArticles(userId: string) {
     const profile = await Profile.findOne({ userId }).select('savedArticles').lean();
     if (!profile || !profile.savedArticles.length) return [];
@@ -357,7 +341,7 @@ class ArticleService {
     return articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
   }
 
-  // --- 7. Toggle Save ---
+  // --- 8. Toggle Save ---
   async toggleSaveArticle(userId: string, articleIdStr: string) {
     const articleId = new mongoose.Types.ObjectId(articleIdStr);
     const profile = await Profile.findOne({ userId, savedArticles: articleId });
