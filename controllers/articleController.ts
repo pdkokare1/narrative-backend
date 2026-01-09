@@ -1,27 +1,20 @@
 // controllers/articleController.ts
 import { Request, Response, NextFunction } from 'express';
 import Article from '../models/articleModel'; 
-import aiService from '../services/aiService'; 
 import articleService from '../services/articleService'; 
 import catchAsync from '../utils/asyncHandler'; 
 import AppError from '../utils/AppError'; 
 import { FeedFilters } from '../types';
-import Narrative from '../models/narrativeModel';
 
 // --- 1. Trending Topics ---
 export const getTrendingTopics = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const topics = await articleService.getTrendingTopics();
-  
-  res.status(200).json({
-    status: 'success',
-    data: topics
-  });
+  res.status(200).json({ status: 'success', data: topics });
 });
 
 // --- 2. Intelligent Search ---
 export const searchArticles = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const query = req.query.q as string;
-  // Fallback to strict schema validation output if q isn't there (middleware might handle this)
   if (!query) return next(new AppError('Please provide a search query', 400));
 
   const result = await articleService.searchArticles(query);
@@ -33,9 +26,9 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
   });
 });
 
-// --- 3. Main Feed ---
+// --- 3. Main Feed (Triple Zone) ---
 export const getMainFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  // Cast query params to FeedFilters type
+  const userId = (req as any).user?.uid; // Optional Auth
   const filters: FeedFilters = {
     category: req.query.category as string,
     politicalLean: req.query.politicalLean as string,
@@ -48,7 +41,7 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
     endDate: req.query.endDate as string
   };
 
-  const result = await articleService.getMainFeed(filters);
+  const result = await articleService.getMainFeed(filters, userId);
 
   res.status(200).json({
     status: 'success',
@@ -58,12 +51,10 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
   });
 });
 
-// --- 4. For You Feed ---
-export const getForYouFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  // req.user is populated by checkAuth/optionalAuth middleware
-  const userId = (req as any).user?.uid;
-  
-  const result = await articleService.getForYouFeed(userId);
+// --- 4. NEW: In Focus Feed (Narratives) ---
+export const getInFocusFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  const filters: FeedFilters = { category: req.query.category as string };
+  const result = await articleService.getInFocusFeed(filters);
 
   res.status(200).json({
     status: 'success',
@@ -72,10 +63,21 @@ export const getForYouFeed = catchAsync(async (req: Request, res: Response, next
   });
 });
 
-// --- 5. Personalized Feed (Protected) ---
+// --- 5. Balanced Feed (Replaces For You) ---
+export const getBalancedFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  const userId = (req as any).user?.uid; // Optional but recommended for this feed
+  const result = await articleService.getBalancedFeed(userId);
+
+  res.status(200).json({
+    status: 'success',
+    meta: result.meta,
+    data: result.articles
+  });
+});
+
+// --- 6. Personalized Feed (Legacy) ---
 export const getPersonalizedFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  const userId = (req as any).user.uid; // Protected route, user exists
-  
+  const userId = (req as any).user.uid;
   const result = await articleService.getPersonalizedFeed(userId);
 
   res.status(200).json({
@@ -85,10 +87,9 @@ export const getPersonalizedFeed = catchAsync(async (req: Request, res: Response
   });
 });
 
-// --- 6. Saved Articles ---
+// --- 7. Saved Articles ---
 export const getSavedArticles = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user.uid;
-  
   const articles = await articleService.getSavedArticles(userId);
 
   res.status(200).json({
@@ -98,7 +99,7 @@ export const getSavedArticles = catchAsync(async (req: Request, res: Response, n
   });
 });
 
-// --- 7. Toggle Save ---
+// --- 8. Toggle Save ---
 export const toggleSaveArticle = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user.uid;
   const articleId = req.params.id;
@@ -112,111 +113,39 @@ export const toggleSaveArticle = catchAsync(async (req: Request, res: Response, 
   });
 });
 
-// --- 8. Smart Briefing (Dual Mode: Single Article OR Global) ---
+// --- 9. Smart Briefing (Single Article) ---
 export const getSmartBriefing = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
     const articleId = req.query.articleId as string;
+    if (!articleId) return next(new AppError('Article ID required for briefing', 400));
 
-    // --- MODE A: Single Article Briefing (Pre-calculated) ---
-    if (articleId) {
-        const article = await Article.findById(articleId).select('headline summary keyFindings recommendations clusterId trustScore politicalLean source');
+    const article = await Article.findById(articleId).select('headline summary keyFindings recommendations trustScore politicalLean source');
+    if (!article) return next(new AppError('Article not found', 404));
 
-        if (!article) {
-            return next(new AppError('Article not found', 404));
-        }
+    const points = (article.keyFindings && article.keyFindings.length > 0) 
+        ? article.keyFindings 
+        : ["Analysis in progress. Key findings will appear shortly."];
+        
+    const recommendations = (article.recommendations && article.recommendations.length > 0)
+        ? article.recommendations
+        : ["Follow this topic for updates.", "Compare sources to verify details."];
 
-        // Check if article is part of a cluster with a narrative (Optional check, currently allows briefing)
-        /*
-        if (article.clusterId) {
-            const narrativeExists = await Narrative.exists({ clusterId: article.clusterId });
-            // Logic to redirect to narrative could go here
-        }
-        */
-
-        // Fallback if AI hasn't generated specific findings yet (old articles)
-        const points = (article.keyFindings && article.keyFindings.length > 0) 
-            ? article.keyFindings 
-            : ["Analysis in progress. Key findings will appear shortly."];
-            
-        const recommendations = (article.recommendations && article.recommendations.length > 0)
-            ? article.recommendations
-            : ["Follow this topic for updates.", "Compare sources to verify details."];
-
-        return res.status(200).json({
-            status: 'success',
-            data: {
-                title: article.headline,
-                content: article.summary,
-                keyPoints: points,
-                recommendations: recommendations,
-                meta: {
-                    trustScore: article.trustScore,
-                    politicalLean: article.politicalLean,
-                    source: article.source
-                }
-            }
-        });
-    }
-
-    // --- MODE B: Global Daily Narrative (Legacy/Global) ---
-    // 1. Fetch top significant articles from last 24h
-    const oneDayAgo = new Date();
-    oneDayAgo.setDate(oneDayAgo.getDate() - 1);
-  
-    // We look for articles that have a high viral score or trust score
-    const topArticles = await Article.find({
-      publishedAt: { $gte: oneDayAgo },
-      analysisVersion: { $ne: 'pending' }
-    })
-    .sort({ trustScore: -1 }) 
-    .limit(10) // Give AI the top 10 stories
-    .select('headline summary source category')
-    .lean();
-  
-    if (!topArticles || topArticles.length < 3) {
-      // Not enough data for a briefing
-      return res.status(200).json({
+    res.status(200).json({
         status: 'success',
         data: {
-          title: "Briefing Unavailable",
-          content: "We are still collecting enough high-quality reports to generate today's briefing. Please check back later.",
-          keyPoints: []
-        }
-      });
-    }
-  
-    // 2. Use existing Narrative AI logic to synthesize them
-    try {
-        const narrative = await aiService.generateNarrative(topArticles as any[]);
-        
-        if (narrative) {
-            return res.status(200).json({
-                status: 'success',
-                data: {
-                    title: narrative.masterHeadline || "Today's Smart Briefing",
-                    content: narrative.executiveSummary || "Here is a summary of the latest top stories.",
-                    keyPoints: narrative.consensusPoints || []
-                }
-            });
-        } 
-        
-        throw new Error('AI returned null narrative');
-
-    } catch (error) {
-        // Fallback if AI fails (e.g., rate limit)
-        console.error("Briefing Generation Failed:", error);
-        
-        return res.status(200).json({
-            status: 'success',
-            data: {
-                title: "Today's Headlines",
-                content: "Our AI is currently recharging. Here are the top stories you should know about right now.",
-                keyPoints: topArticles.slice(0, 5).map(a => a.headline)
+            title: article.headline,
+            content: article.summary,
+            keyPoints: points,
+            recommendations: recommendations,
+            meta: {
+                trustScore: article.trustScore,
+                politicalLean: article.politicalLean,
+                source: article.source
             }
-        });
-    }
+        }
+    });
 });
 
-// --- Legacy / Generic CRUD (Optional, kept for admin compatibility) ---
+// --- CRUD Operations ---
 
 export const getArticle = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const article = await Article.findById(req.params.id);
