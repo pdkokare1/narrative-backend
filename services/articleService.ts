@@ -184,19 +184,15 @@ class ArticleService {
         if (article.biasScore < 15) score += 5; // Neutrality bonus
 
         // C. Personalization Score (0-40 pts)
-        // Use Type Casting (as any) to avoid build errors if interface is missing userEmbedding
         const userVec = (userProfile as any)?.userEmbedding;
         
         if (userVec && article.embedding) {
             // Precise Vector Match
             const sim = calculateSimilarity(userVec, article.embedding);
-            // Sim is usually 0.6 to 0.9 for matches. Normalize to 0-40.
             score += Math.max(0, (sim - 0.5) * 100); 
         } else if (userStats) {
             // Heuristic Match (Fallback)
             if (userStats.topicInterest && userStats.topicInterest[article.category] > 60) score += 20;
-            
-            // Fix: Use helper to map safely to 'Left' | 'Right' | 'Center'
             const leanKey = mapLeanToKey(article.politicalLean);
             if (userStats.leanExposure[leanKey] > userStats.leanExposure.Center) score += 10;
         }
@@ -207,23 +203,20 @@ class ArticleService {
     });
 
     // 3. Construct Zones
-    // Sort by Total Score
     const sorted = scoredCandidates.sort((a, b) => b.score - a.score);
 
-    // Zone 1: Top 10 "Must Reads" (Highest Weighted Score)
+    // Zone 1: Top 10 "Must Reads"
     const zone1 = sorted.slice(0, 10).map(i => i.article);
     const zone1Ids = new Set(zone1.map(a => a._id.toString()));
 
-    // Zone 2: "Discovery Mix" (Next 20 candidates, shuffled for variety)
+    // Zone 2: "Discovery Mix" (Next 20 candidates, shuffled)
     const zone2Candidates = sorted.slice(10, 30).filter(i => !zone1Ids.has(i.article._id.toString()));
     const zone2 = zone2Candidates
         .map(i => i.article)
-        .sort(() => Math.random() - 0.5); // Shuffle
+        .sort(() => Math.random() - 0.5); 
 
     // Assemble
     const mixedFeed = [...zone1, ...zone2];
-    
-    // Ensure we respect the requested limit (likely 20)
     const resultFeed = mixedFeed.slice(0, Number(limit));
 
     return { 
@@ -264,7 +257,14 @@ class ArticleService {
 
   // --- 5. Balanced Feed (Anti-Echo Chamber) ---
   async getBalancedFeed(userId: string) {
-      if (!userId) return this.getMainFeed({ limit: 20 }, undefined);
+      if (!userId) {
+          // Fallback: If no user, fetch standard feed but wrap it to match type
+          const feed = await this.getMainFeed({ limit: 20 });
+          return { 
+              articles: feed.articles, 
+              meta: { reason: "Trending Headlines" } 
+          };
+      }
 
       const stats = await UserStats.findOne({ userId });
       
@@ -279,19 +279,16 @@ class ArticleService {
           const { Left, Right } = stats.leanExposure;
           const total = Left + Right + stats.leanExposure.Center;
           
-          if (total > 300) { // >5 mins of data (300s)
+          if (total > 300) { 
               if (Left > Right * 1.5) {
-                  // User is Left -> Show Right/Center
                   query.politicalLean = { $in: ['Right', 'Right-Leaning', 'Center'] };
                   query.trustScore = { $gt: 80 }; 
                   reason = "Perspectives from Center & Right";
               } else if (Right > Left * 1.5) {
-                  // User is Right -> Show Left/Center
                   query.politicalLean = { $in: ['Left', 'Left-Leaning', 'Center'] };
                   query.trustScore = { $gt: 80 };
                   reason = "Perspectives from Center & Left";
               } else {
-                  // User is Balanced -> Show Complex/Neutral
                   query.biasScore = { $lt: 15 }; 
                   reason = "Deep Dive & Neutral Analysis";
               }
