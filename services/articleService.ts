@@ -50,16 +50,25 @@ class ArticleService {
         CONSTANTS.REDIS_KEYS.TRENDING, 
         async () => {
             const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+            
+            // UPDATED: Relaxed constraints. 
+            // Removed strict clusterTopic requirement so we can fallback to Categories.
             const results = await Article.aggregate([
                 { 
                     $match: { 
                         publishedAt: { $gte: twoDaysAgo }, 
-                        clusterTopic: { $exists: true, $ne: null },
                         analysisVersion: { $ne: 'pending' }
                     } 
                 },
-                { $group: { _id: "$clusterTopic", count: { $sum: 1 }, sampleScore: { $max: "$trustScore" } } },
-                { $match: { count: { $gte: 3 } } },
+                { 
+                    $group: { 
+                        // Logic: If clusterTopic exists, use it. If not, use Category.
+                        _id: { $ifNull: ["$clusterTopic", "$category"] }, 
+                        count: { $sum: 1 }, 
+                        sampleScore: { $max: "$trustScore" } 
+                    } 
+                },
+                { $match: { count: { $gte: 2 }, _id: { $ne: null } } }, // Lowered threshold to 2 to ensure data appears
                 { $sort: { count: -1 } },
                 { $limit: 10 }
             ]).read('secondaryPreferred'); 
@@ -229,24 +238,50 @@ class ArticleService {
     };
   }
 
-  // --- 4. In Focus Feed (Narratives Only) ---
+  // --- 4. In Focus Feed (Narratives OR Top Stories) ---
   async getInFocusFeed(filters: FeedFilters) {
      const { offset = 0, limit = 20 } = filters;
      
-     // UPDATED: Completely removed date filter.
-     // Fetches ALL narratives regardless of age.
      const query: any = {};
-     
      if (filters.category && filters.category !== 'All') {
          query.category = filters.category;
      }
 
+     // 1. Try to fetch Narratives (Clustered Stories)
      const narratives = await Narrative.find(query)
          .select('-articles -vector') 
          .sort({ lastUpdated: -1 })
          .skip(Number(offset))
          .limit(Number(limit))
          .lean();
+
+     // UPDATED: FALLBACK LOGIC
+     // If no narratives exist (clustering hasn't run), return high-quality Articles instead.
+     // This prevents the "In Focus" feed from appearing broken/empty.
+     if (narratives.length === 0) {
+         const articleQuery = { 
+             ...query, 
+             analysisVersion: { $ne: 'pending' },
+             // Prefer items with high trust score or "isLatest" flag
+             trustScore: { $gt: 75 } 
+         };
+
+         const fallbackArticles = await Article.find(articleQuery)
+             .select('-content -embedding')
+             .sort({ publishedAt: -1 }) // Newest first
+             .skip(Number(offset))
+             .limit(Number(limit))
+             .lean();
+
+         return {
+             articles: fallbackArticles.map(a => ({
+                 ...a,
+                 type: 'Article', // Frontend will render this as a standard card
+                 imageUrl: optimizeImageUrl(a.imageUrl)
+             })),
+             meta: { description: "Top Headlines (Developing)" }
+         };
+     }
 
      return {
          articles: narratives.map(n => ({
