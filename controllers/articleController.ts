@@ -29,6 +29,8 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
 // --- 3. Main Feed (Triple Zone) ---
 export const getMainFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user?.uid; // Optional Auth
+  
+  // Extract all potential filters for the service
   const filters: FeedFilters = {
     category: req.query.category as string,
     politicalLean: req.query.politicalLean as string,
@@ -53,7 +55,9 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
 
 // --- 4. NEW: In Focus Feed (Narratives) ---
 export const getInFocusFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
+  // Only category filter usually applies to Narratives
   const filters: FeedFilters = { category: req.query.category as string };
+  
   const result = await articleService.getInFocusFeed(filters);
 
   res.status(200).json({
@@ -63,9 +67,10 @@ export const getInFocusFeed = catchAsync(async (req: Request, res: Response, nex
   });
 });
 
-// --- 5. Balanced Feed (Replaces For You) ---
+// --- 5. Balanced Feed (Anti-Echo Chamber) ---
 export const getBalancedFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  const userId = (req as any).user?.uid; // Optional but recommended for this feed
+  const userId = (req as any).user?.uid; 
+  // This feed relies heavily on UserStats, so userId is critical if available
   const result = await articleService.getBalancedFeed(userId);
 
   res.status(200).json({
@@ -75,7 +80,7 @@ export const getBalancedFeed = catchAsync(async (req: Request, res: Response, ne
   });
 });
 
-// --- 6. Personalized Feed (Legacy) ---
+// --- 6. Personalized Feed (Legacy/Deep) ---
 export const getPersonalizedFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user.uid;
   const result = await articleService.getPersonalizedFeed(userId);
@@ -145,7 +150,7 @@ export const getSmartBriefing = catchAsync(async (req: Request, res: Response, n
     });
 });
 
-// --- CRUD Operations ---
+// --- CRUD Operations (Admin) ---
 
 export const getArticle = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const article = await Article.findById(req.params.id);
