@@ -6,10 +6,15 @@ import schemas from '../utils/validationSchemas';
 import ActivityLog from '../models/activityLogModel';
 import Article from '../models/articleModel'; 
 import Profile from '../models/profileModel';
+import UserStats from '../models/userStatsModel'; // NEW: For Time Tracking
 import gamificationService from '../services/gamificationService';
 import ttsService from '../services/ttsService'; 
+import authMiddleware from '../middleware/authMiddleware'; // Ensure Auth is used
 
 const router = express.Router();
+
+// Apply Auth Middleware to all routes
+router.use(authMiddleware);
 
 // --- HELPER: Update User Personalization Vector ---
 // Calculates the "Average Taste" based on last 50 reads
@@ -18,7 +23,7 @@ async function updateUserVector(userId: string) {
         // 1. Get last 50 viewed article IDs
         const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
             .sort({ timestamp: -1 })
-            .limit(50) // Increased to 50 for better accuracy
+            .limit(50) 
             .select('articleId');
 
         if (recentLogs.length === 0) return;
@@ -26,7 +31,6 @@ async function updateUserVector(userId: string) {
         const articleIds = recentLogs.map(log => log.articleId);
 
         // 2. Fetch embeddings for these articles
-        // We only want articles that actually have an embedding
         const articles = await Article.find({ 
             _id: { $in: articleIds },
             embedding: { $exists: true, $not: { $size: 0 } }
@@ -52,7 +56,6 @@ async function updateUserVector(userId: string) {
 
         // 4. Update Profile
         await Profile.updateOne({ userId }, { userEmbedding: avgVector });
-        // console.log(`🧠 Updated Interest Vector for ${userId} (based on ${articles.length} articles)`);
 
     } catch (error) {
         console.error("❌ Vector Update Failed:", error);
@@ -62,7 +65,7 @@ async function updateUserVector(userId: string) {
 // --- 1. Log View (Analysis) ---
 router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body; 
-    const userId = req.user!.uid;
+    const userId = (req as any).user.uid;
 
     // Log Action
     await ActivityLog.create({ userId, articleId, action: 'view_analysis' });
@@ -89,7 +92,6 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
     })();
 
     // --- UPDATE PERSONALIZATION VECTOR ---
-    // Fire and forget (don't block response)
     updateUserVector(userId).catch(err => console.error(err));
 
     // Check for Badges
@@ -103,10 +105,12 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
 // --- 2. Log Comparison ---
 router.post('/log-compare', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
-    await ActivityLog.create({ userId: req.user!.uid, articleId, action: 'view_comparison' });
-    await Profile.findOneAndUpdate({ userId: req.user!.uid }, { $inc: { comparisonsViewedCount: 1 } });
+    const userId = (req as any).user.uid;
+
+    await ActivityLog.create({ userId, articleId, action: 'view_comparison' });
+    await Profile.findOneAndUpdate({ userId }, { $inc: { comparisonsViewedCount: 1 } });
     
-    const newBadge = await gamificationService.updateStreak(req.user!.uid);
+    const newBadge = await gamificationService.updateStreak(userId);
 
     res.status(200).json({ message: 'Logged comparison', newBadge });
 }));
@@ -114,10 +118,12 @@ router.post('/log-compare', validate(schemas.logActivity), asyncHandler(async (r
 // --- 3. Log Share ---
 router.post('/log-share', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
-    await ActivityLog.create({ userId: req.user!.uid, articleId, action: 'share_article' });
-    await Profile.findOneAndUpdate({ userId: req.user!.uid }, { $inc: { articlesSharedCount: 1 } });
+    const userId = (req as any).user.uid;
+
+    await ActivityLog.create({ userId, articleId, action: 'share_article' });
+    await Profile.findOneAndUpdate({ userId }, { $inc: { articlesSharedCount: 1 } });
     
-    const newBadge = await gamificationService.updateStreak(req.user!.uid);
+    const newBadge = await gamificationService.updateStreak(userId);
 
     res.status(200).json({ message: 'Logged share', newBadge });
 }));
@@ -125,7 +131,7 @@ router.post('/log-share', validate(schemas.logActivity), asyncHandler(async (req
 // --- 4. Log Read (External Link) ---
 router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
     const { articleId } = req.body;
-    const userId = req.user!.uid;
+    const userId = (req as any).user.uid;
 
     await ActivityLog.create({ userId, articleId, action: 'read_external' });
     
@@ -135,6 +141,34 @@ router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req:
     const newBadge = await gamificationService.updateStreak(userId);
 
     res.status(200).json({ message: 'Logged read', newBadge });
+}));
+
+// --- 5. NEW: Heartbeat (Time Tracking) ---
+// This is the ONLY new addition to your file
+router.post('/heartbeat', asyncHandler(async (req: Request, res: Response) => {
+  const { seconds, category, lean } = req.body;
+  const userId = (req as any).user.uid;
+
+  if (!seconds || seconds <= 0) return res.status(200).json({ status: 'ignored' });
+
+  // Update Aggregate Stats atomically (UserStats Model)
+  const updateOps: any = {
+      $inc: {
+          totalTimeSpent: seconds,
+          [`topicInterest.${category}`]: seconds,
+          [`leanExposure.${lean || 'Center'}`]: seconds
+      },
+      $set: { lastUpdated: new Date() }
+  };
+
+  // Upsert ensures document is created if it doesn't exist
+  await UserStats.findOneAndUpdate(
+      { userId },
+      updateOps,
+      { upsert: true, new: true }
+  );
+
+  res.status(200).json({ status: 'pulsed' });
 }));
 
 export default router;
