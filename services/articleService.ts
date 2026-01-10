@@ -229,19 +229,23 @@ class ArticleService {
      
      // FIXED: Try/Catch wrapper to prevent crash if Narrative collection doesn't exist yet
      try {
+         // UPDATED: Added logging to debug "No Data" issues
          narratives = await Narrative.find(query)
              .select('-articles -vector') 
              .sort({ lastUpdated: -1 })
              .skip(Number(offset))
              .limit(Number(limit))
              .lean();
+             
+         console.log(`[InFocus] Fetched ${narratives.length} narratives for query:`, JSON.stringify(query));
      } catch (err) {
-         logger.warn("Narrative fetch failed, falling back to articles.");
+         console.error("[InFocus] Narrative fetch failed CRITICALLY:", err);
          narratives = [];
      }
 
      // FALLBACK: Return latest articles if no narratives found
      if (narratives.length === 0) {
+         console.log("[InFocus] Falling back to Articles due to empty narratives.");
          // Use the same query filters, but search Articles instead
          const fallbackArticles = await Article.find(query)
              .select('-content -embedding')
