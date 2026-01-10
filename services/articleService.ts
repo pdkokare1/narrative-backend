@@ -50,11 +50,7 @@ class ArticleService {
     return redis.getOrFetch(
         'trending_topics_v8', 
         async () => {
-            // FIXED: Removed date filter entirely. 
-            // This ensures topics appear even if data is old or from a seed file.
-            
             const results = await Article.aggregate([
-                // { $match: { publishedAt: { $gte: ... } } }, <--- REMOVED
                 { 
                     $group: { 
                         // Logic: Prefer clusterTopic -> Category -> Source -> "General"
@@ -130,7 +126,6 @@ class ArticleService {
   }
 
   // --- 3. Weighted Merge Main Feed (Triple Zone) ---
-  // Strategy: 40% Trending + 40% Personalized + 20% Latest
   async getMainFeed(filters: FeedFilters, userId?: string) {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
@@ -220,16 +215,18 @@ class ArticleService {
   async getInFocusFeed(filters: FeedFilters) {
      const { offset = 0, limit = 20 } = filters;
      
+     // 1. Construct Flexible Query
      const query: any = {};
      if (filters.category && filters.category !== 'All') {
-         query.category = filters.category;
+         // UPDATED: Use Case-Insensitive Regex to prevent mismatches
+         // e.g., 'Tech' will match 'Technology' or 'tech'
+         query.category = { $regex: filters.category, $options: 'i' };
      }
 
      let narratives: any[] = [];
      
-     // FIXED: Try/Catch wrapper to prevent crash if Narrative collection doesn't exist yet
      try {
-         // UPDATED: Added logging to debug "No Data" issues
+         // ATTEMPT 1: Fetch with specific filters
          narratives = await Narrative.find(query)
              .select('-articles -vector') 
              .sort({ lastUpdated: -1 })
@@ -237,15 +234,30 @@ class ArticleService {
              .limit(Number(limit))
              .lean();
              
-         console.log(`[InFocus] Fetched ${narratives.length} narratives for query:`, JSON.stringify(query));
+         console.log(`[InFocus] Query: ${JSON.stringify(query)} | Found: ${narratives.length}`);
+
+         // ATTEMPT 2: If filter found nothing, try fetching ANY narratives (Fallback)
+         // This ensures that if data exists, it IS shown, even if metadata is slightly off.
+         if (narratives.length === 0 && Number(offset) === 0) {
+             console.log("[InFocus] Strict filter returned 0. Attempting broad fetch...");
+             narratives = await Narrative.find({})
+                 .select('-articles -vector')
+                 .sort({ lastUpdated: -1 })
+                 .limit(Number(limit))
+                 .lean();
+             
+             console.log(`[InFocus] Broad Fetch Found: ${narratives.length}`);
+         }
+
      } catch (err) {
-         console.error("[InFocus] Narrative fetch failed CRITICALLY:", err);
+         console.error("[InFocus] CRITICAL DB ERROR:", err);
          narratives = [];
      }
 
-     // FALLBACK: Return latest articles if no narratives found
+     // ATTEMPT 3: Return Articles ONLY if narratives are truly empty
      if (narratives.length === 0) {
-         console.log("[InFocus] Falling back to Articles due to empty narratives.");
+         console.log("[InFocus] No Narratives found in DB. Falling back to Articles.");
+         
          // Use the same query filters, but search Articles instead
          const fallbackArticles = await Article.find(query)
              .select('-content -embedding')
@@ -267,7 +279,7 @@ class ArticleService {
      return {
          articles: narratives.map(n => ({
              ...n,
-             type: 'Narrative',
+             type: 'Narrative', // IMPORTANT: Explicit type for Frontend
              publishedAt: n.lastUpdated 
          })),
          meta: { description: "Top Developing Stories" }
