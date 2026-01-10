@@ -55,8 +55,12 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
 
 // --- 4. NEW: In Focus Feed (Narratives) ---
 export const getInFocusFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  // Only category filter usually applies to Narratives
-  const filters: FeedFilters = { category: req.query.category as string };
+  // FIXED: Pass pagination params (limit/offset) to service so infinite scroll works
+  const filters: FeedFilters = { 
+      category: req.query.category as string,
+      limit: Number(req.query.limit) || 20,
+      offset: Number(req.query.offset) || 0
+  };
   
   const result = await articleService.getInFocusFeed(filters);
 
