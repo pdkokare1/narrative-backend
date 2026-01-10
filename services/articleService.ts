@@ -46,18 +46,17 @@ class ArticleService {
   
   // --- 1. Smart Trending Topics ---
   async getTrendingTopics() {
-    // CACHE BUST: Hardcoded 'v5' key to force clear any empty cache from previous runs
+    // CACHE BUST: 'v6' ensures we clear any previous empty states
     return redis.getOrFetch(
-        'trending_topics_v5', 
+        'trending_topics_v6', 
         async () => {
-            // UPDATED: Widen window to 30 days to ensure data shows even in dev/test environments
-            const searchWindow = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+            // UPDATED: Widen window to 90 days to ensure data shows even in stale envs
+            const searchWindow = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
             
             const results = await Article.aggregate([
                 { 
                     $match: { 
-                        publishedAt: { $gte: searchWindow }, 
-                        // Relaxed: Removed analysisVersion check to show even partial data if needed
+                        publishedAt: { $gte: searchWindow }
                     } 
                 },
                 { 
@@ -68,7 +67,7 @@ class ArticleService {
                         sampleScore: { $max: "$trustScore" } 
                     } 
                 },
-                { $match: { count: { $gte: 1 }, _id: { $ne: null } } }, // Threshold 1 ensures even single articles create a topic
+                { $match: { count: { $gte: 1 }, _id: { $ne: null } } }, 
                 { $sort: { count: -1 } },
                 { $limit: 12 }
             ]).read('secondaryPreferred'); 
@@ -104,7 +103,7 @@ class ArticleService {
                             "limit": limit * 2 
                         }
                     },
-                    { "$match": { analysisVersion: { $ne: 'pending' } } },
+                    // Removed 'pending' check for search too, to ensure results
                     { "$limit": limit },
                     {
                         "$project": {
@@ -126,7 +125,7 @@ class ArticleService {
 
         if (!articles.length) {
             const rawArticles = await Article.smartSearch(safeQuery, limit * 2);
-            articles = rawArticles.filter((a: any) => a.analysisVersion !== 'pending').slice(0, limit);
+            articles = rawArticles.slice(0, limit);
         }
 
         articles = articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
@@ -142,10 +141,10 @@ class ArticleService {
     const page = Number(offset);
 
     // ZONE 3: Deep Scrolling (Optimized)
-    // If paging deep (> 20 items), skip the heavy math and return strictly chronological
     if (page >= 20) {
          const query = buildArticleQuery(filters);
-         (query as any).analysisVersion = { $ne: 'pending' };
+         // Relaxed: Show pending articles in deep scroll too
+         // (query as any).analysisVersion = { $ne: 'pending' };
          
          const articles = await Article.find(query)
             .select('-content -embedding -recommendations')
@@ -162,17 +161,14 @@ class ArticleService {
     }
 
     // ZONE 1 & 2: Weighted Construction (First Page Load)
-    
-    // 1. Fetch Candidates (Pool of ~80 recent articles)
-    // We fetch 'embedding' here to calculate personalization on the fly
     const [latestCandidates, userProfile, userStats] = await Promise.all([
         Article.find({ 
-            analysisVersion: { $ne: 'pending' },
-            publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } // Last 48h
+            // Removed 'pending' check
+            publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } 
         })
            .sort({ publishedAt: -1 })
            .limit(80) 
-           .select('+embedding') // Needed for math
+           .select('+embedding') 
            .lean(),
         userId ? Profile.findOne({ userId }).select('userEmbedding') : null,
         userId ? UserStats.findOne({ userId }).select('leanExposure topicInterest') : null
@@ -182,49 +178,38 @@ class ArticleService {
     const scoredCandidates = latestCandidates.map((article: any) => {
         let score = 0;
         
-        // A. Recency Score (Base: 0-40 pts)
-        // Decays linearly over 24 hours
         const hoursOld = (Date.now() - new Date(article.publishedAt).getTime()) / (1000 * 60 * 60);
         score += Math.max(0, 40 - (hoursOld * 1.5));
 
-        // B. Importance/Trending Score (0-30 pts)
         if (article.trustScore > 85) score += 10;
-        if (article.clusterId && article.isLatest) score += 10; // Part of a cluster
-        if (article.biasScore < 15) score += 5; // Neutrality bonus
+        if (article.clusterId && article.isLatest) score += 10; 
+        if (article.biasScore < 15) score += 5; 
 
-        // C. Personalization Score (0-40 pts)
         const userVec = (userProfile as any)?.userEmbedding;
         
         if (userVec && article.embedding) {
-            // Precise Vector Match
             const sim = calculateSimilarity(userVec, article.embedding);
             score += Math.max(0, (sim - 0.5) * 100); 
         } else if (userStats) {
-            // Heuristic Match (Fallback)
             if (userStats.topicInterest && userStats.topicInterest[article.category] > 60) score += 20;
             const leanKey = mapLeanToKey(article.politicalLean);
             if (userStats.leanExposure[leanKey] > userStats.leanExposure.Center) score += 10;
         }
 
-        // Cleanup heavy embedding before returning
         const { embedding, ...cleanArticle } = article;
         return { article: cleanArticle, score };
     });
 
-    // 3. Construct Zones
     const sorted = scoredCandidates.sort((a, b) => b.score - a.score);
 
-    // Zone 1: Top 10 "Must Reads"
     const zone1 = sorted.slice(0, 10).map(i => i.article);
     const zone1Ids = new Set(zone1.map(a => a._id.toString()));
 
-    // Zone 2: "Discovery Mix" (Next 20 candidates, shuffled)
     const zone2Candidates = sorted.slice(10, 30).filter(i => !zone1Ids.has(i.article._id.toString()));
     const zone2 = zone2Candidates
         .map(i => i.article)
         .sort(() => Math.random() - 0.5); 
 
-    // Assemble
     const mixedFeed = [...zone1, ...zone2];
     const resultFeed = mixedFeed.slice(0, Number(limit));
 
@@ -255,14 +240,13 @@ class ArticleService {
          .limit(Number(limit))
          .lean();
 
-     // UPDATED: PERMISSIVE FALLBACK LOGIC
-     // If no narratives, return Articles.
+     // UPDATED: MAXIMUM COMPATIBILITY FALLBACK
+     // If no narratives, return ANY recent articles.
      if (narratives.length === 0) {
          const articleQuery = { 
              ...query, 
-             // Removed trustScore requirement entirely to ensure data shows up.
-             // Only require that the article is not stuck in "pending" analysis.
-             analysisVersion: { $ne: 'pending' } 
+             // REMOVED: analysisVersion check. 
+             // Now we return articles even if they are 'pending' analysis.
          };
 
          const fallbackArticles = await Article.find(articleQuery)
@@ -295,7 +279,6 @@ class ArticleService {
   // --- 5. Balanced Feed (Anti-Echo Chamber) ---
   async getBalancedFeed(userId: string) {
       if (!userId) {
-          // Fallback: If no user, fetch standard feed but wrap it to match type
           const feed = await this.getMainFeed({ limit: 20 });
           return { 
               articles: feed.articles, 
@@ -306,8 +289,8 @@ class ArticleService {
       const stats = await UserStats.findOne({ userId });
       
       let query: any = { 
-          analysisVersion: { $ne: 'pending' },
-          publishedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) }
+          // analysisVersion: { $ne: 'pending' }, // Removed for consistency
+          publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Widen to 7 days
       };
 
       let reason = "Global Perspectives";
@@ -319,14 +302,11 @@ class ArticleService {
           if (total > 300) { 
               if (Left > Right * 1.5) {
                   query.politicalLean = { $in: ['Right', 'Right-Leaning', 'Center'] };
-                  query.trustScore = { $gt: 80 }; 
                   reason = "Perspectives from Center & Right";
               } else if (Right > Left * 1.5) {
                   query.politicalLean = { $in: ['Left', 'Left-Leaning', 'Center'] };
-                  query.trustScore = { $gt: 80 };
                   reason = "Perspectives from Center & Left";
               } else {
-                  query.biasScore = { $lt: 15 }; 
                   reason = "Deep Dive & Neutral Analysis";
               }
           }
@@ -371,8 +351,8 @@ class ArticleService {
                 },
                 { 
                     "$match": { 
-                        "publishedAt": { "$gte": threeDaysAgo },
-                        "analysisVersion": { "$ne": "pending" }
+                        "publishedAt": { "$gte": threeDaysAgo }
+                        // Removed pending check
                     } 
                 },
                 { "$limit": 20 },
