@@ -34,7 +34,8 @@ const narrativeSchema = new Schema<NarrativeDocument>({
 });
 
 // TTL: Delete narratives after 14 days to save space
-narrativeSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 1209600 });
+// DISABLED for debugging to prevent data loss on older sets
+// narrativeSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 1209600 });
 
 // FIXED: Explicitly bind to 'narratives' collection to prevent naming mismatches
 const Narrative = mongoose.model<NarrativeDocument>('Narrative', narrativeSchema, 'narratives');
