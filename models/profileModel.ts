@@ -2,8 +2,11 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 import { IUserProfile, IBadge } from '../types';
 
-// We explicitly tell TypeScript that 'savedArticles' are ObjectIds inside the database
-export interface ProfileDocument extends Omit<IUserProfile, 'savedArticles'>, Document {
+// FIX: Override IUserProfile to make email optional for Phone Auth
+// We also add phoneNumber which might not be in the shared type yet
+export interface ProfileDocument extends Omit<IUserProfile, 'savedArticles' | 'email'>, Document {
+  email?: string;
+  phoneNumber?: string; 
   savedArticles: mongoose.Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
@@ -15,7 +18,7 @@ const badgeSchema = new Schema<IBadge>({
   icon: { type: String, required: true },
   description: { type: String, required: true },
   earnedAt: { type: Date, default: Date.now }
-}, { _id: false }); // No separate ID for badges inside the array
+}, { _id: false });
 
 const profileSchema = new Schema<ProfileDocument>({
   // Auth Link
@@ -25,11 +28,23 @@ const profileSchema = new Schema<ProfileDocument>({
     unique: true, 
     index: true 
   },
+  
+  // FIX: Email is now Optional & Sparse (allows multiple nulls)
   email: { 
     type: String, 
-    required: true, 
-    unique: true 
+    required: false, 
+    unique: true,
+    sparse: true 
   },
+
+  // FIX: Added Phone Number for Phone Auth users
+  phoneNumber: {
+    type: String,
+    required: false,
+    unique: true,
+    sparse: true
+  },
+
   username: { 
     type: String, 
     required: true, 
@@ -53,11 +68,11 @@ const profileSchema = new Schema<ProfileDocument>({
     ref: 'Article' 
   }],
   
-  // AI Personalization Vector (New)
+  // AI Personalization Vector
   userEmbedding: { 
     type: [Number], 
     default: [],
-    select: false // Don't return this huge array in standard API calls
+    select: false 
   },
   
   // Push Notification Token
