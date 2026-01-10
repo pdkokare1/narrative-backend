@@ -46,12 +46,12 @@ class ArticleService {
   
   // --- 1. Smart Trending Topics ---
   async getTrendingTopics() {
-    // CACHE BUST: 'v6' ensures we clear any previous empty states
+    // CACHE BUST: 'v7' forces refresh to fix empty states
     return redis.getOrFetch(
-        'trending_topics_v6', 
+        'trending_topics_v7', 
         async () => {
-            // UPDATED: Widen window to 90 days to ensure data shows even in stale envs
-            const searchWindow = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+            // FIXED: Widen window to 365 days to ensure data shows even in stale envs
+            const searchWindow = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
             
             const results = await Article.aggregate([
                 { 
@@ -243,15 +243,14 @@ class ArticleService {
      // UPDATED: MAXIMUM COMPATIBILITY FALLBACK
      // If no narratives, return ANY recent articles.
      if (narratives.length === 0) {
-         const articleQuery = { 
-             ...query, 
-             // REMOVED: analysisVersion check. 
-             // Now we return articles even if they are 'pending' analysis.
-         };
-
+         const articleQuery = { ...query }; 
+         
+         // Fix: If query is empty, it finds all. This is good.
+         // Ensure sorting is strictly by latest
+         
          const fallbackArticles = await Article.find(articleQuery)
              .select('-content -embedding')
-             .sort({ publishedAt: -1 }) // Strictly latest first
+             .sort({ publishedAt: -1 }) 
              .skip(Number(offset))
              .limit(Number(limit))
              .lean();
