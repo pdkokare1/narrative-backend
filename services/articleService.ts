@@ -46,19 +46,15 @@ class ArticleService {
   
   // --- 1. Smart Trending Topics ---
   async getTrendingTopics() {
-    // CACHE BUST: 'v7' forces refresh to fix empty states
+    // CACHE BUST: 'v8' forces immediate refresh
     return redis.getOrFetch(
-        'trending_topics_v7', 
+        'trending_topics_v8', 
         async () => {
-            // FIXED: Widen window to 365 days to ensure data shows even in stale envs
-            const searchWindow = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000);
+            // FIXED: Removed date filter entirely. 
+            // This ensures topics appear even if data is old or from a seed file.
             
             const results = await Article.aggregate([
-                { 
-                    $match: { 
-                        publishedAt: { $gte: searchWindow }
-                    } 
-                },
+                // { $match: { publishedAt: { $gte: ... } } }, <--- REMOVED
                 { 
                     $group: { 
                         // Logic: Prefer clusterTopic -> Category -> Source -> "General"
@@ -103,7 +99,6 @@ class ArticleService {
                             "limit": limit * 2 
                         }
                     },
-                    // Removed 'pending' check for search too, to ensure results
                     { "$limit": limit },
                     {
                         "$project": {
@@ -143,8 +138,6 @@ class ArticleService {
     // ZONE 3: Deep Scrolling (Optimized)
     if (page >= 20) {
          const query = buildArticleQuery(filters);
-         // Relaxed: Show pending articles in deep scroll too
-         // (query as any).analysisVersion = { $ne: 'pending' };
          
          const articles = await Article.find(query)
             .select('-content -embedding -recommendations')
@@ -163,7 +156,7 @@ class ArticleService {
     // ZONE 1 & 2: Weighted Construction (First Page Load)
     const [latestCandidates, userProfile, userStats] = await Promise.all([
         Article.find({ 
-            // Removed 'pending' check
+            // Keep recent filter for Main Feed to ensure freshness
             publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } 
         })
            .sort({ publishedAt: -1 })
@@ -232,23 +225,25 @@ class ArticleService {
          query.category = filters.category;
      }
 
-     // 1. Try to fetch Narratives (Clustered Stories)
-     const narratives = await Narrative.find(query)
-         .select('-articles -vector') 
-         .sort({ lastUpdated: -1 })
-         .skip(Number(offset))
-         .limit(Number(limit))
-         .lean();
+     let narratives: any[] = [];
+     
+     // FIXED: Try/Catch wrapper to prevent crash if Narrative collection doesn't exist yet
+     try {
+         narratives = await Narrative.find(query)
+             .select('-articles -vector') 
+             .sort({ lastUpdated: -1 })
+             .skip(Number(offset))
+             .limit(Number(limit))
+             .lean();
+     } catch (err) {
+         logger.warn("Narrative fetch failed, falling back to articles.");
+         narratives = [];
+     }
 
-     // UPDATED: MAXIMUM COMPATIBILITY FALLBACK
-     // If no narratives, return ANY recent articles.
+     // FALLBACK: Return latest articles if no narratives found
      if (narratives.length === 0) {
-         const articleQuery = { ...query }; 
-         
-         // Fix: If query is empty, it finds all. This is good.
-         // Ensure sorting is strictly by latest
-         
-         const fallbackArticles = await Article.find(articleQuery)
+         // Use the same query filters, but search Articles instead
+         const fallbackArticles = await Article.find(query)
              .select('-content -embedding')
              .sort({ publishedAt: -1 }) 
              .skip(Number(offset))
@@ -258,10 +253,10 @@ class ArticleService {
          return {
              articles: fallbackArticles.map(a => ({
                  ...a,
-                 type: 'Article', // Frontend will render this as a standard card
+                 type: 'Article',
                  imageUrl: optimizeImageUrl(a.imageUrl)
              })),
-             meta: { description: "Top Headlines (Developing)" }
+             meta: { description: "Top Headlines" }
          };
      }
 
@@ -288,8 +283,7 @@ class ArticleService {
       const stats = await UserStats.findOne({ userId });
       
       let query: any = { 
-          // analysisVersion: { $ne: 'pending' }, // Removed for consistency
-          publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // Widen to 7 days
+          publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
       };
 
       let reason = "Global Perspectives";
@@ -351,7 +345,6 @@ class ArticleService {
                 { 
                     "$match": { 
                         "publishedAt": { "$gte": threeDaysAgo }
-                        // Removed pending check
                     } 
                 },
                 { "$limit": 20 },
