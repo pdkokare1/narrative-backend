@@ -13,7 +13,7 @@ const router = express.Router();
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req: Request, res: Response) => {
     const profile = await Profile.findOne({ userId: req.user!.uid })
-      .select('username email articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled currentStreak badges') 
+      .select('username email phoneNumber articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled currentStreak badges') 
       .lean();
     
     if (!profile) {
@@ -26,36 +26,55 @@ router.get('/me', asyncHandler(async (req: Request, res: Response) => {
 // --- 2. Create / Re-Link Profile ---
 router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Request, res: Response) => {
     const { username } = req.body;
-    const { uid, email } = req.user!; 
+    // FIX: Extract phone_number from Firebase Token (Phone Auth)
+    // We cast to 'any' temporarily to avoid TS errors if the type definition isn't updated
+    const { uid, email, phone_number } = req.user! as any; 
+    
     const cleanUsername = username.trim();
 
     // A. Check if Username is taken by SOMEONE ELSE
+    // We check if the existing user is NOT the current requester (by email or phone)
     const usernameOwner = await Profile.findOne({ username: cleanUsername }).lean();
-    if (usernameOwner && usernameOwner.email !== email) {
-        res.status(409);
-        throw new Error('Username already taken by another user.');
+    
+    if (usernameOwner) {
+        const isSelf = (email && usernameOwner.email === email) || 
+                       (phone_number && usernameOwner.phoneNumber === phone_number);
+        
+        if (!isSelf) {
+            res.status(409);
+            throw new Error('Username already taken by another user.');
+        }
     }
 
-    // B. Orphan Check (Relink if email matches but ID differs)
-    const existingProfile = await Profile.findOne({ email }).lean();
-    if (existingProfile) {
-        if (existingProfile.userId !== uid) {
-            await Profile.updateOne({ email }, { userId: uid });
-            logger.info(`🔗 Relinked orphan profile for ${email}`);
+    // B. Orphan Check (Relink if email OR phone matches but ID differs)
+    const orQueries = [];
+    if (email) orQueries.push({ email });
+    if (phone_number) orQueries.push({ phoneNumber: phone_number });
+
+    if (orQueries.length > 0) {
+        const existingProfile = await Profile.findOne({ $or: orQueries }).lean();
+        
+        if (existingProfile) {
+            if (existingProfile.userId !== uid) {
+                // If found, update the Auth ID to match current session
+                await Profile.updateOne({ _id: existingProfile._id }, { userId: uid });
+                logger.info(`🔗 Relinked orphan profile for ${email || phone_number}`);
+            }
+            return res.status(200).json(existingProfile);
         }
-        return res.status(200).json(existingProfile);
     }
 
     // C. Create New
     const newProfile = await Profile.create({
         userId: uid,
-        email,
+        email: email || undefined,        // Store if exists (Email Auth)
+        phoneNumber: phone_number || undefined, // Store if exists (Phone Auth)
         username: cleanUsername,
         badges: [],
         notificationsEnabled: true
     });
 
-    logger.info(`✨ New Profile Created: ${cleanUsername}`);
+    logger.info(`✨ New Profile Created: ${cleanUsername} [${email || phone_number}]`);
     res.status(201).json(newProfile);
 }));
 
@@ -88,7 +107,7 @@ router.put('/me', validate(schemas.updateProfile), asyncHandler(async (req: Requ
         { userId },
         { $set: updates },
         { new: true } // Return updated doc
-    ).select('username email notificationsEnabled');
+    ).select('username email phoneNumber notificationsEnabled');
 
     res.status(200).json(updatedProfile);
 }));
