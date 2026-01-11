@@ -48,10 +48,11 @@ class NewsService {
   async fetchNews(): Promise<INewsSourceArticle[]> {
     const allArticles: INewsSourceArticle[] = [];
     
-    // FIX 1: Broader Fetching
-    // Fetch 2 different cycles per run to ensure we cover 'Top' and 'Categories' frequently
-    // This prevents the feed from looking stale if we get stuck on a slow category.
-    const CYCLES_TO_RUN = 2;
+    // OPTIMIZATION: Swarm Strategy (4 Free Keys = 400 reqs/day)
+    // We run ~28 times a day. 400/28 = ~14.
+    // We set this to 10 to leave a safety buffer for retries/briefings.
+    // Result: 10 cycles * 10 articles = 100 articles per run.
+    const CYCLES_TO_RUN = 10;
 
     for (let i = 0; i < CYCLES_TO_RUN; i++) {
         const cycleIndex = await this.getAndAdvanceCycleIndex();
@@ -78,7 +79,7 @@ class NewsService {
     const potentialNewArticles = await this.filterSeenOrProcessing(allArticles);
     const dbUnseenArticles = await this.filterExistingInDB(potentialNewArticles);
     
-    // Process Batch (Saves to DB) - Added AWAIT here as per requirement
+    // Process Batch (Saves to DB)
     const finalUnique = await articleProcessor.processBatch(dbUnseenArticles);
     
     // Mark as seen so we don't fetch them again immediately
@@ -104,9 +105,6 @@ class NewsService {
 
         // Run optimization for each affected cluster (Hide old versions)
         for (const clusterId of impactedClusterIds) {
-             // We don't await this inside the loop to avoid blocking, 
-             // or we can await if strict consistency is required.
-             // Given the batch nature, awaiting is safer.
              await clusteringService.optimizeClusterFeed(clusterId);
         }
     }
@@ -152,8 +150,7 @@ class NewsService {
               const multi = client.multi();
               for (const article of articles) {
                   const key = this.getRedisKey(article.url);
-                  // FIX 2: Reduced TTL from 24h (86400) to 4h (14400)
-                  // This allows "stuck" or failed articles to be retried much sooner
+                  // Reduced TTL from 24h to 4h to retry failed items sooner
                   multi.set(key, '1', { EX: 14400 }); 
               }
               await multi.exec();
