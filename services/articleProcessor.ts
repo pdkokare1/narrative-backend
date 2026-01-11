@@ -27,7 +27,7 @@ class ArticleProcessor {
             const article = item.article;
 
             // A. Quality Cutoff (RAISED BAR)
-            // Was -5, now 0. This filters out anything that has negative traits and no redeeming qualities.
+            // Was -5, now 0. This ensures "Junk Keyword" (-20 penalty) items are always killed.
             if (item.score < 0) continue;
 
             // B. Text Cleanup
@@ -67,8 +67,7 @@ class ArticleProcessor {
             if (!isTrusted) {
                 score -= 10; 
             } else {
-                 // Trusted sources (e.g. Reuters feeds) sometimes miss images but content is gold.
-                 // We don't penalize them as harshly.
+                 // Trusted sources sometimes miss images but content is gold.
                  score -= 2;
             }
         }
@@ -77,9 +76,9 @@ class ArticleProcessor {
         if (a.title && a.title.length > 40) score += 1;
 
         // Trusted Source Bonus
-        if (isTrusted) score += 5; // Increased from 3 to 5 to protect VIPs
+        if (isTrusted) score += 5; 
 
-        // Junk/Clickbait Penalty
+        // Junk/Clickbait/Lifestyle Penalty (The Trap)
         if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) score -= 20;
 
         return score;
