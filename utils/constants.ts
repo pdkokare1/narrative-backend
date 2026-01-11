@@ -6,7 +6,7 @@ export const FIFTEEN_MINUTES = 15 * 60 * 1000;
 
 // --- CENTRAL CONFIGURATION ---
 export const CONSTANTS = {
-  // Error Codes (Added to fix build failure)
+  // Error Codes
   ERROR_CODES: {
     AUTH_NO_APP_CHECK: 'AUTH_NO_APP_CHECK',
     AUTH_INVALID_TOKEN: 'AUTH_INVALID_TOKEN',
@@ -66,9 +66,8 @@ export const CONSTANTS = {
   // Redis Keys (Prevent typos)
   REDIS_KEYS: {
     BANNED_DOMAINS: 'GATEKEEPER:BANNED_DOMAINS',
-    // CHANGED TO V2: This forces the system to ignore old strict "Junk" decisions
-    // and re-evaluate news using the new, relaxed rules.
-    GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_V2_', 
+    // CHANGED TO V3: Invalidate old decisions to apply new strict rules
+    GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_V3_', 
     TRENDING: 'trending_topics_smart',
     NEWS_CYCLE: 'news:fetch_cycle',
     NEWS_SEEN_PREFIX: 'news:seen:',
@@ -76,20 +75,25 @@ export const CONSTANTS = {
 };
 
 // --- NEWS FETCH CYCLES ---
-// Removed 'newsapi' configurations as we are 100% GNews now
 export const FETCH_CYCLES = [
     { name: 'US-Focus', gnews: { country: 'us' } },
     { name: 'IN-Focus', gnews: { country: 'in' } },
     { name: 'World-Focus', gnews: { topic: 'world' } }
 ];
 
-// --- TRUSTED SOURCES ---
+// --- TRUSTED SOURCES (VIP List) ---
+// Indian Hard News added. Tech/Science removed (they must now pass AI Audition).
 export const TRUSTED_SOURCES = [
-    'reuters', 'associated press', 'bloomberg', 'bbc', 'npr', 'pbs', 
-    'the wall street journal', 'financial times', 'deutsche welle', 
-    'al jazeera', 'the economist', 'nature', 'science',
+    // Global Wires
+    'reuters', 'associated press', 'bloomberg', 'bbc', 'al jazeera', 'deutsche welle',
+    
+    // Financial/Policy
+    'the wall street journal', 'financial times', 'the economist',
+    'npr', 'pbs',
+    
+    // India "Hard News"
     'the indian express', 'the hindu', 'livemint', 'ndtv', 'business standard',
-    'techcrunch', 'wired', 'ars technica', 'the verge', 'nasa'
+    'the print', 'scroll.in', 'ani news', 'deccan herald', 'the tribune'
 ];
 
 // --- GLOBAL BLOCKLISTS ---
@@ -113,9 +117,15 @@ export const DEFAULT_BANNED_DOMAINS = [
     'marketwatch.com'
 ];
 
-// --- JUNK KEYWORDS (Safe List) ---
-// Note: "Live", "Watch", "Video" are REMOVED to allow breaking news.
+// --- JUNK KEYWORDS (The "Trap") ---
+// Any title containing these gets a -20 penalty (Immediate Deletion)
 export const JUNK_KEYWORDS = [
+    // Lifestyle Blacklist (New)
+    'dating', 'relationship', 'advice', 'tips for', 'hacks', 'diet', 'weight loss', 
+    'workout', 'fashion', 'beauty', 'look', 'outfit', 'sex', 'love', 
+    'skin care', 'hair', 'royal family', 'harry', 'meghan',
+    'review', 'best of', 'top 10', 'gift idea',
+    
     // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
     'shopping', 'gift guide', 'best buy', 'amazon prime', 'black friday', 
@@ -128,10 +138,9 @@ export const JUNK_KEYWORDS = [
     'patch notes', 'loadout', 'tier list', 'how to get', 'where to find', 
     'twitch drops', 'codes for',
     
-    // Fluff & Lifestyle
+    // Fluff
     'horoscope', 'zodiac', 'astrology', 'tarot', 'psychic', 'manifesting',
-    'celeb look', 'red carpet', 'outfit', 'dress', 'fashion', 'makeup',
-    'royal family', 'kardashian', 'jenner', 'relationship timeline', 'net worth',
+    'celeb look', 'red carpet', 'net worth',
     
     // Gambling
     'powerball', 'mega millions', 'lottery results', 'winning numbers', 
