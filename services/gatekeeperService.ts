@@ -5,20 +5,15 @@ import redis from '../utils/redisClient';
 import apiClient from '../utils/apiClient';
 import logger from '../utils/logger';
 import SystemConfig from '../models/systemConfigModel';
-import { CONSTANTS, DEFAULT_BANNED_DOMAINS, JUNK_KEYWORDS } from '../utils/constants';
+import { CONSTANTS, DEFAULT_BANNED_DOMAINS, JUNK_KEYWORDS, TRUSTED_SOURCES } from '../utils/constants';
 
 class GatekeeperService {
     private localKeywords: string[] = []; 
 
-    /**
-     * Initializes the DB with default values if missing AND syncs to Redis.
-     */
     async initialize() {
         try {
-            // 1. Sync Banned Domains (Mongo -> Redis)
             let bannedDoc = await SystemConfig.findOne({ key: 'BANNED_DOMAINS' });
             if (!bannedDoc) {
-                logger.info('🛡️ Seeding Banned Domains...');
                 bannedDoc = await SystemConfig.create({ key: 'BANNED_DOMAINS', value: DEFAULT_BANNED_DOMAINS });
             }
             
@@ -28,10 +23,8 @@ class GatekeeperService {
                 }
             }
 
-            // 2. Sync Keywords (Mongo -> Local Memory)
             let keywordsDoc = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
             if (!keywordsDoc) {
-                logger.info('🛡️ Seeding Junk Keywords...');
                 keywordsDoc = await SystemConfig.create({ key: 'JUNK_KEYWORDS', value: JUNK_KEYWORDS });
             }
             this.localKeywords = keywordsDoc ? keywordsDoc.value : JUNK_KEYWORDS;
@@ -49,11 +42,7 @@ class GatekeeperService {
         } catch (e) { return null; }
     }
 
-    /**
-     * LOCAL CHECK: Free and Fast.
-     */
     private async quickLocalCheck(article: any): Promise<{ isJunk: boolean; reason?: string }> {
-        // ROBUST DATA EXTRACTION: Handle both 'raw' (title) and 'processed' (headline) formats
         const titleRaw = article.title || article.headline || "";
         const descRaw = article.description || article.summary || article.content || "";
 
@@ -72,8 +61,7 @@ class GatekeeperService {
         // 2. Keyword Check (Memory)
         const combinedText = `${titleLower} ${desc}`;
         const foundKeyword = this.localKeywords.find(word => {
-            if (!combinedText.includes(word)) return false;
-            return true;
+            return combinedText.includes(word);
         });
         
         if (foundKeyword) {
@@ -81,7 +69,6 @@ class GatekeeperService {
         }
 
         // 3. Length Check
-        // Fixed: Use the correctly extracted text length
         if ((title.length + desc.length) < 50) {
             return { isJunk: true, reason: 'Too Short / Empty' };
         }
@@ -118,15 +105,12 @@ class GatekeeperService {
         } catch (e) { /* Ignore stats errors */ }
     }
 
-    /**
-     * FULL EVALUATION: Uses AI only if local check passes.
-     */
     async evaluateArticle(article: any): Promise<{ type: string; isJunk: boolean; category?: string; recommendedModel: string; reason?: string }> {
         const CACHE_KEY = `${CONSTANTS.REDIS_KEYS.GATEKEEPER_CACHE}${article.url}`;
         
-        // Robust Extraction for AI Prompt
         const title = article.title || article.headline || "";
         const desc = article.description || article.summary || "";
+        const sourceName = article.source || article.source?.name || "";
 
         // 1. Check Cache
         const cached = await redis.get(CACHE_KEY);
@@ -140,26 +124,41 @@ class GatekeeperService {
             return result;
         }
 
-        // 3. Run AI Check (Robust)
+        // OPTIMIZATION: VIP Fast Lane
+        // If source is trusted, skip expensive AI check.
+        // We assume trusted sources (Reuters, BBC) don't publish "Junk".
+        const isTrusted = TRUSTED_SOURCES.some(src => sourceName.toLowerCase().includes(src.toLowerCase()));
+        if (isTrusted) {
+            const result = { 
+                type: 'Hard News', 
+                isJunk: false, 
+                recommendedModel: CONSTANTS.AI_MODELS.QUALITY,
+                reason: 'Trusted Source (VIP)' 
+            };
+            // Cache it so we don't even check the array next time
+            await redis.set(CACHE_KEY, result, 86400);
+            return result;
+        }
+
+        // 3. Run AI Check
         try {
             const apiKey = await KeyManager.getKey('GEMINI');
             
-            // STRICT PROMPT: explicitly differentiates between "Sad News" (Allowed) and "Junk" (Blocked)
             const prompt = `
                 Analyze this news article metadata to determine if it is "Junk" or "News".
                 
                 Headline: "${title}"
                 Description: "${desc}"
+                Source: "${sourceName}"
                 
                 DEFINITIONS:
-                - "Hard News": Politics, Economy, Business, Finance, Markets, IPOs, War, Disaster, Crime, Accidents, Science, Technology, Policy, World Events, Religion.
-                - "Soft News": Sports (Matches, Scores, Squads), Entertainment, Celebrity updates, Lifestyle, Human Interest, viral trends.
-                - "Junk": Spam, Paid Reviews, Product Promotions, Shopping Deals, Coupons, Game Cheats/Walkthroughs, Horoscopes, Gambling specific ads.
+                - "Hard News": Politics, Economy, Business, Finance, Markets, IPOs, War, Disaster, Crime, Accidents, Science, Technology, Policy, World Events.
+                - "Soft News": Sports (Matches, Scores), Entertainment, Celebrity, Lifestyle.
+                - "Junk": Spam, Paid Reviews, Product Promotions, Shopping Deals, Coupons, Game Cheats, Horoscopes, Gambling ads.
 
                 CRITICAL RULES:
                 1. IPOs, Financial Results, and Company News are HARD NEWS.
-                2. Sports squads, match results, and tournament updates are SOFT NEWS.
-                3. ONLY classify as "Junk" if it is spam, a direct product ad, or garbage content.
+                2. ONLY classify as "Junk" if it is spam, a direct product ad, or garbage content.
 
                 Respond ONLY in JSON: { "type": "Hard News" | "Soft News" | "Junk", "category": "String" }
             `;
