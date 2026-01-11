@@ -1,6 +1,6 @@
 // services/news/GNewsProvider.ts
 import { z } from 'zod';
-import https from 'https'; // Added for custom agent
+import https from 'https'; 
 import { inspect } from 'util';
 import { INewsProvider } from './INewsProvider';
 import { INewsSourceArticle } from '../../types';
@@ -48,14 +48,13 @@ export class GNewsProvider implements INewsProvider {
             }
 
             const cleanKey = apiKey.trim();
-            const isPaidKey = config.keys.gnews.length > 0 && cleanKey === config.keys.gnews[0];
-            const dynamicMax = isPaidKey ? 25 : 10;
+            
+            // FREE TIER OPTIMIZATION:
+            // GNews Free tier is strictly limited to 10 articles per request.
+            // We use the "Swarm Strategy" (many small requests) instead of deep requests.
+            const dynamicMax = 10;
 
-            if (isPaidKey) {
-                logger.debug(`🚀 Using PAID GNews Key. Fetching ${dynamicMax} articles.`);
-            } else {
-                logger.debug(`🛡️ Using BACKUP GNews Key. Throttling to ${dynamicMax} articles.`);
-            }
+            logger.debug(`🛡️ Using GNews Key (...${cleanKey.slice(-4)}). Fetching ${dynamicMax} articles.`);
 
             const queryParams = { 
                 lang: 'en', 
@@ -77,7 +76,7 @@ export class GNewsProvider implements INewsProvider {
             try {
                 const response = await apiClient.get<unknown>(url, { 
                     params: queryParams,
-                    timeout: 30000, // Increased to 30s
+                    timeout: 30000, 
                     httpsAgent: agent,
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -110,10 +109,8 @@ export class GNewsProvider implements INewsProvider {
                 } else if (status === 429) {
                     logger.warn(`⏳ GNews Rate Limited (429). Key ending in ...${cleanKey.slice(-4)}`);
                 } else {
-                    // CRITICAL: Log the full error object for "Local" errors
                     logger.error(`❌ GNews Fetch Failed [${errorCode}]: ${errorMessage}`);
                     if (!status) {
-                        // Log full network error for debugging (DNS/Timeout)
                         logger.error(`🔍 Full Error Details: ${inspect(error, { depth: 2, colors: false })}`);
                     }
                 }
