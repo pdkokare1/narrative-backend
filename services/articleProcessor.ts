@@ -26,8 +26,9 @@ class ArticleProcessor {
         for (const item of scored) {
             const article = item.article;
 
-            // A. Quality Cutoff
-            if (item.score < -5) continue;
+            // A. Quality Cutoff (RAISED BAR)
+            // Was -5, now 0. This filters out anything that has negative traits and no redeeming qualities.
+            if (item.score < 0) continue;
 
             // B. Text Cleanup
             article.title = formatHeadline(article.title);
@@ -40,7 +41,6 @@ class ArticleProcessor {
             if (seenUrls.has(article.url)) continue;
 
             // E. Deduplication (Fuzzy Title)
-            // Checks if this headline is >80% similar to one we already picked in this batch
             if (this.isFuzzyDuplicate(article.title, seenTitles)) continue;
 
             // Accepted!
@@ -49,7 +49,6 @@ class ArticleProcessor {
             uniqueArticles.push(article);
         }
 
-        // Return sorted by date (newest first) for the final feed
         return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
     }
 
@@ -57,16 +56,28 @@ class ArticleProcessor {
         let score = 0;
         const titleLower = (a.title || "").toLowerCase();
         const sourceLower = (a.source.name || "").toLowerCase();
+        
+        const isTrusted = TRUSTED_SOURCES.some(src => sourceLower.includes(src.toLowerCase()));
 
         // Image Quality
-        if (a.image && a.image.startsWith('http')) score += 2;
-        else score -= 10; 
+        // STRICT: If not trusted and no image, massive penalty.
+        if (a.image && a.image.startsWith('http')) {
+            score += 2;
+        } else {
+            if (!isTrusted) {
+                score -= 10; 
+            } else {
+                 // Trusted sources (e.g. Reuters feeds) sometimes miss images but content is gold.
+                 // We don't penalize them as harshly.
+                 score -= 2;
+            }
+        }
 
-        // Title Length (Too short is usually bad)
+        // Title Length
         if (a.title && a.title.length > 40) score += 1;
 
         // Trusted Source Bonus
-        if (TRUSTED_SOURCES.some(src => sourceLower.includes(src))) score += 3;
+        if (isTrusted) score += 5; // Increased from 3 to 5 to protect VIPs
 
         // Junk/Clickbait Penalty
         if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) score -= 20;
@@ -76,29 +87,25 @@ class ArticleProcessor {
 
     private isValid(article: INewsSourceArticle): boolean {
         if (!article.title || !article.url) return false;
-        if (article.title.length < 15) return false; 
+        
+        // Increased min length to filter out "ticker" updates
+        if (article.title.length < 20) return false; 
+        
         if (article.title === "No Title") return false;
         if (!article.description || article.description.length < 30) return false; 
         return true;
     }
 
-    /**
-     * Checks if a title is too similar to existing processed titles.
-     * Uses a similarity threshold of 0.8 (80%).
-     */
     private isFuzzyDuplicate(currentTitle: string, existingTitles: string[]): boolean {
         const currentLen = currentTitle.length;
         
         for (const existing of existingTitles) {
-            // Optimization: Skip if lengths differ significantly (> 20 chars)
-            // This prevents expensive calculation for obviously different titles.
             if (Math.abs(currentLen - existing.length) > 20) {
                 continue;
             }
-
             const score = getSimilarityScore(currentTitle, existing);
             if (score > 0.8) {
-                return true; // It's a duplicate
+                return true; 
             }
         }
         return false;
