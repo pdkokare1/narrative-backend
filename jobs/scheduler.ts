@@ -98,8 +98,8 @@ export const startScheduler = async () => {
   });
 
   // 4. Main Feed Fetch (Day Mode)
-  // 6:00 AM to 11:00 PM -> Every 10 minutes
-  safeSchedule('fetch-feed-day', '*/10 6-22 * * *', async () => {
+  // 6:00 AM to 11:00 PM -> Every 45 minutes (Runs at :00 and :45)
+  safeSchedule('fetch-feed-day', '*/45 6-22 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, {
           removeOnComplete: true,
           removeOnFail: 100
@@ -107,8 +107,8 @@ export const startScheduler = async () => {
   });
 
   // 5. Main Feed Fetch (Night Mode)
-  // 11:00 PM to 6:00 AM -> Every hour
-  safeSchedule('fetch-feed-night', '0 23,0-5 * * *', async () => {
+  // 11:00 PM to 6:00 AM -> Every 2 hours (23, 1, 3, 5)
+  safeSchedule('fetch-feed-night', '0 23,1,3,5 * * *', async () => {
       await newsQueue.add('fetch-feed', {}, {
           removeOnComplete: true,
           removeOnFail: 100
@@ -129,5 +129,5 @@ export const startScheduler = async () => {
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
   });
 
-  logger.info('✅ Schedules registered: Heartbeat(4m), Trending(30m), Feed(10m/1h)');
+  logger.info('✅ Schedules registered: Heartbeat(4m), Trending(30m), Feed(45m/2h)');
 };
