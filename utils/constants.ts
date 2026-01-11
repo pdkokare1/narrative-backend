@@ -66,8 +66,8 @@ export const CONSTANTS = {
   // Redis Keys (Prevent typos)
   REDIS_KEYS: {
     BANNED_DOMAINS: 'GATEKEEPER:BANNED_DOMAINS',
-    // CHANGED TO V3: Invalidate old decisions to apply new strict rules
-    GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_V3_', 
+    // CHANGED TO V5: Invalidate old decisions to apply new strict rules
+    GATEKEEPER_CACHE: 'GATEKEEPER_DECISION_V5_', 
     TRENDING: 'trending_topics_smart',
     NEWS_CYCLE: 'news:fetch_cycle',
     NEWS_SEEN_PREFIX: 'news:seen:',
@@ -118,13 +118,13 @@ export const DEFAULT_BANNED_DOMAINS = [
 ];
 
 // --- JUNK KEYWORDS (The "Trap") ---
-// Any title containing these gets a -20 penalty (Immediate Deletion)
+// Any title containing these gets a -20 penalty (Immediate Deletion).
+// SAFETY UPDATE: Removed 'feud', 'drama', 'shocking', 'reveals' to protect Hard News.
 export const JUNK_KEYWORDS = [
-    // Lifestyle Blacklist (New)
-    'dating', 'relationship', 'advice', 'tips for', 'hacks', 'diet', 'weight loss', 
-    'workout', 'fashion', 'beauty', 'look', 'outfit', 'sex', 'love', 
-    'skin care', 'hair', 'royal family', 'harry', 'meghan',
-    'review', 'best of', 'top 10', 'gift idea',
+    // Lifestyle Blacklist (Strictly Non-News)
+    'dating', 'relationship advice', 'tips for', 'diet', 'weight loss', 
+    'workout', 'fashion', 'beauty', 'outfit', 'skin care', 'hairstyle', 
+    'makeup', 'gift idea',
     
     // Shopping & Deals
     'coupon', 'promo code', 'discount', 'deal of the day', 'price drop', 'bundle',
