@@ -63,7 +63,8 @@ const FramingComponentSchema = z.object({
 export const FullAnalysisSchema = z.object({
   summary: z.string(),
   category: z.string(),
-  politicalLean: z.string().optional().default("Center"),
+  // Updated: Default is now "Not Applicable" to be safe until AI proves otherwise
+  politicalLean: z.string().optional().default("Not Applicable"), 
   sentiment: SentimentSchema.optional().default("Neutral"),
   
   // Primary Scores
