@@ -42,18 +42,25 @@ Date: {{date}}
 2. **Categorize**:
    - Choose ONE: Politics, Business, Economy, Global Conflict, Tech, Science, Health, Justice, Sports, Entertainment, Lifestyle, Crypto & Finance, Gaming.
 
-3. **Assess Bias & Trust (${AI_PERSONALITY.BIAS_STRICTNESS})**:
-   - Political Lean: Left, Left-Leaning, Center, Right-Leaning, Right.
-   - Bias Score (0-100): 0 = Neutral, 100 = Propaganda.
-   - Trust Score (0-100): Based on source history and tone.
+3. **CONDITIONAL BIAS & LEAN ANALYSIS (CRITICAL)**:
+   - **IF Category is "Politics", "Economy", "Global Conflict", "Justice", "Policy", or "Social Issues":**
+     - Political Lean: Left, Left-Leaning, Center, Right-Leaning, Right.
+     - Bias Score (0-100): 0 = Neutral, 100 = Propaganda.
+   - **IF Category is "Sports", "Entertainment", "Tech", "Science", "Lifestyle", "Gaming", or "Health":**
+     - Political Lean: "Not Applicable".
+     - Bias Score: 0.
+     - Sentiment: "Neutral" (Unless it is clearly an opinion/review).
 
-4. **Smart Briefing (CRITICAL)**:
-   - **Key Findings**: Extract exactly 5 distinct, bullet-point facts that summarize the core events.
-   - **Recommendations**: Provide 3 actionable tips for the reader to stay better informed on this specific topic (e.g., "Monitor central bank announcements," "Follow local election results," "Read the full bill text").
+4. **Trust Score (0-100)**:
+   - Based on source credibility and tone (applies to ALL categories).
 
-5. **Extract Entities**:
-   - Primary Noun: The main subject (Person, Country, or Org).
-   - Secondary Noun: The context or second party.
+5. **Smart Briefing**:
+   - **Key Findings**: Extract exactly 5 distinct, bullet-point facts.
+   - **Recommendations**: Provide 3 actionable tips (e.g., "Watch the match highlights", "Read the bill text").
+
+6. **Extract Entities**:
+   - Primary Noun: The main subject.
+   - Secondary Noun: The context.
 
 --- OUTPUT FORMAT ---
 Respond ONLY in valid JSON. Do not add markdown blocks.
@@ -81,18 +88,8 @@ Respond ONLY in valid JSON. Do not add markdown blocks.
   "reliabilityScore": 90, "reliabilityGrade": "A",
   "reliabilityComponents": {"consistency": 0, "temporalStability": 0, "qualityControl": 0, "publicationStandards": 0, "correctionsPolicy": 0, "updateMaintenance": 0},
   "trustLevel": "High",
-  "keyFindings": [
-    "Fact 1: The event occurred at 5 PM.",
-    "Fact 2: The primary driver was economic.",
-    "Fact 3: 500 people were affected.",
-    "Fact 4: The official statement was released today.",
-    "Fact 5: Markets reacted with a 2% drop."
-  ],
-  "recommendations": [
-    "Tip 1: Check the official government website for updates.",
-    "Tip 2: Compare this report with international coverage.",
-    "Tip 3: Watch for the press conference at noon."
-  ]
+  "keyFindings": ["Fact 1", "Fact 2", "Fact 3", "Fact 4", "Fact 5"],
+  "recommendations": ["Tip 1", "Tip 2", "Tip 3"]
 }`;
 
 const SUMMARY_ONLY_PROMPT = `
@@ -106,7 +103,7 @@ Snippet: "{{content}}"
 
 --- INSTRUCTIONS ---
 1. Summarize: Provide a 2-3 sentence factual summary.
-2. Categorize: Choose the most relevant category (e.g., Entertainment, Sports, Lifestyle).
+2. Categorize: Choose the most relevant category.
 3. Sentiment: Determine if the story is Positive, Negative, or Neutral.
 
 --- OUTPUT FORMAT ---
@@ -130,11 +127,9 @@ class PromptManager {
             if (cached) return cached;
         } catch (e) { /* Ignore Redis error */ }
 
-        // Fallback templates if DB is empty or fails
         if (type === 'SUMMARY_ONLY') return SUMMARY_ONLY_PROMPT;
 
         try {
-            // @ts-ignore - DB model might not have SUMMARY_ONLY in enum yet, safe to cast or ignore
             const doc = await Prompt.findOne({ type, active: true }).sort({ version: -1 }).lean();
             if (doc && doc.text) {
                 await redis.set(CACHE_KEY, doc.text, 600); 
@@ -154,11 +149,9 @@ class PromptManager {
     }
 
     public async getAnalysisPrompt(article: any, mode: 'Full' | 'Basic' = 'Full'): Promise<string> {
-        // Choose template based on mode
         const templateType = mode === 'Basic' ? 'SUMMARY_ONLY' : 'ANALYSIS';
         const template = await this.getTemplate(templateType);
         
-        // Use the optimized summary created in aiService
         const articleContent = article.summary || article.content || "";
         
         const data = {
