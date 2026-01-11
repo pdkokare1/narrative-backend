@@ -125,8 +125,6 @@ class GatekeeperService {
         }
 
         // OPTIMIZATION: VIP Fast Lane
-        // If source is trusted, skip expensive AI check.
-        // We assume trusted sources (Reuters, BBC) don't publish "Junk".
         const isTrusted = TRUSTED_SOURCES.some(src => sourceName.toLowerCase().includes(src.toLowerCase()));
         if (isTrusted) {
             const result = { 
@@ -135,30 +133,31 @@ class GatekeeperService {
                 recommendedModel: CONSTANTS.AI_MODELS.QUALITY,
                 reason: 'Trusted Source (VIP)' 
             };
-            // Cache it so we don't even check the array next time
             await redis.set(CACHE_KEY, result, 86400);
             return result;
         }
 
-        // 3. Run AI Check
+        // 3. Run AI Check (Strict 70/30 Logic)
         try {
             const apiKey = await KeyManager.getKey('GEMINI');
             
             const prompt = `
-                Analyze this news article metadata to determine if it is "Junk" or "News".
+                Analyze this news article metadata to determine if it is "Junk", "Soft News", or "Hard News".
                 
                 Headline: "${title}"
                 Description: "${desc}"
                 Source: "${sourceName}"
                 
                 DEFINITIONS:
-                - "Hard News": Politics, Economy, Business, Finance, Markets, IPOs, War, Disaster, Crime, Accidents, Science, Technology, Policy, World Events.
-                - "Soft News": Sports (Matches, Scores), Entertainment, Celebrity, Lifestyle.
-                - "Junk": Spam, Paid Reviews, Product Promotions, Shopping Deals, Coupons, Game Cheats, Horoscopes, Gambling ads.
+                - "Hard News": Politics, Economy, Business, Finance, Markets, War, Disaster, Science, Technology, Policy, Major World Events.
+                - "Soft News": Sports (Championships/Results only), Entertainment (Awards/Major Scandals only), Lifestyle.
+                - "Junk": Rumors, Leaks, Speculation, Celebrity Sightings, Gossip, Dating Advice, Recipes, Shopping, Spam.
 
                 CRITICAL RULES:
-                1. IPOs, Financial Results, and Company News are HARD NEWS.
-                2. ONLY classify as "Junk" if it is spam, a direct product ad, or garbage content.
+                1. REJECT (Classify as Junk): Any rumor, product leak, dating advice, diet tip, or minor celebrity sighting.
+                2. REJECT: "Previews" or "Predictions". Only "Results" or "Happening Now" are news.
+                3. ACCEPT Soft News ONLY if it is a major event (e.g., "Oscars Winners", "World Cup Final"). 
+                4. ALL Political/Economic news is "Hard News".
 
                 Respond ONLY in JSON: { "type": "Hard News" | "Soft News" | "Junk", "category": "String" }
             `;
@@ -205,7 +204,6 @@ class GatekeeperService {
             } catch (e) { /* ignore */ }
             
             logger.error(`Gatekeeper Error: ${error.message}`);
-            // Fail Open: If AI fails, assume it's Soft News so we don't block potential real news.
             return { category: 'Other', type: 'Soft News', isJunk: false, recommendedModel: CONSTANTS.AI_MODELS.FAST };
         }
     }
