@@ -149,11 +149,23 @@ class ArticleService {
     }
 
     // ZONE 1 & 2: Weighted Construction (First Page Load)
+    // Build Initial Query respecting filters
+    const initialQuery: any = { 
+        publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } 
+    };
+    
+    // Apply Category Filter if present
+    if (filters.category) {
+        initialQuery.category = filters.category;
+    }
+
+    // Apply Political Lean Filter if present
+    if (filters.politicalLean) {
+        initialQuery.politicalLean = filters.politicalLean;
+    }
+
     const [latestCandidates, userProfile, userStats] = await Promise.all([
-        Article.find({ 
-            // Keep recent filter for Main Feed to ensure freshness
-            publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } 
-        })
+        Article.find(initialQuery)
            .sort({ publishedAt: -1 })
            .limit(80) 
            .select('+embedding') 
