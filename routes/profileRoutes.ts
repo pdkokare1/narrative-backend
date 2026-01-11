@@ -47,7 +47,8 @@ router.post('/', validate(schemas.createProfile), asyncHandler(async (req: Reque
     }
 
     // B. Orphan Check (Relink if email OR phone matches but ID differs)
-    const orQueries = [];
+    // FIX: Explicitly type this array so TypeScript allows us to push objects into it
+    const orQueries: any[] = [];
     if (email) orQueries.push({ email });
     if (phone_number) orQueries.push({ phoneNumber: phone_number });
 
