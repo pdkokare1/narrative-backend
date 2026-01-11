@@ -149,7 +149,7 @@ class GatekeeperService {
                 Source: "${sourceName}"
                 
                 DEFINITIONS:
-                - "Hard News": Politics, Economy, Business, Finance, Markets, War, Disaster, Science, Technology, Policy, Major World Events.
+                - "Hard News": Politics, Economy, Business, Finance, Markets, War, Disaster, Science, Technology, Policy, Major World Events, Royal/State Official Business.
                 - "Soft News": Sports (Championships/Results only), Entertainment (Awards/Major Scandals only), Lifestyle.
                 - "Junk": Rumors, Leaks, Speculation, Celebrity Sightings, Gossip, Dating Advice, Recipes, Shopping, Spam.
 
