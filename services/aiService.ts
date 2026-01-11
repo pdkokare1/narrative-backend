@@ -135,7 +135,7 @@ class AIService {
     } else {
         logger.warn("⚠️ No Gemini API Key found in config");
     }
-    logger.info(`🤖 AI Service Initialized (Quality: ${CONSTANTS.AI_MODELS.QUALITY})`);
+    logger.info(`🤖 AI Service Initialized (Default: ${CONSTANTS.AI_MODELS.FAST})`);
   }
 
   /**
@@ -154,7 +154,8 @@ class AIService {
       });
 
       // Gemini 2.5 Context Limits
-      const SAFE_LIMIT = isProMode ? 1500000 : 700000;
+      // Pro has 2M context, Flash has 1M. We stay safe.
+      const SAFE_LIMIT = isProMode ? 1500000 : 800000;
 
       if (clean.length > SAFE_LIMIT) {
           logger.warn(`⚠️ Article extremely large (${clean.length} chars). Truncating to ${SAFE_LIMIT}.`);
@@ -166,8 +167,9 @@ class AIService {
 
   /**
    * --- 1. SINGLE ARTICLE ANALYSIS ---
+   * OPTIMIZED: Defaults to FAST model (Flash) to save costs.
    */
-  async analyzeArticle(article: Partial<IArticle>, targetModel: string = CONSTANTS.AI_MODELS.QUALITY, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
+  async analyzeArticle(article: Partial<IArticle>, targetModel: string = CONSTANTS.AI_MODELS.FAST, mode: 'Full' | 'Basic' = 'Full'): Promise<Partial<IArticle>> {
     const isSystemHealthy = await CircuitBreaker.isOpen('GEMINI');
     if (!isSystemHealthy) {
         logger.warn('⚡ Circuit Breaker OPEN for Gemini. Using Fallback.');
@@ -217,13 +219,14 @@ class AIService {
 
   /**
    * --- 2. MULTI-DOCUMENT NARRATIVE SYNTHESIS ---
+   * QUALITY LOCKED: Always uses PRO model for synthesis.
    */
   async generateNarrative(articles: IArticle[]): Promise<any> {
       if (!articles || articles.length < 2) return null;
 
       try {
-          // Use PRO model for complex synthesis
-          const targetModel = config.aiModels.pro;
+          // FORCE PRO MODEL for complex synthesis
+          const targetModel = CONSTANTS.AI_MODELS.QUALITY;
 
           let docContext = "";
           articles.forEach((art, index) => {
