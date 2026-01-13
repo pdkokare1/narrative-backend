@@ -5,7 +5,7 @@ import config from '../utils/config';
 import logger from '../utils/logger';
 import KeyManager from '../utils/KeyManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
-import Article from '../models/articleModel'; // Added: To check for existing audio
+import Article from '../models/articleModel';
 
 const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
@@ -49,7 +49,22 @@ class TTSService {
         return clean;
     }
 
-    async generateAndUpload(text: string, voiceId: string, articleId: string | null, customFilename: string | null = null): Promise<string> {
+    /**
+     * Generates audio from text using ElevenLabs and uploads to Cloudinary.
+     * @param text The text to speak
+     * @param voiceId The ElevenLabs voice ID
+     * @param articleId Optional: The article ID (for checking cache)
+     * @param customFilename Optional: A specific filename for Cloudinary (e.g. 'mira_open_morn_1')
+     * @param highQuality Optional: If true, uses V2 model and max quality settings (slower/more expensive). Default false.
+     */
+    async generateAndUpload(
+        text: string, 
+        voiceId: string, 
+        articleId: string | null, 
+        customFilename: string | null = null,
+        highQuality: boolean = false
+    ): Promise<string> {
+        
         // --- IMPROVEMENT: DB CACHE CHECK ---
         // If we have an article ID, check if audio already exists.
         if (articleId) {
@@ -82,16 +97,22 @@ class TTSService {
         const safeText = this.cleanTextForNews(text);
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
 
-        logger.info(`🎙️ Generating Audio (HQ): "${customFilename || articleId}"`);
+        // --- QUALITY SETTINGS ---
+        // Standard (News): Turbo v2.5, Latency 3 (Fastest)
+        // High Quality (Intros): Multilingual v2, Latency 0 (Best Audio)
+        const modelId = highQuality ? "eleven_multilingual_v2" : "eleven_turbo_v2_5";
+        const latencyOptimization = highQuality ? 0 : 3;
+        
+        logger.info(`🎙️ Generating Audio (${highQuality ? 'STUDIO QUALITY' : 'STANDARD'}): "${customFilename || articleId}"`);
 
         try {
             const response = await axios.post(url, {
                 text: safeText,
-                model_id: "eleven_turbo_v2_5", // Keep v2.5 for speed/quality balance
+                model_id: modelId, 
                 voice_settings: {
-                    stability: 0.50,       
+                    stability: highQuality ? 0.65 : 0.50,       
                     similarity_boost: 0.75, 
-                    style: 0.35,           
+                    style: highQuality ? 0.45 : 0.35,           
                     use_speaker_boost: true,
                     speed: 1.0            
                 }
@@ -101,7 +122,7 @@ class TTSService {
                     'Content-Type': 'application/json',
                     'Accept': 'audio/mpeg'
                 },
-                params: { optimize_streaming_latency: 3 },
+                params: { optimize_streaming_latency: latencyOptimization },
                 responseType: 'stream' 
             });
 
