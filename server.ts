@@ -97,7 +97,10 @@ try {
 app.use('/api/v1/', apiLimiter); 
 
 // --- 8. Mount Routes ---
+// FIX: Mount share routes at BOTH root and /api to handle different URL constructions
 app.use('/share', shareRoutes); 
+app.use('/api/share', shareRoutes);
+
 app.use('/api/v1', apiRouter);
 // Fallback
 app.use('/api', apiRouter);
