@@ -7,9 +7,7 @@ import logger from '../utils/logger';
 
 const router = express.Router();
 
-// --- PROXY IMAGE ROUTE (Must be before /:id) ---
-// This allows html2canvas on the frontend to capture external images
-// by routing them through our domain to avoid CORS tainting.
+// --- PROXY IMAGE ROUTE ---
 router.get('/proxy-image', async (req: Request, res: Response) => {
     const imageUrl = req.query.url as string;
 
@@ -24,9 +22,7 @@ router.get('/proxy-image', async (req: Request, res: Response) => {
             responseType: 'stream'
         });
 
-        // Forward the content type (e.g., image/jpeg)
         res.setHeader('Content-Type', response.headers['content-type']);
-        // ALLOW CORS for this specific asset so html2canvas can read it
         res.setHeader('Access-Control-Allow-Origin', '*');
         
         response.data.pipe(res);
@@ -40,54 +36,60 @@ router.get('/proxy-image', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
     const userAgent = (req.headers['user-agent'] || '').toLowerCase();
     
-    // Detect common social bots (Twitter, WhatsApp, Facebook, LinkedIn, Discord, Slack)
-    const isBot = /bot|googlebot|crawler|spider|robot|crawling|facebookexternalhit|whatsapp|slackbot|discord|twitterbot/i.test(userAgent);
+    // Expanded bot detection
+    const isBot = /bot|googlebot|crawler|spider|robot|crawling|facebookexternalhit|whatsapp|slackbot|discord|twitterbot|telegram|snapchat/i.test(userAgent);
     
     const articleId = req.params.id;
 
     // --- CASE 1: HUMAN USER ---
-    // Redirect immediately to the full app.
     if (!isBot) {
         return res.redirect(`${config.frontendUrl}/?article=${articleId}`);
     }
 
     // --- CASE 2: SOCIAL BOT ---
-    // Fetch minimal data and serve static HTML for the preview card.
     try {
         const article = await Article.findById(articleId).select('headline summary imageUrl').lean();
         
         if (!article) {
-             // If ID is wrong, just send them to the home page
-             logger.warn(`Share Link Missing Article: ${articleId}`);
              return res.redirect(config.frontendUrl);
         }
 
-        // Generate the Social Preview HTML
+        // IMPORTANT: The Canonical URL must be THIS backend URL, not the frontend URL.
+        // This prevents the scraper from following og:url to the React app (which has no tags).
+        const selfUrl = `${req.protocol}://${req.get('host')}${req.originalUrl}`;
+        const imageUrl = article.imageUrl || '';
+
         const html = `
             <!DOCTYPE html>
             <html lang="en">
             <head>
                 <meta charset="utf-8" />
-                <title>${article.headline} | The Gamut</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                
+                <title>${article.headline}</title>
                 <meta name="description" content="${article.summary}" />
                 
                 <meta property="og:type" content="article" />
-                <meta property="og:url" content="${config.frontendUrl}/?article=${articleId}" />
+                <meta property="og:url" content="${selfUrl}" />
                 <meta property="og:title" content="${article.headline}" />
                 <meta property="og:description" content="${article.summary}" />
-                <meta property="og:image" content="${article.imageUrl || ''}" />
+                <meta property="og:image" content="${imageUrl}" />
+                <meta property="og:image:alt" content="${article.headline}" />
                 <meta property="og:site_name" content="The Gamut" />
                 
+                <meta property="og:image:width" content="1200" />
+                <meta property="og:image:height" content="630" />
+                
                 <meta name="twitter:card" content="summary_large_image" />
-                <meta name="twitter:url" content="${config.frontendUrl}/?article=${articleId}" />
+                <meta name="twitter:url" content="${selfUrl}" />
                 <meta name="twitter:title" content="${article.headline}" />
                 <meta name="twitter:description" content="${article.summary}" />
-                <meta name="twitter:image" content="${article.imageUrl || ''}" />
+                <meta name="twitter:image" content="${imageUrl}" />
             </head>
             <body>
                 <h1>${article.headline}</h1>
+                <img src="${imageUrl}" style="max-width:100%;" />
                 <p>${article.summary}</p>
-                <img src="${article.imageUrl}" alt="Article Image" />
             </body>
             </html>
         `;
