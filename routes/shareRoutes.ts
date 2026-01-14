@@ -1,11 +1,42 @@
 // routes/shareRoutes.ts
 import express, { Request, Response } from 'express';
+import axios from 'axios';
 import Article from '../models/articleModel';
 import config from '../utils/config';
 import logger from '../utils/logger';
 
 const router = express.Router();
 
+// --- PROXY IMAGE ROUTE (Must be before /:id) ---
+// This allows html2canvas on the frontend to capture external images
+// by routing them through our domain to avoid CORS tainting.
+router.get('/proxy-image', async (req: Request, res: Response) => {
+    const imageUrl = req.query.url as string;
+
+    if (!imageUrl) {
+        return res.status(400).send('Missing url parameter');
+    }
+
+    try {
+        const response = await axios({
+            url: imageUrl,
+            method: 'GET',
+            responseType: 'stream'
+        });
+
+        // Forward the content type (e.g., image/jpeg)
+        res.setHeader('Content-Type', response.headers['content-type']);
+        // ALLOW CORS for this specific asset so html2canvas can read it
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        
+        response.data.pipe(res);
+    } catch (error) {
+        logger.error(`Image Proxy Error for ${imageUrl}:`, error);
+        res.status(500).send('Failed to fetch image');
+    }
+});
+
+// --- SHARE CARD HANDLER ---
 router.get('/:id', async (req: Request, res: Response) => {
     const userAgent = (req.headers['user-agent'] || '').toLowerCase();
     
