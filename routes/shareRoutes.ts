@@ -8,6 +8,7 @@ import logger from '../utils/logger';
 const router = express.Router();
 
 // --- PROXY IMAGE ROUTE ---
+// Fixes CORS issues for html2canvas
 router.get('/proxy-image', async (req: Request, res: Response) => {
     const imageUrl = req.query.url as string;
 
@@ -22,17 +23,17 @@ router.get('/proxy-image', async (req: Request, res: Response) => {
             responseType: 'stream'
         });
 
-        // Clean headers to avoid double-compression or chunking issues
-        const contentType = response.headers['content-type'];
-        if (contentType) res.setHeader('Content-Type', contentType);
+        // Forward the Content-Type (e.g., image/jpeg) or default to png
+        const contentType = response.headers['content-type'] || 'image/png';
         
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for speed
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Access-Control-Allow-Origin', '*'); // Critical for Canvas
+        res.setHeader('Cache-Control', 'public, max-age=31536000'); 
 
         // Pipe data
         response.data.pipe(res);
     } catch (error) {
-        // Do not log full error stack for 404s/timeouts to keep logs clean
+        // Do not log full error stack for 404s to keep logs clean
         logger.warn(`Image Proxy Failed for ${imageUrl}`);
         res.status(404).send('Image not found');
     }
@@ -41,7 +42,7 @@ router.get('/proxy-image', async (req: Request, res: Response) => {
 // --- SHARE CARD HANDLER ---
 router.get('/:id', async (req: Request, res: Response) => {
     const articleId = req.params.id;
-    // Default fallback image if article has none (You can replace this with your actual logo URL)
+    // Fallback image if article has none
     const DEFAULT_IMAGE = "https://narrative-news.com/logo512.png"; 
 
     try {
@@ -60,7 +61,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         // Ensure Image URL is absolute
         const imageUrl = article.imageUrl || DEFAULT_IMAGE;
 
-        // Construct target URL for the user
+        // Construct target URL for the user (The App)
         const appUrl = `${config.frontendUrl}/?article=${articleId}`;
 
         const html = `
@@ -78,6 +79,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 <meta property="og:title" content="${article.headline}" />
                 <meta property="og:description" content="${article.summary}" />
                 <meta property="og:image" content="${imageUrl}" />
+                <meta property="og:image:width" content="1200" />
+                <meta property="og:image:height" content="630" />
                 <meta property="og:site_name" content="The Gamut" />
                 <meta property="og:locale" content="en_US" />
                 
@@ -86,6 +89,8 @@ router.get('/:id', async (req: Request, res: Response) => {
                 <meta name="twitter:title" content="${article.headline}" />
                 <meta name="twitter:description" content="${article.summary}" />
                 <meta name="twitter:image" content="${imageUrl}" />
+                
+                <meta http-equiv="refresh" content="0;url=${appUrl}" />
                 
                 <script>
                    window.location.replace("${appUrl}");
@@ -96,7 +101,9 @@ router.get('/:id', async (req: Request, res: Response) => {
                     <h1 style="font-size: 22px; color: #333; margin-bottom: 15px;">${article.headline}</h1>
                     <img src="${imageUrl}" style="max-width:100%; height:auto; border-radius: 4px; margin-bottom: 15px;" />
                     <p style="font-size: 16px; line-height: 1.6; color: #555;">${article.summary}</p>
-                    <a href="${appUrl}" style="display: inline-block; margin-top: 20px; padding: 10px 20px; background-color: #000; color: #fff; text-decoration: none; border-radius: 5px;">Read on The Gamut</a>
+                    
+                    <p style="margin-top:20px; color: #777; font-size: 14px;">Redirecting you to the full story...</p>
+                    <a href="${appUrl}" style="display: inline-block; margin-top: 10px; padding: 10px 20px; background-color: #000; color: #fff; text-decoration: none; border-radius: 5px;">Read on The Gamut</a>
                 </div>
             </body>
             </html>
