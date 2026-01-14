@@ -8,7 +8,6 @@ import logger from '../utils/logger';
 const router = express.Router();
 
 // --- PROXY IMAGE ROUTE ---
-// Fixes CORS issues for html2canvas
 router.get('/proxy-image', async (req: Request, res: Response) => {
     const imageUrl = req.query.url as string;
 
@@ -20,20 +19,21 @@ router.get('/proxy-image', async (req: Request, res: Response) => {
         const response = await axios({
             url: imageUrl,
             method: 'GET',
-            responseType: 'stream'
+            responseType: 'stream',
+            timeout: 5000 // 5s timeout
         });
 
-        // Forward the Content-Type (e.g., image/jpeg) or default to png
+        // Forward content-type or default to png
         const contentType = response.headers['content-type'] || 'image/png';
         
         res.setHeader('Content-Type', contentType);
-        res.setHeader('Access-Control-Allow-Origin', '*'); // Critical for Canvas
-        res.setHeader('Cache-Control', 'public, max-age=31536000'); 
+        res.setHeader('Access-Control-Allow-Origin', '*'); 
+        // We do NOT cache here aggressively to avoid stale CORS issues during development
+        res.setHeader('Cache-Control', 'no-cache'); 
 
         // Pipe data
         response.data.pipe(res);
     } catch (error) {
-        // Do not log full error stack for 404s to keep logs clean
         logger.warn(`Image Proxy Failed for ${imageUrl}`);
         res.status(404).send('Image not found');
     }
@@ -42,68 +42,81 @@ router.get('/proxy-image', async (req: Request, res: Response) => {
 // --- SHARE CARD HANDLER ---
 router.get('/:id', async (req: Request, res: Response) => {
     const articleId = req.params.id;
-    // Fallback image if article has none
+    const userAgent = (req.headers['user-agent'] || '').toLowerCase();
+    
+    // Detect Bots (WhatsApp, Facebook, Twitter, Discord, Applebot)
+    // We WANT these to stay on this page and read the meta tags.
+    const isBot = /bot|googlebot|crawler|spider|robot|crawling|facebookexternalhit|whatsapp|slackbot|discord|twitterbot|telegram|snapchat|linkedin|embedly|quora|pinterest|skype|applebot/i.test(userAgent);
+
+    // Default image if article has none
     const DEFAULT_IMAGE = "https://narrative-news.com/logo512.png"; 
 
     try {
-        const article = await Article.findById(articleId).select('headline summary imageUrl politicalLean').lean();
+        const article = await Article.findById(articleId).select('headline summary imageUrl').lean();
         
         // If article not found, redirect to home
         if (!article) {
              return res.redirect(config.frontendUrl);
         }
 
-        // Force HTTPS for the canonical URL
+        // Force HTTPS
         const protocol = req.get('x-forwarded-proto') || req.protocol;
         const host = req.get('host');
+        // This is the URL of *this* card (the backend link)
         const selfUrl = `${protocol}://${host}${req.originalUrl}`.replace('http://', 'https://');
         
-        // Ensure Image URL is absolute
+        // The URL of the App (Frontend)
+        const appUrl = `${config.frontendUrl}/?article=${articleId}`;
+        
         const imageUrl = article.imageUrl || DEFAULT_IMAGE;
 
-        // Construct target URL for the user (The App)
-        const appUrl = `${config.frontendUrl}/?article=${articleId}`;
-
+        // --- THE HTML RESPONSE ---
         const html = `
             <!DOCTYPE html>
             <html lang="en" prefix="og: http://ogp.me/ns#">
             <head>
                 <meta charset="utf-8" />
-                <meta name="viewport" content="width=device-width, initial-scale=1" />
-                
                 <title>${article.headline} | The Gamut</title>
-                <meta name="description" content="${article.summary}" />
                 
-                <meta property="og:type" content="article" />
                 <meta property="og:url" content="${selfUrl}" />
+                <meta property="og:type" content="article" />
                 <meta property="og:title" content="${article.headline}" />
                 <meta property="og:description" content="${article.summary}" />
                 <meta property="og:image" content="${imageUrl}" />
+                <meta property="og:site_name" content="The Gamut" />
+                
                 <meta property="og:image:width" content="1200" />
                 <meta property="og:image:height" content="630" />
-                <meta property="og:site_name" content="The Gamut" />
-                <meta property="og:locale" content="en_US" />
                 
                 <meta name="twitter:card" content="summary_large_image" />
+                <meta name="twitter:domain" content="${host}" />
                 <meta name="twitter:url" content="${selfUrl}" />
                 <meta name="twitter:title" content="${article.headline}" />
                 <meta name="twitter:description" content="${article.summary}" />
                 <meta name="twitter:image" content="${imageUrl}" />
-                
-                <meta http-equiv="refresh" content="0;url=${appUrl}" />
-                
+
+                <style>
+                    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; text-align: center; background: #f5f5f5; }
+                    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 600px; margin: 20px auto; }
+                    img { max-width: 100%; border-radius: 8px; margin-bottom: 15px; }
+                    h1 { font-size: 20px; margin-bottom: 10px; color: #111; }
+                    p { color: #555; line-height: 1.5; }
+                    .btn { display: inline-block; background: #000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; margin-top: 20px; }
+                </style>
+
+                ${!isBot ? `
                 <script>
-                   window.location.replace("${appUrl}");
+                    window.location.replace("${appUrl}");
                 </script>
+                ` : ''}
+
             </head>
-            <body style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; padding: 40px; background: #f4f4f4; text-align: center;">
-                <div style="background: white; padding: 20px; border-radius: 8px; max-width: 600px; margin: 0 auto; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                    <h1 style="font-size: 22px; color: #333; margin-bottom: 15px;">${article.headline}</h1>
-                    <img src="${imageUrl}" style="max-width:100%; height:auto; border-radius: 4px; margin-bottom: 15px;" />
-                    <p style="font-size: 16px; line-height: 1.6; color: #555;">${article.summary}</p>
-                    
-                    <p style="margin-top:20px; color: #777; font-size: 14px;">Redirecting you to the full story...</p>
-                    <a href="${appUrl}" style="display: inline-block; margin-top: 10px; padding: 10px 20px; background-color: #000; color: #fff; text-decoration: none; border-radius: 5px;">Read on The Gamut</a>
+            <body>
+                <div class="card">
+                    <img src="${imageUrl}" alt="Article Image" />
+                    <h1>${article.headline}</h1>
+                    <p>${article.summary}</p>
+                    <a href="${appUrl}" class="btn">Read Full Story</a>
                 </div>
             </body>
             </html>
