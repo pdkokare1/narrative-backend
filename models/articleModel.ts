@@ -124,10 +124,13 @@ articleSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
 // --- 4. STATIC METHODS ---
 // This moves complex search logic OUT of the controller and INTO the model.
 articleSchema.statics.smartSearch = async function(term: string, limit: number = 20) {
+  let results: ArticleDocument[] = [];
+  let atlasFailed = false;
+
+  // Option A: Atlas Search (Primary)
+  // This provides fuzzy matching and better relevance if the index exists.
   try {
-    // Option A: Atlas Search (Primary)
-    // This provides fuzzy matching and better relevance if the index exists.
-    return await this.aggregate([
+    results = await this.aggregate([
       {
         $search: {
           index: "default", // Ensure you create this index in Atlas Dashboard
@@ -151,9 +154,12 @@ articleSchema.statics.smartSearch = async function(term: string, limit: number =
     ]);
   } catch (error) {
     // console.warn("Atlas Search failed (Index missing?), falling back to Standard Text Search.");
-    
-    // Option B: Standard MongoDB Text Search (Fallback)
-    // We use the text index defined above.
+    atlasFailed = true;
+  }
+
+  // Option B: Standard MongoDB Text Search (Fallback)
+  // We run this if Atlas failed OR if Atlas returned 0 results.
+  if (atlasFailed || results.length === 0) {
     return this.find(
       { $text: { $search: term } },
       { score: { $meta: 'textScore' } } // Return relevance score
@@ -161,6 +167,8 @@ articleSchema.statics.smartSearch = async function(term: string, limit: number =
     .sort({ score: { $meta: 'textScore' }, publishedAt: -1 }) // Sort by relevance, then date
     .limit(limit);
   }
+
+  return results;
 };
 
 const Article = mongoose.model<ArticleDocument, ArticleModel>('Article', articleSchema);
