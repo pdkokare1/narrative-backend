@@ -130,6 +130,33 @@ class ArticleService {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
 
+    // NEW: PRIORITY TOPIC FILTER
+    // If a topic is selected via InFocus bar, bypass mixing logic and show all articles for that topic.
+    if (filters.topic) {
+         const query: any = { clusterTopic: filters.topic };
+         
+         // Respect other filters if present
+         if (filters.category && filters.category !== 'All') query.category = filters.category;
+         if (filters.politicalLean) query.politicalLean = filters.politicalLean;
+
+         const articles = await Article.find(query)
+            .select('-content -embedding -recommendations')
+            .sort({ publishedAt: -1 })
+            .skip(page)
+            .limit(Number(limit))
+            .lean()
+            .read('secondaryPreferred');
+
+         return { 
+             articles: articles.map(a => ({
+                 ...a, 
+                 type: 'Article', 
+                 imageUrl: optimizeImageUrl(a.imageUrl)
+             })), 
+             pagination: { total: 100 } // Estimate
+         };
+    }
+
     // ZONE 3: Deep Scrolling (Optimized)
     if (page >= 20) {
          const query = buildArticleQuery(filters);
