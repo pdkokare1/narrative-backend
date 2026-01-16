@@ -42,35 +42,77 @@ const mapLeanToKey = (lean: string): 'Left' | 'Right' | 'Center' => {
     return 'Center';
 };
 
-// --- NEW: VECTOR-BASED TOPIC DEDUPLICATION ---
-const deduplicateTopicsByVector = (rawTopics: any[]) => {
+// --- NEW: ADVANCED HYBRID DEDUPLICATION ---
+
+// 1. Text Normalizer: Handles "U.S." -> "us", "US-Iran" -> "us iran"
+const getTokens = (str: string) => {
+    return str.toLowerCase()
+        .replace(/\./g, '') // Remove dots (U.S. -> US)
+        .replace(/[^\w\s]/g, ' ') // Replace punctuation with space (US-Iran -> US Iran)
+        .split(/\s+/)
+        .filter(t => t.length > 2) // Ignore tiny words
+        .sort(); // Sort for order-independent comparison
+};
+
+// 2. Smart String Matcher
+const areTopicsLinguisticallySimilar = (topicA: string, topicB: string) => {
+    const tokensA = getTokens(topicA);
+    const tokensB = getTokens(topicB);
+    
+    // A. Exact Token Set Match (Handles "US-Iran" vs "Iran-US")
+    const strA = tokensA.join(' ');
+    const strB = tokensB.join(' ');
+    if (strA === strB) return true;
+    
+    // B. Root Word/Substring Match (Handles "Iran" vs "Iranian")
+    let matches = 0;
+    const total = Math.max(tokensA.length, tokensB.length);
+    if (total === 0) return false;
+
+    for (const tA of tokensA) {
+        for (const tB of tokensB) {
+            // Check exact match OR containment (e.g. "iran" is in "iranian")
+            if (tA === tB || tA.includes(tB) || tB.includes(tA)) {
+                matches++;
+                break; // Move to next token in A
+            }
+        }
+    }
+    
+    // If > 70% of the words match/overlap, they are the same topic
+    return (matches / total) >= 0.7; 
+};
+
+const deduplicateTopics = (rawTopics: any[]) => {
     const uniqueTopics: any[] = [];
     
-    // Sort by count DESC initially so we keep the popular ones as anchors
+    // Sort by count DESC to keep the most popular version
     const sorted = rawTopics.sort((a, b) => b.count - a.count);
 
     for (const item of sorted) {
-        // Find a matching existing topic based on Vector Similarity + Time Proximity
+        // Find existing match using HYBRID check
         const existingIndex = uniqueTopics.findIndex(u => {
-            // 1. Vector Check (Meaning)
-            // Use embeddings from the 'representative' latest article of each group
+            // Check 1: Linguistic Match (Fast & Explicit)
+            // Catches "US-Iran" == "Iran-US" and "Iran" == "Iranian"
+            if (areTopicsLinguisticallySimilar(u.topic, item.topic)) return true;
+
+            // Check 2: Vector Match (Semantic Fallback)
+            // Catches "Gaza Conflict" == "Israel-Hamas War"
             const sim = calculateSimilarity(u.vector, item.vector);
             
-            // 2. Time Check (Event Freshness)
-            // Ensure these aren't just similar topics from different months (e.g. distinct hurricanes)
             const timeDiff = Math.abs(new Date(u.latestDate).getTime() - new Date(item.latestDate).getTime());
             const hoursDiff = timeDiff / (1000 * 60 * 60);
 
-            // THRESHOLD: >95% Similarity AND within 24 hours of each other
-            return sim > 0.95 && hoursDiff < 24;
+            // Relaxed threshold to 0.92 to catch tone variations
+            return sim > 0.92 && hoursDiff < 24;
         });
 
         if (existingIndex !== -1) {
-            // MERGE DETECTED
+            // Merge Counts
             uniqueTopics[existingIndex].count += item.count;
             
-            // Label Logic: Prefer the longer string (usually more descriptive)
-            // unless the merged item is significantly larger (unlikely due to sort)
+            // Label Logic: Keep the one that is "Prettier" (usually longer, unless the shorter one is an acronym)
+            // But prefer the one with correct capitalization (usually from the DB group key)
             if (item.topic.length > uniqueTopics[existingIndex].topic.length) {
                  uniqueTopics[existingIndex].topic = item.topic;
             }
@@ -84,16 +126,15 @@ const deduplicateTopicsByVector = (rawTopics: any[]) => {
 
 class ArticleService {
   
-  // --- 1. Smart Trending Topics (72h + Vector Dedupe) ---
+  // --- 1. Smart Trending Topics (72h + Hybrid Dedupe) ---
   async getTrendingTopics() {
-    // CACHE BUST: 'v11' - Version bump for new vector logic
+    // CACHE BUST: 'v12' - Version bump for hybrid logic
     return redis.getOrFetch(
-        'trending_topics_v11', 
+        'trending_topics_v12', 
         async () => {
-            // CHANGED: 72 Hours Window (3 Days)
             const threeDaysAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
 
-            // 1. Fetch Candidates with Embeddings
+            // 1. Fetch Candidates
             const rawResults = await Article.aggregate([
                 { 
                     $match: { 
@@ -101,41 +142,38 @@ class ArticleService {
                         clusterTopic: { $exists: true, $ne: "" } 
                     } 
                 },
-                { $sort: { publishedAt: -1 } }, // Ensure $first gets the latest
+                { $sort: { publishedAt: -1 } }, 
                 { 
                     $group: { 
                         _id: "$clusterTopic", 
                         count: { $sum: 1 }, 
                         sampleScore: { $max: "$trustScore" },
-                        // CAPTURE REPRESENTATIVE DATA FOR DEDUPE
                         latestVector: { $first: "$embedding" },
                         latestDate: { $first: "$publishedAt" }
                     } 
                 },
                 { 
                     $match: { 
-                        count: { $gte: 3 }, // Strict Noise Filter
+                        count: { $gte: 3 }, 
                         _id: { $ne: "General" } 
                     } 
                 }, 
                 { $sort: { count: -1 } },
-                { $limit: 50 } // Fetch wider pool for merging
+                { $limit: 60 } // Fetch more candidates to allow for merging
             ]).read('secondaryPreferred'); 
 
-            // 2. Map to intermediate format
             const candidateList = rawResults.map(r => ({ 
                 topic: r._id, 
                 count: r.count, 
                 score: r.sampleScore,
-                vector: r.latestVector || [], // Fallback to empty if missing
+                vector: r.latestVector || [], 
                 latestDate: r.latestDate
             }));
 
-            // 3. Vector Deduplication
-            const cleanList = deduplicateTopicsByVector(candidateList);
+            // 2. Hybrid Deduplication (Text + Vector)
+            const cleanList = deduplicateTopics(candidateList);
 
-            // 4. Return Top 12 (Cleaned)
-            // Strip out the heavy 'vector' data before returning to frontend
+            // 3. Return Top 12
             return cleanList
                 .sort((a, b) => b.count - a.count)
                 .slice(0, 12)
@@ -205,20 +243,17 @@ class ArticleService {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
 
-    // NEW: PRIORITY TOPIC FILTER (Updated for Smart Matching)
+    // NEW: PRIORITY TOPIC FILTER
     if (filters.topic) {
-         // Since we merged topics in the bar, the user might click "Gaza Conflict"
-         // but we want to fetch "Israel-Hamas War" too if they were merged.
-         // However, MongoDB doesn't support vector query efficiently here without a vector index.
-         // FALLBACK: Use simple regex for text matching for now, as the vectors were used 
-         // just to grouping the display labels.
-         
-         const cleanTopic = filters.topic.replace(/[^\w\s]/g, '').trim(); 
+         // CLEANUP: If user clicked "U.S. Immigration", also search for "US Immigration"
+         // This regex handles the "Hybrid" matching in the reverse direction (DB Query)
+         const cleanTopic = filters.topic.replace(/[^\w\s]/g, '').replace(/\s+/g, '.*'); 
          
          const query: any = { 
              $or: [
                  { clusterTopic: filters.topic }, 
-                 { clusterTopic: { $regex: new RegExp(cleanTopic, 'i') } }
+                 // Matches "US Immigration" if topic is "U.S. Immigration"
+                 { clusterTopic: { $regex: new RegExp(cleanTopic, 'i') } } 
              ]
          };
          
