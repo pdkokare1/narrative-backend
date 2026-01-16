@@ -40,7 +40,9 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
     limit: Number(req.query.limit) || 20,
     offset: Number(req.query.offset) || 0,
     startDate: req.query.startDate as string,
-    endDate: req.query.endDate as string
+    endDate: req.query.endDate as string,
+    // NEW: Topic Filter for InFocus Bar
+    topic: req.query.topic as string 
   };
 
   const result = await articleService.getMainFeed(filters, userId);
