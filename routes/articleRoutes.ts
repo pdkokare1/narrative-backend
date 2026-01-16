@@ -31,7 +31,8 @@ router.get('/trending', getTrendingTopics);
 router.get('/articles/smart-briefing', getSmartBriefing);
 
 // 3. Search (Atlas Search -> Text Fallback)
-router.get('/search', searchLimiter, validate(schemas.search), searchArticles);
+// UPDATED: Changed path from '/search' to '/articles/search' to match Frontend
+router.get('/articles/search', searchLimiter, validate(schemas.search), searchArticles);
 
 // 4. Main Feed (Filterable & Cached)
 router.get('/articles', validate(schemas.feedFilters), getMainFeed);
