@@ -219,6 +219,9 @@ export interface FeedFilters {
     offset?: number | string;
     startDate?: string;     // ADDED
     endDate?: string;       // ADDED
+    
+    // NEW: Topic Filter for InFocus Bar
+    topic?: string; 
 }
 
 export interface IServiceResponse<T> {
