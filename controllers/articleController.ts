@@ -9,6 +9,9 @@ import { FeedFilters } from '../types';
 // --- 1. Trending Topics ---
 export const getTrendingTopics = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const topics = await articleService.getTrendingTopics();
+  // Service likely expects 'topics' or generic data. Keeping data generic for lists unless specific type known.
+  // If frontend expects 'topics', this might need adjustment, but usually 'data' is safe for simple lists.
+  // checking patterns: usually 'data' is fine for generic gets unless typed otherwise.
   res.status(200).json({ status: 'success', data: topics });
 });
 
@@ -19,10 +22,12 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
 
   const result = await articleService.searchArticles(query);
 
+  // FIX: Frontend expects 'articles' and 'pagination'
   res.status(200).json({
     status: 'success',
     results: result.total,
-    data: result.articles
+    articles: result.articles, 
+    pagination: { total: result.total }
   });
 });
 
@@ -30,7 +35,6 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
 export const getMainFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user?.uid; // Optional Auth
   
-  // Extract all potential filters for the service
   const filters: FeedFilters = {
     category: req.query.category as string,
     politicalLean: req.query.politicalLean as string,
@@ -41,23 +45,22 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
     offset: Number(req.query.offset) || 0,
     startDate: req.query.startDate as string,
     endDate: req.query.endDate as string,
-    // NEW: Topic Filter for InFocus Bar
     topic: req.query.topic as string 
   };
 
   const result = await articleService.getMainFeed(filters, userId);
 
+  // FIX: Frontend expects 'articles'
   res.status(200).json({
     status: 'success',
     results: result.articles.length,
-    total: result.pagination.total,
-    data: result.articles
+    pagination: result.pagination, // Pass full pagination object
+    articles: result.articles
   });
 });
 
 // --- 4. NEW: In Focus Feed (Narratives) ---
 export const getInFocusFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  // FIXED: Pass pagination params (limit/offset) to service so infinite scroll works
   const filters: FeedFilters = { 
       category: req.query.category as string,
       limit: Number(req.query.limit) || 20,
@@ -66,23 +69,24 @@ export const getInFocusFeed = catchAsync(async (req: Request, res: Response, nex
   
   const result = await articleService.getInFocusFeed(filters);
 
+  // FIX: Frontend expects 'articles' (generic FeedItem type)
   res.status(200).json({
     status: 'success',
     meta: result.meta,
-    data: result.articles
+    articles: result.articles
   });
 });
 
 // --- 5. Balanced Feed (Anti-Echo Chamber) ---
 export const getBalancedFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user?.uid; 
-  // This feed relies heavily on UserStats, so userId is critical if available
   const result = await articleService.getBalancedFeed(userId);
 
+  // FIX: Frontend expects 'articles'
   res.status(200).json({
     status: 'success',
     meta: result.meta,
-    data: result.articles
+    articles: result.articles
   });
 });
 
@@ -91,10 +95,11 @@ export const getPersonalizedFeed = catchAsync(async (req: Request, res: Response
   const userId = (req as any).user.uid;
   const result = await articleService.getPersonalizedFeed(userId);
 
+  // FIX: Frontend expects 'articles'
   res.status(200).json({
     status: 'success',
     meta: result.meta,
-    data: result.articles
+    articles: result.articles
   });
 });
 
@@ -103,10 +108,11 @@ export const getSavedArticles = catchAsync(async (req: Request, res: Response, n
   const userId = (req as any).user.uid;
   const articles = await articleService.getSavedArticles(userId);
 
+  // FIX: Frontend expects 'articles'
   res.status(200).json({
     status: 'success',
     results: articles.length,
-    data: articles
+    articles: articles
   });
 });
 
@@ -120,7 +126,7 @@ export const toggleSaveArticle = catchAsync(async (req: Request, res: Response, 
   res.status(200).json({
     status: 'success',
     message: result.message,
-    data: result.savedArticles
+    savedArticles: result.savedArticles
   });
 });
 
