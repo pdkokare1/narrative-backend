@@ -42,45 +42,104 @@ const mapLeanToKey = (lean: string): 'Left' | 'Right' | 'Center' => {
     return 'Center';
 };
 
+// --- NEW: VECTOR-BASED TOPIC DEDUPLICATION ---
+const deduplicateTopicsByVector = (rawTopics: any[]) => {
+    const uniqueTopics: any[] = [];
+    
+    // Sort by count DESC initially so we keep the popular ones as anchors
+    const sorted = rawTopics.sort((a, b) => b.count - a.count);
+
+    for (const item of sorted) {
+        // Find a matching existing topic based on Vector Similarity + Time Proximity
+        const existingIndex = uniqueTopics.findIndex(u => {
+            // 1. Vector Check (Meaning)
+            // Use embeddings from the 'representative' latest article of each group
+            const sim = calculateSimilarity(u.vector, item.vector);
+            
+            // 2. Time Check (Event Freshness)
+            // Ensure these aren't just similar topics from different months (e.g. distinct hurricanes)
+            const timeDiff = Math.abs(new Date(u.latestDate).getTime() - new Date(item.latestDate).getTime());
+            const hoursDiff = timeDiff / (1000 * 60 * 60);
+
+            // THRESHOLD: >95% Similarity AND within 24 hours of each other
+            return sim > 0.95 && hoursDiff < 24;
+        });
+
+        if (existingIndex !== -1) {
+            // MERGE DETECTED
+            uniqueTopics[existingIndex].count += item.count;
+            
+            // Label Logic: Prefer the longer string (usually more descriptive)
+            // unless the merged item is significantly larger (unlikely due to sort)
+            if (item.topic.length > uniqueTopics[existingIndex].topic.length) {
+                 uniqueTopics[existingIndex].topic = item.topic;
+            }
+        } else {
+            uniqueTopics.push({ ...item });
+        }
+    }
+    
+    return uniqueTopics;
+};
+
 class ArticleService {
   
-  // --- 1. Smart Trending Topics ---
+  // --- 1. Smart Trending Topics (72h + Vector Dedupe) ---
   async getTrendingTopics() {
-    // CACHE BUST: 'v9' - increment version to clear old "bloat" cache
+    // CACHE BUST: 'v11' - Version bump for new vector logic
     return redis.getOrFetch(
-        'trending_topics_v9', 
+        'trending_topics_v11', 
         async () => {
-            const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+            // CHANGED: 72 Hours Window (3 Days)
+            const threeDaysAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
 
-            const results = await Article.aggregate([
-                // 1. STAGE: Filter for Freshness & Quality First
+            // 1. Fetch Candidates with Embeddings
+            const rawResults = await Article.aggregate([
                 { 
                     $match: { 
-                        publishedAt: { $gte: twoDaysAgo }, // Only recent news
-                        clusterTopic: { $exists: true, $ne: "" } // MUST have a specific topic
+                        publishedAt: { $gte: threeDaysAgo }, 
+                        clusterTopic: { $exists: true, $ne: "" } 
                     } 
                 },
-                // 2. STAGE: Group by Topic
+                { $sort: { publishedAt: -1 } }, // Ensure $first gets the latest
                 { 
                     $group: { 
                         _id: "$clusterTopic", 
                         count: { $sum: 1 }, 
-                        sampleScore: { $max: "$trustScore" } 
+                        sampleScore: { $max: "$trustScore" },
+                        // CAPTURE REPRESENTATIVE DATA FOR DEDUPE
+                        latestVector: { $first: "$embedding" },
+                        latestDate: { $first: "$publishedAt" }
                     } 
                 },
-                // 3. STAGE: Quality Threshold (Anti-Bloat)
-                // Must have at least 3 articles to be considered "In Focus"
                 { 
                     $match: { 
-                        count: { $gte: 3 }, 
-                        _id: { $ne: "General" } // Explicitly exclude fallback bucket
+                        count: { $gte: 3 }, // Strict Noise Filter
+                        _id: { $ne: "General" } 
                     } 
                 }, 
                 { $sort: { count: -1 } },
-                { $limit: 12 }
+                { $limit: 50 } // Fetch wider pool for merging
             ]).read('secondaryPreferred'); 
 
-            return results.map(r => ({ topic: r._id, count: r.count, score: r.sampleScore }));
+            // 2. Map to intermediate format
+            const candidateList = rawResults.map(r => ({ 
+                topic: r._id, 
+                count: r.count, 
+                score: r.sampleScore,
+                vector: r.latestVector || [], // Fallback to empty if missing
+                latestDate: r.latestDate
+            }));
+
+            // 3. Vector Deduplication
+            const cleanList = deduplicateTopicsByVector(candidateList);
+
+            // 4. Return Top 12 (Cleaned)
+            // Strip out the heavy 'vector' data before returning to frontend
+            return cleanList
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 12)
+                .map(({ vector, latestDate, ...rest }) => rest);
         }, 
         CONSTANTS.CACHE.TTL_TRENDING
     ); 
@@ -146,12 +205,23 @@ class ArticleService {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
 
-    // NEW: PRIORITY TOPIC FILTER
-    // If a topic is selected via InFocus bar, bypass mixing logic and show all articles for that topic.
+    // NEW: PRIORITY TOPIC FILTER (Updated for Smart Matching)
     if (filters.topic) {
-         const query: any = { clusterTopic: filters.topic };
+         // Since we merged topics in the bar, the user might click "Gaza Conflict"
+         // but we want to fetch "Israel-Hamas War" too if they were merged.
+         // However, MongoDB doesn't support vector query efficiently here without a vector index.
+         // FALLBACK: Use simple regex for text matching for now, as the vectors were used 
+         // just to grouping the display labels.
          
-         // Respect other filters if present
+         const cleanTopic = filters.topic.replace(/[^\w\s]/g, '').trim(); 
+         
+         const query: any = { 
+             $or: [
+                 { clusterTopic: filters.topic }, 
+                 { clusterTopic: { $regex: new RegExp(cleanTopic, 'i') } }
+             ]
+         };
+         
          if (filters.category && filters.category !== 'All') query.category = filters.category;
          if (filters.politicalLean) query.politicalLean = filters.politicalLean;
 
@@ -169,7 +239,7 @@ class ArticleService {
                  type: 'Article', 
                  imageUrl: optimizeImageUrl(a.imageUrl)
              })), 
-             pagination: { total: 100 } // Estimate
+             pagination: { total: 100 } 
          };
     }
 
@@ -192,20 +262,12 @@ class ArticleService {
     }
 
     // ZONE 1 & 2: Weighted Construction (First Page Load)
-    // Build Initial Query respecting filters
     const initialQuery: any = { 
         publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } 
     };
     
-    // Apply Category Filter if present
-    if (filters.category) {
-        initialQuery.category = filters.category;
-    }
-
-    // Apply Political Lean Filter if present
-    if (filters.politicalLean) {
-        initialQuery.politicalLean = filters.politicalLean;
-    }
+    if (filters.category) initialQuery.category = filters.category;
+    if (filters.politicalLean) initialQuery.politicalLean = filters.politicalLean;
 
     const [latestCandidates, userProfile, userStats] = await Promise.all([
         Article.find(initialQuery)
@@ -270,38 +332,27 @@ class ArticleService {
   async getInFocusFeed(filters: FeedFilters) {
      const { offset = 0, limit = 20 } = filters;
      
-     // 1. Construct Flexible Query
      const query: any = {};
      if (filters.category && filters.category !== 'All') {
-         // UPDATED: Use Case-Insensitive Regex to prevent mismatches
-         // e.g., 'Tech' will match 'Technology' or 'tech'
          query.category = { $regex: filters.category, $options: 'i' };
      }
 
      let narratives: any[] = [];
      
      try {
-         // ATTEMPT 1: Fetch with specific filters
          narratives = await Narrative.find(query)
              .select('-articles -vector') 
              .sort({ lastUpdated: -1 })
              .skip(Number(offset))
              .limit(Number(limit))
              .lean();
-             
-         console.log(`[InFocus] Query: ${JSON.stringify(query)} | Found: ${narratives.length}`);
 
-         // ATTEMPT 2: If filter found nothing, try fetching ANY narratives (Fallback)
-         // This ensures that if data exists, it IS shown, even if metadata is slightly off.
          if (narratives.length === 0 && Number(offset) === 0) {
-             console.log("[InFocus] Strict filter returned 0. Attempting broad fetch...");
              narratives = await Narrative.find({})
                  .select('-articles -vector')
                  .sort({ lastUpdated: -1 })
                  .limit(Number(limit))
                  .lean();
-             
-             console.log(`[InFocus] Broad Fetch Found: ${narratives.length}`);
          }
 
      } catch (err) {
@@ -309,11 +360,7 @@ class ArticleService {
          narratives = [];
      }
 
-     // ATTEMPT 3: Return Articles ONLY if narratives are truly empty
      if (narratives.length === 0) {
-         console.log("[InFocus] No Narratives found in DB. Falling back to Articles.");
-         
-         // Use the same query filters, but search Articles instead
          const fallbackArticles = await Article.find(query)
              .select('-content -embedding')
              .sort({ publishedAt: -1 }) 
@@ -334,7 +381,7 @@ class ArticleService {
      return {
          articles: narratives.map(n => ({
              ...n,
-             type: 'Narrative', // IMPORTANT: Explicit type for Frontend
+             type: 'Narrative', 
              publishedAt: n.lastUpdated 
          })),
          meta: { description: "Top Developing Stories" }
