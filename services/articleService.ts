@@ -46,20 +46,36 @@ class ArticleService {
   
   // --- 1. Smart Trending Topics ---
   async getTrendingTopics() {
-    // CACHE BUST: 'v8' forces immediate refresh
+    // CACHE BUST: 'v9' - increment version to clear old "bloat" cache
     return redis.getOrFetch(
-        'trending_topics_v8', 
+        'trending_topics_v9', 
         async () => {
+            const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
+
             const results = await Article.aggregate([
+                // 1. STAGE: Filter for Freshness & Quality First
+                { 
+                    $match: { 
+                        publishedAt: { $gte: twoDaysAgo }, // Only recent news
+                        clusterTopic: { $exists: true, $ne: "" } // MUST have a specific topic
+                    } 
+                },
+                // 2. STAGE: Group by Topic
                 { 
                     $group: { 
-                        // Logic: Prefer clusterTopic -> Category -> Source -> "General"
-                        _id: { $ifNull: ["$clusterTopic", "$category", "$source", "General"] }, 
+                        _id: "$clusterTopic", 
                         count: { $sum: 1 }, 
                         sampleScore: { $max: "$trustScore" } 
                     } 
                 },
-                { $match: { count: { $gte: 1 }, _id: { $ne: null } } }, 
+                // 3. STAGE: Quality Threshold (Anti-Bloat)
+                // Must have at least 3 articles to be considered "In Focus"
+                { 
+                    $match: { 
+                        count: { $gte: 3 }, 
+                        _id: { $ne: "General" } // Explicitly exclude fallback bucket
+                    } 
+                }, 
                 { $sort: { count: -1 } },
                 { $limit: 12 }
             ]).read('secondaryPreferred'); 
