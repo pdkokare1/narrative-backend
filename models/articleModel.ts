@@ -136,8 +136,8 @@ articleSchema.statics.smartSearch = async function(term: string, limit: number =
           index: "default", // Ensure you create this index in Atlas Dashboard
           text: { 
             query: term, 
-            path: { wildcard: "*" }
-            // fuzzy: {} // Optional: Enable for typo tolerance
+            path: { wildcard: "*" },
+            fuzzy: {} // ENABLED: Typo tolerance active
           }
         }
       },
