@@ -19,10 +19,11 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
 
   const result = await articleService.searchArticles(query);
 
+  // FIXED: Structure matches Frontend expectations (articles & pagination)
   res.status(200).json({
     status: 'success',
-    results: result.total,
-    data: result.articles
+    pagination: { total: result.total },
+    articles: result.articles
   });
 });
 
