@@ -48,11 +48,11 @@ class NewsService {
   async fetchNews(): Promise<INewsSourceArticle[]> {
     const allArticles: INewsSourceArticle[] = [];
     
-    // OPTIMIZATION: Swarm Strategy (4 Free Keys = 400 reqs/day)
-    // We run ~28 times a day. 400/28 = ~14.
-    // We set this to 10 to leave a safety buffer for retries/briefings.
-    // Result: 10 cycles * 10 articles = 100 articles per run.
-    const CYCLES_TO_RUN = 10;
+    // OPTIMIZATION: Adjusted for API Limits (3 Keys = 300 reqs/day)
+    // Running 2 cycles every 15 mins = 192 reqs/day. (Safe Buffer: 108)
+    // Running 3 cycles every 15 mins = 288 reqs/day. (Buffer: 12 - Too Risky)
+    // Running 4 cycles every 15 mins = 384 reqs/day. (Guaranteed Failure)
+    const CYCLES_TO_RUN = 2;
 
     for (let i = 0; i < CYCLES_TO_RUN; i++) {
         const cycleIndex = await this.getAndAdvanceCycleIndex();
