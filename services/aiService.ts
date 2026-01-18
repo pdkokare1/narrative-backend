@@ -165,6 +165,26 @@ class AIService {
       return clean;
   }
 
+  // --- NEW: Smart Truncation for Fallbacks ---
+  private smartTruncate(text: string, targetWordCount: number): string {
+      if (!text) return "";
+      const words = text.split(/\s+/);
+      
+      // If it's already short enough, return it
+      if (words.length <= targetWordCount + 10) return text;
+
+      // Truncate to target
+      const truncated = words.slice(0, targetWordCount).join(' ');
+      
+      // Find the last sentence end to make it clean
+      const lastDot = truncated.lastIndexOf('.');
+      if (lastDot > targetWordCount * 0.5) { // Ensure we don't cut too much
+          return truncated.substring(0, lastDot + 1);
+      }
+      
+      return truncated + "...";
+  }
+
   /**
    * --- 1. SINGLE ARTICLE ANALYSIS ---
    * OPTIMIZED: Defaults to FAST model (Flash) to save costs.
@@ -408,8 +428,11 @@ class AIService {
   }
 
   private getFallbackAnalysis(article: Partial<IArticle>): Partial<IArticle> {
+      // UPDATED: Use smartTruncate to prevent massive fallback text
+      const rawSummary = article.summary || (article as any).content || "Analysis unavailable (System Error)";
+      
       return {
-          summary: article.summary || "Analysis unavailable (System Error)",
+          summary: this.smartTruncate(rawSummary, 60), // Force clean truncation
           category: "Uncategorized",
           politicalLean: "Not Applicable",
           biasScore: 0,
