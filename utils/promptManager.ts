@@ -6,8 +6,8 @@ import logger from './logger';
 // --- RICH DEFAULT PROMPTS ---
 
 const AI_PERSONALITY = {
-    // UPDATED: Strict range for word count
-    MAX_WORDS: "50-60", 
+    // UPDATED: Explicit Min/Max instruction
+    LENGTH_INSTRUCTION: "Minimum 50 words and Maximum 60 words", 
     TONE: "Objective, authoritative, and direct (News Wire Style)",
     BIAS_STRICTNESS: "Strict. Flag subtle framing, omission, and emotional language.",
     FORBIDDEN_WORDS: "delves, underscores, crucial, tapestry, landscape, moreover, notably, the article, the report, the author, discusses, highlights, according to"
@@ -18,7 +18,7 @@ Style Guidelines:
 - **DIRECT REPORTING:** Act as the primary source. Do NOT say "The article states" or "The report highlights." Just state the facts.
 - **TITLE ACCURACY:** Use the EXACT titles found in the source text.
 - Tone: ${AI_PERSONALITY.TONE}.
-- **Length: Strictly between 50 and 60 words.** If the source text is short, elaborate on the context to reach this target. If long, condense strictly.
+- **Length: ${AI_PERSONALITY.LENGTH_INSTRUCTION}.** If the source text is short, elaborate on the context to reach the minimum. If long, condense strictly to the maximum.
 - Structure: Use short, punchy sentences suitable for audio reading.
 - Grammar: Do NOT use hyphens (-), dashes (—), or colons (:) within sentences. Use periods or commas.
 - Vocabulary: Do NOT use these words: ${AI_PERSONALITY.FORBIDDEN_WORDS}.
@@ -103,7 +103,7 @@ Description: "{{description}}"
 Snippet: "{{content}}"
 
 --- INSTRUCTIONS ---
-1. Summarize: Provide a factual summary STRICTLY between 50 and 60 words.
+1. Summarize: Provide a factual summary with **Minimum 50 words and Maximum 60 words**.
 2. Categorize: Choose the most relevant category.
 3. Sentiment: Determine if the story is Positive, Negative, or Neutral.
 
