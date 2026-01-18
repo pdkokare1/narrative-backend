@@ -92,6 +92,12 @@ class ArticleProcessor {
         
         if (article.title === "No Title") return false;
         if (!article.description || article.description.length < 30) return false; 
+        
+        // NEW: Word Count Check (prevent "Garbage In")
+        // If the article is too short (Title + Desc < 40 words), AI can't summarize it to 50 words.
+        const totalWords = (article.title + " " + article.description).split(/\s+/).length;
+        if (totalWords < 40) return false;
+
         return true;
     }
 
