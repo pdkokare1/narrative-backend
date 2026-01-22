@@ -126,19 +126,20 @@ const deduplicateTopics = (rawTopics: any[]) => {
 
 class ArticleService {
   
-  // --- 1. Smart Trending Topics (72h + Hybrid Dedupe) ---
+  // --- 1. Smart Trending Topics (7 Days + Hybrid Dedupe) ---
   async getTrendingTopics() {
-    // CACHE BUST: 'v12' - Version bump for hybrid logic
+    // CACHE BUST: 'v13' - Updated to 7 Days
     return redis.getOrFetch(
-        'trending_topics_v12', 
+        'trending_topics_v13', 
         async () => {
-            const threeDaysAgo = new Date(Date.now() - 72 * 60 * 60 * 1000);
+            // UPDATED: Extended from 72h to 7 days to match clustering window
+            const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
 
             // 1. Fetch Candidates
             const rawResults = await Article.aggregate([
                 { 
                     $match: { 
-                        publishedAt: { $gte: threeDaysAgo }, 
+                        publishedAt: { $gte: sevenDaysAgo }, 
                         clusterTopic: { $exists: true, $ne: "" } 
                     } 
                 },
