@@ -9,14 +9,23 @@ const router = express.Router();
 router.use(checkAuth);
 router.use(checkAdmin);
 
-// AI Prompt Management
+// --- AI Prompt Management ---
 router.get('/prompts', adminController.getSystemPrompts);
 router.patch('/prompts/:id', adminController.updateSystemPrompt);
 
-// Article Management (Newsroom)
+// --- Article Management (Newsroom) ---
 router.get('/articles', adminController.getAllArticles);
 router.get('/articles/:id', adminController.getArticleById);
 router.patch('/articles/:id', adminController.updateArticle);
 router.post('/articles/:id/toggle-visibility', adminController.toggleArticleVisibility);
+
+// --- User Management ---
+router.get('/users', adminController.getAllUsers);
+router.get('/users/:id', adminController.getUserById);
+router.patch('/users/:id', adminController.updateUserStatus);
+
+// --- System Config ---
+router.get('/config', adminController.getSystemConfigs);
+router.post('/config', adminController.updateSystemConfig);
 
 export default router;
