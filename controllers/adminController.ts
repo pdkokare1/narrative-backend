@@ -5,15 +5,8 @@ import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
 import logger from '../utils/logger';
 
-// FIX: Local interface to bypass global type definition issues
-interface IAuthRequest extends Request {
-  user?: {
-    uid: string;
-    role?: string;
-    email?: string;
-    [key: string]: any;
-  }
-}
+// REMOVED: Local IAuthRequest interface to fix TS2430 conflict.
+// We now rely on the global definition in types/express.d.ts
 
 // @desc    Get all AI System Prompts
 // @route   GET /api/admin/prompts
@@ -39,9 +32,6 @@ export const getSystemPrompts = async (req: Request, res: Response, next: NextFu
 // @access  Admin
 export const updateSystemPrompt = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Cast request to access custom user property safely
-    const authReq = req as IAuthRequest;
-    
     const { id } = req.params;
     const { text, active, description } = req.body;
 
@@ -61,7 +51,8 @@ export const updateSystemPrompt = async (req: Request, res: Response, next: Next
 
     await prompt.save();
 
-    logger.info(`Admin ${authReq.user?.uid || 'Unknown'} updated prompt: ${prompt.type} (v${prompt.version})`);
+    // Use req.user directly (typed via global declaration)
+    logger.info(`Admin ${req.user?.uid || 'Unknown'} updated prompt: ${prompt.type} (v${prompt.version})`);
 
     res.status(200).json({
       status: 'success',
