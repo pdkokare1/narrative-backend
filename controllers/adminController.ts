@@ -2,7 +2,7 @@
 import { Request, Response, NextFunction } from 'express';
 import Prompt from '../models/aiPrompts';
 import Article from '../models/articleModel';
-import Profile from '../models/profileModel'; // Assumes default export is the Model
+import Profile from '../models/profileModel'; 
 import SystemConfig from '../models/systemConfigModel';
 import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
@@ -68,7 +68,7 @@ export const updateSystemPrompt = async (req: Request, res: Response, next: Next
 
 // --- ARTICLE MANAGEMENT (Newsroom) ---
 
-// @desc    Get All Articles (Admin View - Includes Hidden)
+// @desc    Get All Articles (Active Only - Default)
 // @route   GET /api/admin/articles
 // @access  Admin
 export const getAllArticles = async (req: Request, res: Response, next: NextFunction) => {
@@ -77,13 +77,15 @@ export const getAllArticles = async (req: Request, res: Response, next: NextFunc
     const limit = parseInt(req.query.limit as string) || 20;
     const skip = (page - 1) * limit;
 
-    // Fetch all articles sorted by newest first
-    const articles = await Article.find({})
+    // Filter: By default, only show articles NOT in the trash
+    const query = { deletedAt: null };
+
+    const articles = await Article.find(query)
       .sort({ publishedAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    const total = await Article.countDocuments();
+    const total = await Article.countDocuments(query);
 
     res.status(200).json({
       status: 'success',
@@ -100,7 +102,67 @@ export const getAllArticles = async (req: Request, res: Response, next: NextFunc
   }
 };
 
-// @desc    Get Single Article by ID (Raw Data)
+// @desc    Get Archived Articles (Trash Bin)
+// @route   GET /api/admin/trash/articles
+// @access  Admin
+export const getArchivedArticles = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const skip = (page - 1) * limit;
+
+    // Filter: Show ONLY articles in the trash
+    const query = { deletedAt: { $ne: null } };
+
+    const articles = await Article.find(query)
+      .sort({ deletedAt: -1 }) // Show recently deleted first
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Article.countDocuments(query);
+
+    res.status(200).json({
+      status: 'success',
+      results: articles.length,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      data: {
+        articles
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create Manual Article
+// @route   POST /api/admin/articles
+// @access  Admin
+export const createArticle = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // We allow passing partial data, but headline/summary are required by Schema
+    const article = await Article.create({
+        ...req.body,
+        source: req.body.source || 'Narrative Editorial',
+        publishedAt: req.body.publishedAt || new Date(),
+        isLatest: true
+    });
+
+    logger.info(`Admin ${req.user?.uid || 'Unknown'} created manual article: ${article.headline}`);
+
+    res.status(201).json({
+      status: 'success',
+      data: {
+        article
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get Single Article by ID
 // @route   GET /api/admin/articles/:id
 // @access  Admin
 export const getArticleById = async (req: Request, res: Response, next: NextFunction) => {
@@ -129,33 +191,20 @@ export const getArticleById = async (req: Request, res: Response, next: NextFunc
 export const updateArticle = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { 
-      headline, 
-      summary, 
-      category, 
-      politicalLean, 
-      biasScore, 
-      biasLabel,
-      trustScore,
-      source 
-    } = req.body;
+    const updates = req.body;
 
-    const article = await Article.findById(id);
+    // Prevent overwriting ID or immutable fields
+    delete updates._id;
+    delete updates.createdAt;
+    
+    const article = await Article.findByIdAndUpdate(id, updates, {
+        new: true,
+        runValidators: true
+    });
 
     if (!article) {
       return next(new AppError('Article not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
     }
-
-    if (headline !== undefined) article.headline = headline;
-    if (summary !== undefined) article.summary = summary;
-    if (category !== undefined) article.category = category;
-    if (politicalLean !== undefined) article.politicalLean = politicalLean;
-    if (biasScore !== undefined) article.biasScore = biasScore;
-    if (biasLabel !== undefined) article.biasLabel = biasLabel;
-    if (trustScore !== undefined) article.trustScore = trustScore;
-    if (source !== undefined) article.source = source;
-
-    await article.save();
 
     logger.info(`Admin ${req.user?.uid || 'Unknown'} manually updated article: ${id}`);
 
@@ -170,7 +219,63 @@ export const updateArticle = async (req: Request, res: Response, next: NextFunct
   }
 };
 
-// @desc    Toggle Article Visibility (Kill Switch)
+// @desc    Archive Article (Move to Trash)
+// @route   DELETE /api/admin/articles/:id
+// @access  Admin
+export const archiveArticle = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    
+    const article = await Article.findByIdAndUpdate(id, {
+        deletedAt: new Date(),
+        isLatest: false // Hide from feed immediately
+    }, { new: true });
+
+    if (!article) {
+      return next(new AppError('Article not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
+    }
+
+    logger.info(`Admin ${req.user?.uid} archived article ${id}`);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Article moved to trash. Will be permanently deleted in 30 days.',
+      data: { id: article._id }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Restore Article (From Trash)
+// @route   POST /api/admin/articles/:id/restore
+// @access  Admin
+export const restoreArticle = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    
+    const article = await Article.findByIdAndUpdate(id, {
+        deletedAt: null,
+        isLatest: true // Re-enable visibility (or keep previous state if more complex)
+    }, { new: true });
+
+    if (!article) {
+      return next(new AppError('Article not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
+    }
+
+    logger.info(`Admin ${req.user?.uid} restored article ${id}`);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Article restored from trash.',
+      data: { article }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Toggle Article Visibility (Quick Hide without Trash)
 // @route   POST /api/admin/articles/:id/toggle-visibility
 // @access  Admin
 export const toggleArticleVisibility = async (req: Request, res: Response, next: NextFunction) => {
@@ -213,7 +318,6 @@ export const getAllUsers = async (req: Request, res: Response, next: NextFunctio
 
     let query = {};
     if (search) {
-      // Simple regex search for email or display name
       query = {
         $or: [
           { email: { $regex: search, $options: 'i' } },
@@ -250,7 +354,6 @@ export const getAllUsers = async (req: Request, res: Response, next: NextFunctio
 export const getUserById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    // FIXED: Changed uid to userId to match Profile Schema
     const userProfile = await Profile.findOne({ userId: id });
 
     if (!userProfile) {
@@ -276,15 +379,12 @@ export const updateUserStatus = async (req: Request, res: Response, next: NextFu
     const { id } = req.params;
     const { role, isBanned, accountStatus } = req.body; 
 
-    // FIXED: Changed uid to userId to match Profile Schema
     const userProfile = await Profile.findOne({ userId: id });
 
     if (!userProfile) {
       return next(new AppError('User profile not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
     }
 
-    // Only allow updating specific administrative fields
-    // We treat 'any' casting here to allow flexibility if the model interface hasn't been updated yet
     if (role !== undefined) (userProfile as any).role = role; 
     if (isBanned !== undefined) (userProfile as any).isBanned = isBanned;
     if (accountStatus !== undefined) (userProfile as any).accountStatus = accountStatus;
@@ -296,7 +396,6 @@ export const updateUserStatus = async (req: Request, res: Response, next: NextFu
     res.status(200).json({
       status: 'success',
       data: {
-        // FIXED: Changed userProfile.uid to userProfile.userId
         uid: userProfile.userId,
         role: (userProfile as any).role,
         isBanned: (userProfile as any).isBanned
