@@ -1,4 +1,4 @@
-// middleware/authMiddleware.ts
+// narrative-backend/middleware/authMiddleware.ts
 import { Request, Response, NextFunction } from 'express';
 import * as admin from 'firebase-admin';
 import logger from '../utils/logger';
@@ -6,6 +6,7 @@ import config from '../utils/config';
 import { CONSTANTS } from '../utils/constants';
 import AppError from '../utils/AppError';
 import { IUserRole } from '../types';
+import Profile from '../models/profileModel'; // NEW: Needed for database fallback check
 
 // --- App Check (Security Gate) ---
 // Enforces that requests come from YOUR specific frontend app.
@@ -73,7 +74,7 @@ export const optionalAuth = async (req: Request, res: Response, next: NextFuncti
 };
 
 // --- Role Based Access Control (RBAC) ---
-// IMPROVED: Strictly checks Custom Claims. No DB calls.
+// IMPROVED: Checks Token Claims FIRST, then falls back to Database (MongoDB)
 export const requireRole = (role: IUserRole) => {
     return async (req: Request, res: Response, next: NextFunction) => {
         // 1. Ensure user is logged in
@@ -86,14 +87,26 @@ export const requireRole = (role: IUserRole) => {
             return next();
         }
 
-        // 3. Check Custom Claims (Fastest, Secure)
-        // Ensure you set these claims in your Cloud Functions or Admin scripts
+        // 3. Fast Path: Check Custom Claims in Token (Zero DB Latency)
         if (req.user[role] === true || req.user.role === role) {
             return next();
         }
 
-        // 4. Deny
-        logger.warn(`🛑 Access Denied: User ${req.user.uid} attempted ${role} action without claims.`);
+        // 4. Slow Path: Check MongoDB (Reliable for manual edits)
+        // If the token claim fails, we check the actual database record
+        try {
+            const userProfile = await Profile.findOne({ userId: req.user.uid }).select('role').lean();
+            
+            if (userProfile && userProfile.role === role) {
+                // Success! The database says they are admin
+                return next();
+            }
+        } catch (err) {
+            logger.error(`RBAC Database Check Failed: ${err}`);
+        }
+
+        // 5. Deny
+        logger.warn(`🛑 Access Denied: User ${req.user.uid} attempted ${role} action without privileges.`);
         return next(new AppError(`Forbidden: Requires ${role} privileges`, 403, CONSTANTS.ERROR_CODES.ACCESS_DENIED));
     };
 };
