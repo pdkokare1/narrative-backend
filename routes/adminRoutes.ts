@@ -1,4 +1,4 @@
-// routes/adminRoutes.ts
+// narrative-backend/routes/adminRoutes.ts
 import express from 'express';
 import { checkAuth, checkAdmin } from '../middleware/authMiddleware';
 import * as adminController from '../controllers/adminController';
@@ -8,6 +8,9 @@ const router = express.Router();
 // Protect all admin routes
 router.use(checkAuth);
 router.use(checkAdmin);
+
+// --- Dashboard Stats ---
+router.get('/dashboard', adminController.getDashboardStats); // NEW
 
 // --- AI Prompt Management ---
 router.get('/prompts', adminController.getSystemPrompts);
