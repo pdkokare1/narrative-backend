@@ -1,28 +1,15 @@
-// src/utils/promptManager.ts
+// narrative-backend/utils/promptManager.ts
 import Prompt from '../models/aiPrompts';
+import SystemConfig from '../models/systemConfigModel';
 import redis from './redisClient';
 import logger from './logger';
 
-// --- RICH DEFAULT PROMPTS ---
-
-const AI_PERSONALITY = {
-    // UPDATED: Explicit Min/Max instruction
-    LENGTH_INSTRUCTION: "Minimum 50 words and Maximum 60 words", 
-    TONE: "Objective, authoritative, and direct (News Wire Style)",
-    BIAS_STRICTNESS: "Strict. Flag subtle framing, omission, and emotional language.",
-    FORBIDDEN_WORDS: "delves, underscores, crucial, tapestry, landscape, moreover, notably, the article, the report, the author, discusses, highlights, according to"
+// Fallback defaults in case DB is empty
+const DEFAULT_PERSONALITY = {
+    length_instruction: "Minimum 50 words and Maximum 60 words", 
+    tone: "Objective, authoritative, and direct (News Wire Style)",
+    forbidden_words: "delves, underscores, crucial, tapestry, landscape, moreover, notably, the article, the report, the author, discusses, highlights, according to"
 };
-
-const STYLE_RULES = `
-Style Guidelines:
-- **DIRECT REPORTING:** Act as the primary source. Do NOT say "The article states" or "The report highlights." Just state the facts.
-- **TITLE ACCURACY:** Use the EXACT titles found in the source text.
-- Tone: ${AI_PERSONALITY.TONE}.
-- **Length: ${AI_PERSONALITY.LENGTH_INSTRUCTION}.** If the source text is short, elaborate on the context to reach the minimum. If long, condense strictly to the maximum.
-- Structure: Use short, punchy sentences suitable for audio reading.
-- Grammar: Do NOT use hyphens (-), dashes (—), or colons (:) within sentences. Use periods or commas.
-- Vocabulary: Do NOT use these words: ${AI_PERSONALITY.FORBIDDEN_WORDS}.
-`;
 
 const DEFAULT_ANALYSIS_PROMPT = `
 Role: You are a Lead Editor for a global news wire.
@@ -37,8 +24,11 @@ Date: {{date}}
 --- INSTRUCTIONS ---
 
 1. **Summarize (News Wire Style)**:
-   ${STYLE_RULES}
-   - Report the "Who, What, When, Where, Why" immediately.
+   - **DIRECT REPORTING:** Act as the primary source. Do NOT say "The article states" or "The report highlights." Just state the facts.
+   - **TITLE ACCURACY:** Use the EXACT titles found in the source text.
+   - Tone: {{ai_tone}}
+   - **Length: {{ai_length}}**
+   - Vocabulary: Do NOT use these words: {{ai_forbidden}}
 
 2. **Categorize**:
    - Choose ONE: Politics, Business, Economy, Global Conflict, Tech, Science, Health, Justice, Sports, Entertainment, Lifestyle, Crypto & Finance, Gaming.
@@ -103,7 +93,7 @@ Description: "{{description}}"
 Snippet: "{{content}}"
 
 --- INSTRUCTIONS ---
-1. Summarize: Provide a factual summary with **Minimum 50 words and Maximum 60 words**.
+1. Summarize: Provide a factual summary with **{{ai_length}}**.
 2. Categorize: Choose the most relevant category.
 3. Sentiment: Determine if the story is Positive, Negative, or Neutral.
 
@@ -120,6 +110,25 @@ Respond ONLY in valid JSON:
 
 class PromptManager {
     
+    // --- 1. Get Personality Config (Cached) ---
+    private async getPersonalityConfig() {
+        try {
+            // Check Cache
+            const cached = await redis.get('CONFIG_AI_PERSONALITY');
+            if (cached) return JSON.parse(cached);
+
+            // Check DB
+            const config = await SystemConfig.findOne({ key: 'ai_personality' });
+            if (config && config.value) {
+                await redis.set('CONFIG_AI_PERSONALITY', JSON.stringify(config.value), 300); // Cache 5 mins
+                return config.value;
+            }
+        } catch (e) { /* Ignore */ }
+        
+        return DEFAULT_PERSONALITY;
+    }
+
+    // --- 2. Get Template (Cached) ---
     async getTemplate(type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION' | 'SUMMARY_ONLY' = 'ANALYSIS'): Promise<string> {
         const CACHE_KEY = `PROMPT_${type}`;
 
@@ -151,7 +160,12 @@ class PromptManager {
 
     public async getAnalysisPrompt(article: any, mode: 'Full' | 'Basic' = 'Full'): Promise<string> {
         const templateType = mode === 'Basic' ? 'SUMMARY_ONLY' : 'ANALYSIS';
-        const template = await this.getTemplate(templateType);
+        
+        // Parallel Fetch: Template + Personality Config
+        const [template, personality] = await Promise.all([
+            this.getTemplate(templateType),
+            this.getPersonalityConfig()
+        ]);
         
         const articleContent = article.summary || article.content || "";
         
@@ -159,7 +173,12 @@ class PromptManager {
             headline: article.title || "No Title",
             description: article.description || "No Description",
             content: articleContent, 
-            date: new Date().toISOString().split('T')[0]
+            date: new Date().toISOString().split('T')[0],
+            
+            // Dynamic Injections from Config
+            ai_length: personality.length_instruction,
+            ai_tone: personality.tone,
+            ai_forbidden: personality.forbidden_words
         };
 
         return this.interpolate(template, data);
