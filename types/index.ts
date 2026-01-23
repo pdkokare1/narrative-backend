@@ -194,7 +194,8 @@ export interface IEmergencyContact {
 
 // --- 9. AI Prompt Interface ---
 export interface IAIPrompt {
-  type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION';
+  // UPDATED: Added 'SUMMARY_ONLY' to the allowed types
+  type: 'ANALYSIS' | 'GATEKEEPER' | 'ENTITY_EXTRACTION' | 'SUMMARY_ONLY';
   text: string;
   version: number;
   active: boolean;
