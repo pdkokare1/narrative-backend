@@ -1,4 +1,4 @@
-// routes/profileRoutes.ts
+// narrative-backend/routes/profileRoutes.ts
 import express, { Request, Response } from 'express';
 import asyncHandler from '../utils/asyncHandler';
 import validate from '../middleware/validate';
@@ -12,8 +12,9 @@ const router = express.Router();
 
 // --- 1. GET Profile ---
 router.get('/me', asyncHandler(async (req: Request, res: Response) => {
+    // FIX: Added 'role' to the select string so the frontend knows you are an admin
     const profile = await Profile.findOne({ userId: req.user!.uid })
-      .select('username email phoneNumber articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled currentStreak badges') 
+      .select('username email phoneNumber role articlesViewedCount comparisonsViewedCount articlesSharedCount savedArticles notificationsEnabled currentStreak badges') 
       .lean();
     
     if (!profile) {
@@ -108,7 +109,7 @@ router.put('/me', validate(schemas.updateProfile), asyncHandler(async (req: Requ
         { userId },
         { $set: updates },
         { new: true } // Return updated doc
-    ).select('username email phoneNumber notificationsEnabled');
+    ).select('username email phoneNumber role notificationsEnabled');
 
     res.status(200).json(updatedProfile);
 }));
