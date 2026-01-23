@@ -13,7 +13,8 @@ import migrationRoutes from './migrationRoutes';
 import assetGenRoutes from './assetGenRoutes';
 import clusterRoutes from './clusterRoutes';
 import jobRoutes from './jobRoutes';
-import weatherRoutes from './weatherRoutes'; // [ADDED]
+import weatherRoutes from './weatherRoutes';
+import adminRoutes from './adminRoutes'; // [NEW]
 
 const router = express.Router();
 
@@ -25,8 +26,7 @@ router.use('/assets', assetGenRoutes);
 // --- 2. Admin Routes (Firebase Protected) ---
 // These require a logged-in Admin user
 router.use('/migration', checkAdmin, migrationRoutes);
-// MOVED: Cluster routes moved to Public section to allow Timeline access
-// router.use('/cluster', checkAdmin, clusterRoutes); 
+router.use('/admin', checkAuth, checkAdmin, adminRoutes); // [NEW: Admin Panel API]
 
 // --- 3. User Protected Routes ---
 router.use('/profile', checkAppCheck, checkAuth, profileRoutes);
@@ -35,8 +35,8 @@ router.use('/activity', checkAppCheck, checkAuth, activityRoutes);
 // --- 4. Public / Hybrid Routes ---
 router.use('/emergency-resources', emergencyRoutes);
 router.use('/tts', ttsLimiter, ttsRoutes);
-router.use('/weather', weatherRoutes); // [ADDED]
-router.use('/cluster', clusterRoutes); // [MOVED HERE]
+router.use('/weather', weatherRoutes); 
+router.use('/cluster', clusterRoutes); 
 
 // --- 5. Main Content Routes ---
 // Mounted at root to maintain API compatibility:
@@ -48,8 +48,7 @@ router.use('/', articleRoutes);
 router.use('*', (req, res) => {
     res.status(404).json({ 
         success: false, 
-        message: "API Endpoint Not Found", 
-        path: req.originalUrl 
+        message: "API endpoint not found" 
     });
 });
 
