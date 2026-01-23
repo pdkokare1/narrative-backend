@@ -4,23 +4,39 @@ import Prompt from '../models/aiPrompts';
 import Article from '../models/articleModel';
 import Profile from '../models/profileModel'; 
 import SystemConfig from '../models/systemConfigModel';
+import ActivityLog from '../models/activityLogModel'; // Imported ActivityLog
 import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
 import logger from '../utils/logger';
 
-// --- DASHBOARD STATS (NEW) ---
+// --- DASHBOARD STATS ---
 
-// @desc    Get Admin Dashboard Stats
+// @desc    Get Admin Dashboard Stats (with Charts)
 // @route   GET /api/admin/dashboard
 // @access  Admin
 export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Run queries in parallel for performance
+    // 1. Basic Counters
     const [userCount, articleCount, trashedArticleCount, configCount] = await Promise.all([
       Profile.countDocuments({}),
       Article.countDocuments({ deletedAt: null }),
       Article.countDocuments({ deletedAt: { $ne: null } }),
       SystemConfig.countDocuments({})
+    ]);
+
+    // 2. Chart Data: Activity over last 7 days
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const activityStats = await ActivityLog.aggregate([
+      { $match: { timestamp: { $gte: sevenDaysAgo } } },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { _id: 1 } }
     ]);
 
     res.status(200).json({
@@ -31,9 +47,43 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
           activeArticles: articleCount,
           archivedArticles: trashedArticleCount,
           systemConfigs: configCount,
-          systemStatus: 'Operational', // You could expand this to check Redis/DB health later
+          systemStatus: 'Operational', 
           databaseStatus: 'Connected'
-        }
+        },
+        chartData: activityStats // New data for the graph
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --- ACTIVITY LOGS (NEW) ---
+
+// @desc    Get Activity Logs (Paginated)
+// @route   GET /api/admin/logs
+// @access  Admin
+export const getActivityLogs = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const skip = (page - 1) * limit;
+
+    const logs = await ActivityLog.find({})
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await ActivityLog.countDocuments({});
+
+    res.status(200).json({
+      status: 'success',
+      results: logs.length,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      data: {
+        logs
       }
     });
   } catch (error) {
