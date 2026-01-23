@@ -12,6 +12,9 @@ router.use(checkAdmin);
 // --- Dashboard Stats ---
 router.get('/dashboard', adminController.getDashboardStats); // NEW
 
+// --- Activity Logs ---
+router.get('/logs', adminController.getActivityLogs); // NEW: View Activity Logs
+
 // --- AI Prompt Management ---
 router.get('/prompts', adminController.getSystemPrompts);
 router.patch('/prompts/:id', adminController.updateSystemPrompt);
