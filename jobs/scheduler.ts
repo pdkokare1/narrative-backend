@@ -4,7 +4,8 @@ import logger from '../utils/logger';
 import { Queue } from 'bullmq';
 import config from '../utils/config';
 import { CONSTANTS } from '../utils/constants';
-import axios from 'axios'; // Ensure axios is available or use fetch
+import axios from 'axios'; 
+import Article from '../models/articleModel'; // Imported for Direct Cleanup
 
 // Define queues
 const newsQueue = new Queue(CONSTANTS.QUEUE.NAME, {
@@ -124,10 +125,27 @@ export const startScheduler = async () => {
       await newsQueue.add('fetch-feed', {}, { removeOnComplete: true });
   });
 
-  // 7. Daily Cleanup
-  safeSchedule('daily-cleanup', '45 0 * * *', async () => {
+  // 7. Daily Cleanup & Trash Purge (Midnight)
+  safeSchedule('daily-cleanup', '0 0 * * *', async () => {
+      // A. Standard Cache Cleanup
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
+
+      // B. Empty Trash (Items archived > 30 days ago)
+      try {
+          const thirtyDaysAgo = new Date();
+          thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+          
+          const result = await Article.deleteMany({
+              deletedAt: { $ne: null, $lt: thirtyDaysAgo }
+          });
+          
+          if (result.deletedCount > 0) {
+              logger.info(`🗑️ Trash Purge: Permanently deleted ${result.deletedCount} old articles.`);
+          }
+      } catch (err) {
+          logger.error(`❌ Trash Purge Failed: ${err}`);
+      }
   });
 
-  logger.info('✅ Schedules registered: Heartbeat(4m), Trending(30m), Feed(45m/2h)');
+  logger.info('✅ Schedules registered: Heartbeat(4m), Trending(30m), Feed(45m/2h), TrashPurge(24h)');
 };
