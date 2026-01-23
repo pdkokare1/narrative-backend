@@ -1,4 +1,4 @@
-// services/ttsService.ts
+// narrative-backend/services/ttsService.ts
 import axios from 'axios';
 import { v2 as cloudinary } from 'cloudinary';
 import config from '../utils/config';
@@ -6,6 +6,8 @@ import logger from '../utils/logger';
 import KeyManager from '../utils/KeyManager';
 import CircuitBreaker from '../utils/CircuitBreaker';
 import Article from '../models/articleModel';
+import SystemConfig from '../models/systemConfigModel';
+import redis from '../utils/redisClient'; // Make sure redisClient is available
 
 const ELEVENLABS_API_URL = 'https://api.elevenlabs.io/v1';
 
@@ -23,16 +25,38 @@ class TTSService {
         });
     }
 
-    cleanTextForNews(text: string): string {
+    /**
+     * Helper: Fetch TTS Correction Rules from DB
+     */
+    private async getTTSRules(): Promise<Array<{pattern: string, flags: string, replacement: string}>> {
+        try {
+            // Cache Check
+            const cached = await redis.get('CONFIG_TTS_RULES');
+            if (cached) return JSON.parse(cached);
+
+            const conf = await SystemConfig.findOne({ key: 'tts_rules' });
+            if (conf && Array.isArray(conf.value)) {
+                await redis.set('CONFIG_TTS_RULES', JSON.stringify(conf.value), 600);
+                return conf.value;
+            }
+        } catch (e) { /* Fallback */ }
+
+        // Default Rules if DB is empty
+        return [
+            { pattern: "\\$([0-9\\.,]+)\\s?([mM]illion|[bB]illion|[tT]rillion)", flags: "gi", replacement: "$1 $2 dollars" },
+            { pattern: "[-—–]", flags: "g", replacement: " " },
+            { pattern: ":", flags: "g", replacement: ". . " },
+            { pattern: "\\s+", flags: "g", replacement: " " }
+        ];
+    }
+
+    async cleanTextForNews(text: string): Promise<string> {
         if (!text) return "";
         let clean = text;
 
-        // 1. Currency Fix
-        clean = clean.replace(/\$([0-9\.,]+)\s?([mM]illion|[bB]illion|[tT]rillion)/gi, (match, num, magnitude) => {
-            return `${num} ${magnitude} dollars`;
-        });
+        const rules = await this.getTTSRules();
 
-        // 2. Quote Handling
+        // Quote Handling (Hardcoded logic for "quote/unquote" behavior is safer in code, but simple replacement is config)
         let quoteOpen = false;
         clean = clean.replace(/["“”]/g, (char) => {
             if (char === '“') return " quote "; 
@@ -41,22 +65,33 @@ class TTSService {
             else { quoteOpen = false; return ""; }
         });
 
-        // 3. Punctuation Cleanup
-        clean = clean.replace(/[-—–]/g, " ");
-        clean = clean.replace(/:/g, ". . "); 
-        clean = clean.replace(/\s+/g, " ").trim();
+        // Apply Configurable Rules
+        for (const rule of rules) {
+            try {
+                const regex = new RegExp(rule.pattern, rule.flags);
+                clean = clean.replace(regex, (match, ...args) => {
+                    // Handle $1, $2 replacement manually if needed, or rely on String.replace behavior
+                    // Simple string replacement:
+                    if (!rule.replacement.includes('$')) return rule.replacement;
+                    
+                    // Complex capture group replacement (e.g. $1 million)
+                    let result = rule.replacement;
+                    // args contains [p1, p2, offset, string]
+                    // We only care about captures
+                    const captures = args.slice(0, args.length - 2); 
+                    captures.forEach((cap, idx) => {
+                        result = result.replace(`$${idx + 1}`, cap);
+                    });
+                    return result;
+                });
+            } catch (e) {
+                logger.warn(`Invalid TTS Regex in Config: ${rule.pattern}`);
+            }
+        }
 
-        return clean;
+        return clean.trim();
     }
 
-    /**
-     * Generates audio from text using ElevenLabs and uploads to Cloudinary.
-     * @param text The text to speak
-     * @param voiceId The ElevenLabs voice ID
-     * @param articleId Optional: The article ID (for checking cache)
-     * @param customFilename Optional: A specific filename for Cloudinary (e.g. 'mira_open_morn_1')
-     * @param highQuality Optional: If true, uses V2 model and max quality settings (slower/more expensive). Default false.
-     */
     async generateAndUpload(
         text: string, 
         voiceId: string, 
@@ -65,46 +100,25 @@ class TTSService {
         highQuality: boolean = false
     ): Promise<string> {
         
-        // --- IMPROVEMENT: DB CACHE CHECK ---
-        // If we have an article ID, check if audio already exists.
         if (articleId) {
             try {
                 const existingArticle = await Article.findById(articleId).select('audioUrl').lean();
                 if (existingArticle && existingArticle.audioUrl) {
-                    logger.info(`🎙️ Audio Cache Hit: Returning existing URL for ${articleId}`);
                     return existingArticle.audioUrl;
                 }
-            } catch (err) {
-                logger.warn(`Audio Cache Check Failed (Non-fatal): ${err}`);
-                // Continue to generation if DB check fails
-            }
+            } catch (err) { }
         }
 
-        // 1. Check Circuit Breaker
         const isOpen = await CircuitBreaker.isOpen('ELEVENLABS');
-        if (!isOpen) {
-            throw new Error("CIRCUIT_BREAKER_OPEN: ElevenLabs is currently down or rate limited.");
-        }
+        if (!isOpen) throw new Error("CIRCUIT_BREAKER_OPEN");
 
-        let apiKey: string;
-        try {
-            apiKey = await KeyManager.getKey('ELEVENLABS');
-        } catch (error: any) {
-            logger.error(`TTS Key Error: ${error.message}`);
-            throw error;
-        }
-
-        const safeText = this.cleanTextForNews(text);
+        let apiKey = await KeyManager.getKey('ELEVENLABS');
+        const safeText = await this.cleanTextForNews(text); // UPDATED to await
         const url = `${ELEVENLABS_API_URL}/text-to-speech/${voiceId}/stream`;
 
-        // --- QUALITY SETTINGS ---
-        // Standard (News): Turbo v2.5, Latency 3 (Fastest)
-        // High Quality (Intros): Multilingual v2, Latency 0 (Best Audio)
         const modelId = highQuality ? "eleven_multilingual_v2" : "eleven_turbo_v2_5";
         const latencyOptimization = highQuality ? 0 : 3;
         
-        logger.info(`🎙️ Generating Audio (${highQuality ? 'STUDIO QUALITY' : 'STANDARD'}): "${customFilename || articleId}"`);
-
         try {
             const response = await axios.post(url, {
                 text: safeText,
@@ -126,7 +140,6 @@ class TTSService {
                 responseType: 'stream' 
             });
 
-            // Report Success to KeyManager
             KeyManager.reportSuccess(apiKey);
 
             const publicId = customFilename ? customFilename : `article_${articleId}`;
@@ -136,17 +149,15 @@ class TTSService {
                     {
                         folder: 'the-gamut-audio',
                         public_id: publicId,
-                        resource_type: 'video', // 'video' allows audio in Cloudinary
+                        resource_type: 'video', 
                         format: 'mp3',
                         overwrite: true
                     },
                     (error, result) => {
                         if (error) {
-                            logger.error(`❌ Cloudinary Upload Failed: ${error.message}`);
                             reject(error);
                         } else {
                             if (result && result.secure_url) {
-                                logger.info(`✅ Upload Success: ${result.secure_url}`);
                                 resolve(result.secure_url);
                             } else {
                                 reject(new Error("Cloudinary upload successful but no URL returned."));
@@ -154,32 +165,18 @@ class TTSService {
                         }
                     }
                 );
-
                 response.data.pipe(uploadStream);
-                
-                response.data.on('error', (err: any) => {
-                    logger.error(`❌ Stream Error: ${err.message}`);
-                    reject(err);
-                });
+                response.data.on('error', (err: any) => reject(err));
             });
 
         } catch (error: any) {
             const status = error.response?.status;
-            
-            // Handle Quota/Auth Errors specifically
             if (status === 401 || status === 429) {
-                logger.warn(`TTS Key Exhausted or Rate Limited (${status}). Reporting failure.`);
                 await KeyManager.reportFailure(apiKey, true);
             } else if (status >= 500) {
-                // Server error from ElevenLabs
                 await CircuitBreaker.recordFailure('ELEVENLABS');
             }
-
-            if (error.response) {
-                throw new Error(`ElevenLabs API Error: ${status}`);
-            } else {
-                throw error;
-            }
+            throw error;
         }
     }
 }
