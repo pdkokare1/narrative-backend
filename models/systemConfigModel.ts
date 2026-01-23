@@ -1,9 +1,10 @@
-// models/systemConfigModel.ts
+// narrative-backend/models/systemConfigModel.ts
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
 export interface ISystemConfig extends Document {
   key: string;
-  value: string[];
+  value: any; // Changed from string[] to any (Mixed) to support JSON objects
+  description?: string; // Added for UI clarity
   lastUpdated: Date;
 }
 
@@ -15,8 +16,12 @@ const systemConfigSchema = new Schema<ISystemConfig>({
     index: true 
   },
   value: { 
-    type: [String], 
-    default: [] 
+    type: Schema.Types.Mixed, // Allows Strings, Numbers, Arrays, or Objects
+    required: true
+  },
+  description: {
+    type: String,
+    default: ''
   },
   lastUpdated: { 
     type: Date, 
