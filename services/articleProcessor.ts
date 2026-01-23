@@ -1,21 +1,47 @@
-// services/articleProcessor.ts
+// narrative-backend/services/articleProcessor.ts
 import { INewsSourceArticle } from '../types';
 import { cleanText, formatHeadline, getSimilarityScore } from '../utils/helpers';
 import { TRUSTED_SOURCES, JUNK_KEYWORDS } from '../utils/constants';
+import SystemConfig from '../models/systemConfigModel';
+import redis from '../utils/redisClient';
+
+// Defaults
+const DEFAULT_WEIGHTS = {
+    image_bonus: 2,
+    missing_image_penalty: -2,
+    missing_image_untrusted_penalty: -10,
+    trusted_source_bonus: 5,
+    title_length_bonus: 1,
+    junk_keyword_penalty: -20,
+    min_score_cutoff: 0
+};
 
 class ArticleProcessor {
     
-    /**
-     * Main Pipeline: Clean -> Score -> Deduplicate (Fuzzy)
-     */
-    public processBatch(articles: INewsSourceArticle[]): INewsSourceArticle[] {
-        // 1. First pass: Scoring and Basic Cleaning
+    private async getWeights() {
+        try {
+            const cached = await redis.get('CONFIG_SCORING_WEIGHTS');
+            if (cached) return JSON.parse(cached);
+
+            const conf = await SystemConfig.findOne({ key: 'scoring_weights' });
+            if (conf && conf.value) {
+                await redis.set('CONFIG_SCORING_WEIGHTS', JSON.stringify(conf.value), 300);
+                return conf.value;
+            }
+        } catch (e) {}
+        return DEFAULT_WEIGHTS;
+    }
+
+    public async processBatch(articles: INewsSourceArticle[]): Promise<INewsSourceArticle[]> {
+        const weights = await this.getWeights();
+
+        // 1. First pass: Scoring
         const scored = articles.map(a => {
-            const score = this.calculateScore(a);
+            const score = this.calculateScore(a, weights);
             return { article: a, score };
         });
 
-        // 2. Sort by Quality (Highest Score First)
+        // 2. Sort by Quality
         scored.sort((a, b) => b.score - a.score);
 
         const uniqueArticles: INewsSourceArticle[] = [];
@@ -26,9 +52,8 @@ class ArticleProcessor {
         for (const item of scored) {
             const article = item.article;
 
-            // A. Quality Cutoff (RAISED BAR)
-            // Was -5, now 0. This ensures "Junk Keyword" (-20 penalty) items are always killed.
-            if (item.score < 0) continue;
+            // A. Quality Cutoff (Dynamic)
+            if (item.score < weights.min_score_cutoff) continue;
 
             // B. Text Cleanup
             article.title = formatHeadline(article.title);
@@ -37,13 +62,10 @@ class ArticleProcessor {
             // C. Validation
             if (!this.isValid(article)) continue;
 
-            // D. Deduplication (Exact URL)
+            // D. Deduplication
             if (seenUrls.has(article.url)) continue;
-
-            // E. Deduplication (Fuzzy Title)
             if (this.isFuzzyDuplicate(article.title, seenTitles)) continue;
 
-            // Accepted!
             seenUrls.add(article.url);
             seenTitles.push(article.title);
             uniqueArticles.push(article);
@@ -52,7 +74,7 @@ class ArticleProcessor {
         return uniqueArticles.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
     }
 
-    private calculateScore(a: INewsSourceArticle): number {
+    private calculateScore(a: INewsSourceArticle, weights: any): number {
         let score = 0;
         const titleLower = (a.title || "").toLowerCase();
         const sourceLower = (a.source.name || "").toLowerCase();
@@ -60,41 +82,34 @@ class ArticleProcessor {
         const isTrusted = TRUSTED_SOURCES.some(src => sourceLower.includes(src.toLowerCase()));
 
         // Image Quality
-        // STRICT: If not trusted and no image, massive penalty.
         if (a.image && a.image.startsWith('http')) {
-            score += 2;
+            score += weights.image_bonus;
         } else {
             if (!isTrusted) {
-                score -= 10; 
+                score += weights.missing_image_untrusted_penalty; 
             } else {
-                 // Trusted sources sometimes miss images but content is gold.
-                 score -= 2;
+                 score += weights.missing_image_penalty;
             }
         }
 
         // Title Length
-        if (a.title && a.title.length > 40) score += 1;
+        if (a.title && a.title.length > 40) score += weights.title_length_bonus;
 
         // Trusted Source Bonus
-        if (isTrusted) score += 5; 
+        if (isTrusted) score += weights.trusted_source_bonus; 
 
-        // Junk/Clickbait/Lifestyle Penalty (The Trap)
-        if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) score -= 20;
+        // Junk Penalty
+        if (JUNK_KEYWORDS.some(word => titleLower.includes(word))) score += weights.junk_keyword_penalty;
 
         return score;
     }
 
     private isValid(article: INewsSourceArticle): boolean {
         if (!article.title || !article.url) return false;
-        
-        // Increased min length to filter out "ticker" updates
         if (article.title.length < 20) return false; 
-        
         if (article.title === "No Title") return false;
         if (!article.description || article.description.length < 30) return false; 
         
-        // NEW: Word Count Check (prevent "Garbage In")
-        // If the article is too short (Title + Desc < 40 words), AI can't summarize it to 50 words.
         const totalWords = (article.title + " " + article.description).split(/\s+/).length;
         if (totalWords < 40) return false;
 
@@ -105,13 +120,9 @@ class ArticleProcessor {
         const currentLen = currentTitle.length;
         
         for (const existing of existingTitles) {
-            if (Math.abs(currentLen - existing.length) > 20) {
-                continue;
-            }
+            if (Math.abs(currentLen - existing.length) > 20) continue;
             const score = getSimilarityScore(currentTitle, existing);
-            if (score > 0.8) {
-                return true; 
-            }
+            if (score > 0.8) return true; 
         }
         return false;
     }
