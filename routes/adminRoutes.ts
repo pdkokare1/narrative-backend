@@ -14,10 +14,16 @@ router.get('/prompts', adminController.getSystemPrompts);
 router.patch('/prompts/:id', adminController.updateSystemPrompt);
 
 // --- Article Management (Newsroom) ---
+router.post('/articles', adminController.createArticle); // NEW: Manual Add
 router.get('/articles', adminController.getAllArticles);
 router.get('/articles/:id', adminController.getArticleById);
 router.patch('/articles/:id', adminController.updateArticle);
+router.delete('/articles/:id', adminController.archiveArticle); // NEW: Archive (Delete)
+router.post('/articles/:id/restore', adminController.restoreArticle); // NEW: Restore
 router.post('/articles/:id/toggle-visibility', adminController.toggleArticleVisibility);
+
+// --- Trash Bin ---
+router.get('/trash/articles', adminController.getArchivedArticles); // NEW: View Trash
 
 // --- User Management ---
 router.get('/users', adminController.getAllUsers);
