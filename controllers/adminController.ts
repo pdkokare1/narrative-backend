@@ -4,7 +4,7 @@ import Prompt from '../models/aiPrompts';
 import Article from '../models/articleModel';
 import Profile from '../models/profileModel'; 
 import SystemConfig from '../models/systemConfigModel';
-import ActivityLog from '../models/activityLogModel'; // Imported ActivityLog
+import ActivityLog from '../models/activityLogModel';
 import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
 import logger from '../utils/logger';
@@ -106,6 +106,38 @@ export const getSystemPrompts = async (req: Request, res: Response, next: NextFu
       data: {
         prompts
       }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Create a System Prompt (For Seeding)
+// @route   POST /api/admin/prompts
+// @access  Admin
+export const createSystemPrompt = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { type, text, description } = req.body;
+
+    // Check if exists
+    const existing = await Prompt.findOne({ type });
+    if (existing) {
+       return next(new AppError('Prompt type already exists', 400, CONSTANTS.ERROR_CODES.VALIDATION_ERROR));
+    }
+
+    const prompt = await Prompt.create({
+        type,
+        text,
+        description,
+        active: true,
+        version: 1
+    });
+
+    logger.info(`Admin ${req.user?.uid || 'Unknown'} created prompt: ${type}`);
+
+    res.status(201).json({
+      status: 'success',
+      data: { prompt }
     });
   } catch (error) {
     next(error);
