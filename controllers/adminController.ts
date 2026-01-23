@@ -1,4 +1,4 @@
-// controllers/adminController.ts
+// narrative-backend/controllers/adminController.ts
 import { Request, Response, NextFunction } from 'express';
 import Prompt from '../models/aiPrompts';
 import Article from '../models/articleModel';
@@ -7,6 +7,39 @@ import SystemConfig from '../models/systemConfigModel';
 import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
 import logger from '../utils/logger';
+
+// --- DASHBOARD STATS (NEW) ---
+
+// @desc    Get Admin Dashboard Stats
+// @route   GET /api/admin/dashboard
+// @access  Admin
+export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Run queries in parallel for performance
+    const [userCount, articleCount, trashedArticleCount, configCount] = await Promise.all([
+      Profile.countDocuments({}),
+      Article.countDocuments({ deletedAt: null }),
+      Article.countDocuments({ deletedAt: { $ne: null } }),
+      SystemConfig.countDocuments({})
+    ]);
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        stats: {
+          totalUsers: userCount,
+          activeArticles: articleCount,
+          archivedArticles: trashedArticleCount,
+          systemConfigs: configCount,
+          systemStatus: 'Operational', // You could expand this to check Redis/DB health later
+          databaseStatus: 'Connected'
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 // --- AI PROMPT MANAGEMENT ---
 
