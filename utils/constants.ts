@@ -12,7 +12,8 @@ export const CONSTANTS = {
     AUTH_INVALID_TOKEN: 'AUTH_INVALID_TOKEN',
     AUTH_MISSING_TOKEN: 'AUTH_MISSING_TOKEN',
     ACCESS_DENIED: 'ACCESS_DENIED',
-    NOT_FOUND: 'NOT_FOUND', // ADDED: Fixes the build error in adminController
+    NOT_FOUND: 'NOT_FOUND',
+    VALIDATION_ERROR: 'VALIDATION_ERROR', // ADDED: Fixes build error
   },
 
   // Rate Limiting
