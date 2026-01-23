@@ -250,7 +250,8 @@ export const getAllUsers = async (req: Request, res: Response, next: NextFunctio
 export const getUserById = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const userProfile = await Profile.findOne({ uid: id }); // Assuming look up by UID
+    // FIXED: Changed uid to userId to match Profile Schema
+    const userProfile = await Profile.findOne({ userId: id });
 
     if (!userProfile) {
       return next(new AppError('User profile not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
@@ -275,8 +276,8 @@ export const updateUserStatus = async (req: Request, res: Response, next: NextFu
     const { id } = req.params;
     const { role, isBanned, accountStatus } = req.body; 
 
-    // Look up by UID
-    const userProfile = await Profile.findOne({ uid: id });
+    // FIXED: Changed uid to userId to match Profile Schema
+    const userProfile = await Profile.findOne({ userId: id });
 
     if (!userProfile) {
       return next(new AppError('User profile not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
@@ -295,7 +296,8 @@ export const updateUserStatus = async (req: Request, res: Response, next: NextFu
     res.status(200).json({
       status: 'success',
       data: {
-        uid: userProfile.uid,
+        // FIXED: Changed userProfile.uid to userProfile.userId
+        uid: userProfile.userId,
         role: (userProfile as any).role,
         isBanned: (userProfile as any).isBanned
       }
