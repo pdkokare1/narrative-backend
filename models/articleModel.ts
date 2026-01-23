@@ -6,11 +6,12 @@ import { IArticle } from '../types';
 export interface ArticleDocument extends Omit<IArticle, '_id'>, Document {
   createdAt: Date;
   updatedAt: Date;
+  deletedAt?: Date | null; // NEW: Track when item was moved to trash
 }
 
 // Interface for the Model (Static Methods)
 interface ArticleModel extends Model<ArticleDocument> {
-  smartSearch(term: string, limits?: number): Promise<ArticleDocument[]>;
+  smartSearch(term: string, limit?: number): Promise<ArticleDocument[]>;
 }
 
 const articleSchema = new Schema<ArticleDocument>({
@@ -67,6 +68,10 @@ const articleSchema = new Schema<ArticleDocument>({
   // true = This is the latest version of the story in its cluster
   // false = This is an older version and should be hidden from the main feed
   isLatest: { type: Boolean, default: true, index: true },
+
+  // NEW: Archive / Trash Support
+  // If set, the article is in the "Recycle Bin" waiting for permanent deletion
+  deletedAt: { type: Date, default: null, index: true },
   
   // Vector Embedding (Hidden by default to save bandwidth)
   embedding: { type: [Number], select: false }, 
@@ -118,7 +123,7 @@ articleSchema.index({ country: 1, category: 1, isLatest: 1, publishedAt: -1 });
 articleSchema.index({ url: 1 }, { unique: true });
 
 // --- 3. DATA RETENTION ---
-// Automatically delete articles older than 90 days
+// Automatically delete articles older than 90 days (Global retention policy)
 articleSchema.index({ createdAt: 1 }, { expireAfterSeconds: 7776000 });
 
 // --- 4. STATIC METHODS ---
