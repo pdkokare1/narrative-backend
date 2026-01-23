@@ -17,6 +17,7 @@ router.get('/logs', adminController.getActivityLogs); // NEW: View Activity Logs
 
 // --- AI Prompt Management ---
 router.get('/prompts', adminController.getSystemPrompts);
+router.post('/prompts', adminController.createSystemPrompt); // <--- ADDED THIS LINE
 router.patch('/prompts/:id', adminController.updateSystemPrompt);
 
 // --- Article Management (Newsroom) ---
