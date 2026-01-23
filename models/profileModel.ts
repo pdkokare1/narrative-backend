@@ -7,6 +7,7 @@ import { IUserProfile, IBadge } from '../types';
 export interface ProfileDocument extends Omit<IUserProfile, 'savedArticles' | 'email'>, Document {
   email?: string;
   phoneNumber?: string; 
+  role: 'user' | 'admin'; // NEW: Added role definition
   savedArticles: mongoose.Types.ObjectId[];
   createdAt: Date;
   updatedAt: Date;
@@ -27,6 +28,14 @@ const profileSchema = new Schema<ProfileDocument>({
     required: true, 
     unique: true, 
     index: true 
+  },
+
+  // NEW: Role Based Access Control
+  role: {
+    type: String,
+    enum: ['user', 'admin'],
+    default: 'user',
+    index: true
   },
   
   // FIX: Email is now Optional & Sparse (allows multiple nulls)
