@@ -12,7 +12,8 @@ const promptSchema = new Schema<PromptDocument>({
     type: String, 
     required: true, 
     unique: true, 
-    enum: ['ANALYSIS', 'GATEKEEPER', 'ENTITY_EXTRACTION'] 
+    // ADDED 'SUMMARY_ONLY' to this list
+    enum: ['ANALYSIS', 'GATEKEEPER', 'ENTITY_EXTRACTION', 'SUMMARY_ONLY'] 
   },
   text: { 
     type: String, 
