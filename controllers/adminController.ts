@@ -5,7 +5,8 @@ import Article from '../models/articleModel';
 import Profile from '../models/profileModel'; 
 import SystemConfig from '../models/systemConfigModel';
 import ActivityLog from '../models/activityLogModel';
-import Narrative from '../models/narrativeModel'; // NEW IMPORT
+import Narrative from '../models/narrativeModel';
+import AnalyticsSession from '../models/analyticsSession'; // NEW IMPORT
 import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
 import logger from '../utils/logger';
@@ -40,6 +41,46 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       { $sort: { _id: 1 } }
     ]);
 
+    // --- NEW: DEEP ENGAGEMENT METRICS (Last 7 Days) ---
+    
+    // A. Average Session Time (Real Attention)
+    const sessionTimeAgg = await AnalyticsSession.aggregate([
+        { $match: { date: { $gte: sevenDaysAgo } } },
+        { $group: { _id: null, avgTime: { $avg: "$totalDuration" } } }
+    ]);
+    const avgSessionTime = sessionTimeAgg[0]?.avgTime || 0;
+
+    // B. Average Scroll Depth (Content Depth)
+    const scrollDepthAgg = await AnalyticsSession.aggregate([
+        { $match: { date: { $gte: sevenDaysAgo } } },
+        { $unwind: "$interactions" },
+        { $match: { 
+            "interactions.contentType": { $in: ["article", "narrative"] },
+            "interactions.scrollDepth": { $exists: true, $gt: 0 } 
+        }},
+        { $group: { _id: null, avgDepth: { $avg: "$interactions.scrollDepth" } } }
+    ]);
+    const avgScrollDepth = scrollDepthAgg[0]?.avgDepth || 0;
+
+    // C. Audio Stickiness (Retention Rate)
+    const audioStatsAgg = await AnalyticsSession.aggregate([
+        { $match: { date: { $gte: sevenDaysAgo } } },
+        { $unwind: "$interactions" },
+        { $match: { 
+            "interactions.contentType": "audio_action",
+            "interactions.audioAction": { $in: ["start", "complete"] }
+        }},
+        { $group: {
+            _id: null,
+            starts: { $sum: { $cond: [{ $eq: ["$interactions.audioAction", "start"] }, 1, 0] } },
+            completes: { $sum: { $cond: [{ $eq: ["$interactions.audioAction", "complete"] }, 1, 0] } }
+        }}
+    ]);
+    
+    const audioStarts = audioStatsAgg[0]?.starts || 0;
+    const audioCompletes = audioStatsAgg[0]?.completes || 0;
+    const audioRetention = audioStarts > 0 ? Math.round((audioCompletes / audioStarts) * 100) : 0;
+
     res.status(200).json({
       status: 'success',
       data: {
@@ -49,9 +90,13 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
           archivedArticles: trashedArticleCount,
           systemConfigs: configCount,
           systemStatus: 'Operational', 
-          databaseStatus: 'Connected'
+          databaseStatus: 'Connected',
+          // New Metrics
+          avgSessionTime: Math.round(avgSessionTime),
+          avgScrollDepth: Math.round(avgScrollDepth),
+          audioRetention
         },
-        chartData: activityStats // New data for the graph
+        chartData: activityStats
       }
     });
   } catch (error) {
