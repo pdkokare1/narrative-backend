@@ -1,6 +1,8 @@
 // narrative-backend/controllers/analyticsController.ts
 import { Request, Response, NextFunction } from 'express';
 import AnalyticsSession from '../models/analyticsSession';
+import UserStats from '../models/userStatsModel';
+import Article from '../models/articleModel';
 import logger from '../utils/logger';
 
 // @desc    Track User Activity (Heartbeat & Beacon)
@@ -12,7 +14,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       sessionId, 
       userId, 
       metrics, // { article: 5, radio: 0, total: 5 ... }
-      interactions, // Current active interaction
+      interactions, // Current active interaction array
       meta 
     } = req.body;
 
@@ -22,7 +24,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       return;
     }
 
-    // Prepare atomic update
+    // 1. Update Session Analytics (Technical Data)
     const updateOps: any = {
       $inc: {
         totalDuration: metrics.total || 0,
@@ -36,31 +38,63 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       }
     };
 
-    // If there is specific interaction data, push it
     if (interactions && interactions.length > 0) {
       updateOps.$push = { interactions: { $each: interactions } };
     }
 
-    // Set metadata only if it's a new document (using setOnInsert)
     const setOnInsert: any = {
         sessionId,
-        date: new Date(), // Will verify logic to ensure "today"
+        date: new Date(),
         platform: meta?.platform || 'web',
         userAgent: meta?.userAgent || 'unknown',
+        // NEW: Capture referrer if available (requires Schema update to persist, but good to have in logic)
+        // referrer: meta?.referrer 
     };
     if (userId) setOnInsert.userId = userId;
 
-    // Upsert: Create if doesn't exist, Update if it does
+    // Upsert Analytics Session
     await AnalyticsSession.findOneAndUpdate(
       { sessionId },
-      { 
-        ...updateOps, 
-        $setOnInsert: setOnInsert 
-      },
+      { ...updateOps, $setOnInsert: setOnInsert },
       { upsert: true, new: true }
     );
 
-    // logger.info(`Analytics Heartbeat: ${sessionId} (+${metrics.total}s)`);
+    // 2. NEW: Consolidate UserStats Logic (Fixing the Disconnect)
+    // If we have a valid UserId and they spent time on an Article, update their Profile Stats immediately.
+    if (userId && metrics.article > 0) {
+        // Find the interaction related to the article to get the ID
+        const articleInteraction = interactions?.find((i: any) => 
+            i.contentType === 'article' && i.contentId
+        );
+
+        if (articleInteraction && articleInteraction.contentId) {
+            // Lookup Category & Lean for this article
+            // NOTE: We do a lightweight select to keep it fast
+            const article = await Article.findById(articleInteraction.contentId)
+                .select('category lean_bias');
+
+            if (article) {
+                const category = article.category || 'General';
+                const lean = article.lean_bias || 'Center';
+                const seconds = metrics.article;
+
+                // Atomic Update to UserStats
+                // This replaces the old /heartbeat route logic
+                await UserStats.findOneAndUpdate(
+                    { userId },
+                    {
+                        $inc: {
+                            totalTimeSpent: seconds,
+                            [`topicInterest.${category}`]: seconds,
+                            [`leanExposure.${lean}`]: seconds
+                        },
+                        $set: { lastUpdated: new Date() }
+                    },
+                    { upsert: true }
+                );
+            }
+        }
+    }
 
     res.status(200).json({ status: 'success' });
   } catch (error) {
@@ -75,7 +109,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
 // @access  Admin
 export const getAnalyticsOverview = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        // Simple aggregation for "Today"
+        // Simple aggregation for \"Today\"
         const startOfDay = new Date();
         startOfDay.setHours(0,0,0,0);
 
