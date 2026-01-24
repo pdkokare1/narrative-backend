@@ -14,7 +14,10 @@ router.post('/track', analyticsController.trackActivity);
 // 2. Session Stitching (Link Guest -> User)
 router.post('/link-session', analyticsController.linkSession);
 
-// 3. Admin Overview (Protected)
+// 3. User Stats (Personal Dashboard) - Protected
+router.get('/user-stats', checkAuth, analyticsController.getUserStats);
+
+// 4. Admin Overview (Protected)
 router.get('/overview', checkAuth, analyticsController.getAnalyticsOverview);
 
 export default router;
