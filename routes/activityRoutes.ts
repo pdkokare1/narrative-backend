@@ -6,18 +6,17 @@ import schemas from '../utils/validationSchemas';
 import ActivityLog from '../models/activityLogModel';
 import Article from '../models/articleModel'; 
 import Profile from '../models/profileModel';
-import UserStats from '../models/userStatsModel'; 
 import gamificationService from '../services/gamificationService';
 import ttsService from '../services/ttsService'; 
-import { checkAuth } from '../middleware/authMiddleware'; // <--- FIXED Import
+import { checkAuth } from '../middleware/authMiddleware'; 
 
 const router = express.Router();
 
 // Apply Auth Middleware to all routes
-router.use(checkAuth); // <--- FIXED Usage
+router.use(checkAuth); 
 
 // --- HELPER: Update User Personalization Vector ---
-// Calculates the "Average Taste" based on last 50 reads
+// Calculates the \"Average Taste\" based on last 50 reads
 async function updateUserVector(userId: string) {
     try {
         // 1. Get last 50 viewed article IDs
@@ -58,7 +57,7 @@ async function updateUserVector(userId: string) {
         await Profile.updateOne({ userId }, { userEmbedding: avgVector });
 
     } catch (error) {
-        console.error("❌ Vector Update Failed:", error);
+        console.error(\"❌ Vector Update Failed:\", error);
     }
 }
 
@@ -87,7 +86,7 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
                 }
             }
         } catch (err) {
-            console.error("Smart Audio Trigger Error:", err);
+            console.error(\"Smart Audio Trigger Error:\", err);
         }
     })();
 
@@ -143,31 +142,8 @@ router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req:
     res.status(200).json({ message: 'Logged read', newBadge });
 }));
 
-// --- 5. NEW: Heartbeat (Time Tracking) ---
-router.post('/heartbeat', asyncHandler(async (req: Request, res: Response) => {
-  const { seconds, category, lean } = req.body;
-  const userId = (req as any).user.uid;
-
-  if (!seconds || seconds <= 0) return res.status(200).json({ status: 'ignored' });
-
-  // Update Aggregate Stats atomically (UserStats Model)
-  const updateOps: any = {
-      $inc: {
-          totalTimeSpent: seconds,
-          [`topicInterest.${category}`]: seconds,
-          [`leanExposure.${lean || 'Center'}`]: seconds
-      },
-      $set: { lastUpdated: new Date() }
-  };
-
-  // Upsert ensures document is created if it doesn't exist
-  await UserStats.findOneAndUpdate(
-      { userId },
-      updateOps,
-      { upsert: true, new: true }
-  );
-
-  res.status(200).json({ status: 'pulsed' });
-}));
+// --- REMOVED: Heartbeat (Redundant) ---
+// The heartbeat logic has been moved to analyticsController.ts (trackActivity)
+// to ensure a single source of truth and prevent data disconnects.
 
 export default router;
