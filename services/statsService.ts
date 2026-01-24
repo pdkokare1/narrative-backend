@@ -1,5 +1,7 @@
 // services/statsService.ts
 import Article from '../models/articleModel';
+import ActivityLog from '../models/activityLogModel';
+import Profile from '../models/profileModel';
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
 
@@ -88,6 +90,53 @@ class StatsService {
         } catch (error) {
             // Silent fail is acceptable for stats to avoid breaking the main flow
             // console.warn('Stats increment failed', error);
+        }
+    }
+
+    // 4. Update User Personalization Vector (Moved from Route)
+    // Calculates the "Average Taste" based on last 50 reads
+    async updateUserVector(userId: string) {
+        try {
+            // A. Get last 50 viewed article IDs
+            const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
+                .sort({ timestamp: -1 })
+                .limit(50) 
+                .select('articleId');
+
+            if (recentLogs.length === 0) return;
+
+            const articleIds = recentLogs.map(log => log.articleId);
+
+            // B. Fetch embeddings for these articles
+            const articles = await Article.find({ 
+                _id: { $in: articleIds },
+                embedding: { $exists: true, $not: { $size: 0 } }
+            }).select('embedding');
+
+            if (articles.length === 0) return;
+
+            // C. Calculate Average Vector (Centroid)
+            const vectorLength = articles[0].embedding!.length;
+            const avgVector = new Array(vectorLength).fill(0);
+
+            articles.forEach(article => {
+                const vec = article.embedding!;
+                for (let i = 0; i < vectorLength; i++) {
+                    avgVector[i] += vec[i];
+                }
+            });
+
+            // Divide by count to get average
+            for (let i = 0; i < vectorLength; i++) {
+                avgVector[i] = avgVector[i] / articles.length;
+            }
+
+            // D. Update Profile
+            await Profile.updateOne({ userId }, { userEmbedding: avgVector });
+            // logger.info(`🧠 User Vector Updated for ${userId}`);
+
+        } catch (error) {
+            logger.error("❌ Vector Update Failed:", error);
         }
     }
 }
