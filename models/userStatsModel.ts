@@ -17,6 +17,12 @@ export interface IUserStats extends Document {
   topicInterest: {
     [category: string]: number;
   };
+
+  // NEW: Dayparting (Habit Tracking)
+  // Map of "Hour (0-23)" -> Minutes Spent
+  activityByHour: {
+    [hour: string]: number;
+  };
   
   // Derived Engagement
   engagementScore: number; // 0-100
@@ -35,6 +41,9 @@ const userStatsSchema = new Schema<IUserStats>({
   },
   
   topicInterest: { type: Map, of: Number, default: {} },
+
+  // NEW: Activity Histogram
+  activityByHour: { type: Map, of: Number, default: {} },
   
   engagementScore: { type: Number, default: 50 },
   lastUpdated: { type: Date, default: Date.now }
