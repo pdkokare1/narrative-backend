@@ -16,7 +16,7 @@ const router = express.Router();
 router.use(checkAuth); 
 
 // --- HELPER: Update User Personalization Vector ---
-// Calculates the \"Average Taste\" based on last 50 reads
+// Calculates the "Average Taste" based on last 50 reads
 async function updateUserVector(userId: string) {
     try {
         // 1. Get last 50 viewed article IDs
@@ -57,7 +57,7 @@ async function updateUserVector(userId: string) {
         await Profile.updateOne({ userId }, { userEmbedding: avgVector });
 
     } catch (error) {
-        console.error(\"❌ Vector Update Failed:\", error);
+        console.error("❌ Vector Update Failed:", error);
     }
 }
 
@@ -86,7 +86,7 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
                 }
             }
         } catch (err) {
-            console.error(\"Smart Audio Trigger Error:\", err);
+            console.error("Smart Audio Trigger Error:", err);
         }
     })();
 
