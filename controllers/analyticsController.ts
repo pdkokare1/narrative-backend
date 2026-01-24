@@ -4,6 +4,7 @@ import AnalyticsSession from '../models/analyticsSession';
 import UserStats from '../models/userStatsModel';
 import Article from '../models/articleModel';
 import statsService from '../services/statsService';
+import redisClient from '../utils/redisClient'; // NEW: For ephemeral time tracking
 import logger from '../utils/logger';
 
 // @desc    Track User Activity (Heartbeat & Beacon)
@@ -72,47 +73,67 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         );
 
         if (articleInteraction && articleInteraction.contentId) {
-            
-            // FILTER: Only count meaningful time (accumulated or instant check)
-            // Note: metrics.article is the *delta* since last ping.
-            // If they are pinging, they are active. We gate this update to ensure we aren't 
-            // aggressively updating stats for micro-interactions, though for "Total Time" 
-            // accuracy we want all seconds. 
-            // HOWEVER, for "Echo Chamber" calculations, we prefer quality.
-            
-            // We allow the update if the chunk is > 10s (unlikely with 30s interval unless lag)
-            // OR if we just blindly trust the time because 30s is the heartbeat interval.
-            // The frontend sends data every 30s. So usually metrics.article is ~30.
-            // If they bounce in 5s, metrics.article is 5.
-            
-            // DECISION: We DO record the time (because 5s is 5s), but we might handle
-            // the "Vector Update" elsewhere. For UserStats (Time Spent), we record it all.
-            // But let's respect the "Qualitative" requirement by checking if this is a 'real' read.
-            
             const seconds = metrics.article;
-            
-            // If this is a very short ping (beacon on exit) and total time is low, 
-            // it might be noise. But for now, we simply record the time.
-            
+            const articleId = articleInteraction.contentId;
+            const wordCount = articleInteraction.wordCount || 0; // NEW: Get word count from frontend
+
+            // --- SKIMMING DETECTION ---
+            let isSkimming = false;
+            let totalSecondsOnArticle = seconds; // Default to current delta if Redis fails
+
+            if (redisClient.isReady()) {
+                const client = redisClient.getClient();
+                if (client) {
+                    const key = `article_time:${userId}:${articleId}`;
+                    // Increment total time spent on this article (Ephemeral)
+                    // Expire after 24h to keep Redis clean
+                    totalSecondsOnArticle = await client.incrBy(key, seconds);
+                    await client.expire(key, 86400); 
+
+                    // Calculate WPM (Words Per Minute)
+                    // Formula: Words / (Minutes)
+                    if (wordCount > 50 && totalSecondsOnArticle > 5) {
+                        const minutes = totalSecondsOnArticle / 60;
+                        const wpm = wordCount / minutes;
+
+                        // Threshold: > 600 WPM is considered skimming/scrolling fast
+                        if (wpm > 600) {
+                            isSkimming = true;
+                        }
+                    }
+                }
+            }
+
             // Lookup Category & Lean for this article
-            const article = await Article.findById(articleInteraction.contentId)
+            const article = await Article.findById(articleId)
                 .select('category lean_bias');
 
             if (article) {
                 const category = article.category || 'General';
                 const lean = (article as any).lean_bias || 'Center';
 
+                // LOGIC:
+                // 1. "Total Time" is always updated (Engagement is Engagement).
+                // 2. "Topic Interest" & "Lean Exposure" (Echo Chamber) are only updated if NOT Skimming.
+                //    This ensures our personalization engine is fed by "Deep Reading", not "Fast Scrolling".
+
+                const updatePayload: any = {
+                    $inc: {
+                        totalTimeSpent: seconds, // Always count time
+                    },
+                    $set: { lastUpdated: new Date() }
+                };
+
+                // Only add to Interest Profile if they are actually reading
+                if (!isSkimming) {
+                    updatePayload.$inc[`topicInterest.${category}`] = seconds;
+                    updatePayload.$inc[`leanExposure.${lean}`] = seconds;
+                }
+
                 // Atomic Update to UserStats
                 await UserStats.findOneAndUpdate(
                     { userId },
-                    {
-                        $inc: {
-                            totalTimeSpent: seconds,
-                            [`topicInterest.${category}`]: seconds,
-                            [`leanExposure.${lean}`]: seconds
-                        },
-                        $set: { lastUpdated: new Date() }
-                    },
+                    updatePayload,
                     { upsert: true }
                 );
             }
