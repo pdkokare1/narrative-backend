@@ -1,8 +1,8 @@
-// narrative-backend/models/analyticsSession.ts
+// models/analyticsSession.ts
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
 export interface IInteraction {
-  contentType: 'article' | 'narrative' | 'radio' | 'feed' | 'copy' | 'audio_action' | 'search' | 'ui_interaction';
+  contentType: 'article' | 'narrative' | 'radio' | 'feed' | 'copy' | 'audio_action' | 'search' | 'ui_interaction' | 'impression';
   contentId?: string;
   duration?: number; 
   scrollDepth?: number; 
@@ -63,7 +63,7 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
   interactions: [{
     contentType: { 
       type: String, 
-      enum: ['article', 'narrative', 'radio', 'feed', 'copy', 'audio_action', 'search', 'ui_interaction'] 
+      enum: ['article', 'narrative', 'radio', 'feed', 'copy', 'audio_action', 'search', 'ui_interaction', 'impression'] 
     },
     contentId: String,
     duration: Number,
