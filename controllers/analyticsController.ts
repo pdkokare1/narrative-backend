@@ -2,6 +2,7 @@
 import { Request, Response, NextFunction } from 'express';
 import AnalyticsSession from '../models/analyticsSession';
 import UserStats from '../models/userStatsModel';
+import SearchLog from '../models/searchLogModel'; // NEW Import
 import Article from '../models/articleModel';
 import statsService from '../services/statsService';
 import redisClient from '../utils/redisClient'; 
@@ -15,7 +16,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
     const { 
       sessionId, 
       userId, 
-      metrics, // { article: 5, radio: 0, total: 5 ... }
+      metrics, 
       interactions, 
       meta 
     } = req.body;
@@ -61,7 +62,6 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
     // 2. Consolidate UserStats Logic
     if (userId && metrics.article > 0) {
         
-        // Find the interaction related to the article
         const articleInteraction = interactions?.find((i: any) => 
             i.contentType === 'article' && i.contentId
         );
@@ -103,13 +103,12 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
                 const lean = (article as any).lean_bias || 'Center';
                 
                 // NEW: Dayparting (Hour of Day)
-                // We use Server Time for now (UTC). 
                 const currentHour = new Date().getHours(); // 0-23
 
                 const updatePayload: any = {
                     $inc: {
                         totalTimeSpent: seconds, 
-                        [`activityByHour.${currentHour}`]: seconds // Log habit
+                        [`activityByHour.${currentHour}`]: seconds 
                     },
                     $set: { lastUpdated: new Date() }
                 };
@@ -137,11 +136,14 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
 };
 
 // @desc    Get Quick Stats (For Admin Overview)
+// @route   GET /api/analytics/overview
+// @access  Admin
 export const getAnalyticsOverview = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const startOfDay = new Date();
         startOfDay.setHours(0,0,0,0);
 
+        // 1. Basic Counts
         const stats = await AnalyticsSession.aggregate([
             { $match: { updatedAt: { $gte: startOfDay } } },
             { 
@@ -156,9 +158,49 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
             }
         ]);
 
+        // 2. NEW: Trending Searches (Top 5)
+        const topSearches = await SearchLog.find({ zeroResults: false })
+            .sort({ count: -1 })
+            .limit(5)
+            .select('query count');
+
+        // 3. NEW: Content Gaps (Top 5 Searches with 0 results)
+        const contentGaps = await SearchLog.find({ zeroResults: true })
+            .sort({ count: -1 })
+            .limit(5)
+            .select('query count');
+
+        // 4. NEW: Peak Hours (Aggregate from UserStats)
+        // We sum up the minutes for each hour across all users
+        // This is a simplified "Global Heatmap"
+        // Note: activityByHour is a Map in Mongoose, so aggregation is tricky.
+        // We will do a simple fetch and reduce for now (optimize later if >10k users)
+        
+        // Fetch users active in last 24h
+        const recentStats = await UserStats.find({ lastUpdated: { $gte: startOfDay } })
+            .select('activityByHour')
+            .limit(100); // Sample size for speed
+
+        const hourlyActivity = new Array(24).fill(0);
+        recentStats.forEach(stat => {
+            if (stat.activityByHour) {
+                for (const [hour, seconds] of stat.activityByHour.entries()) {
+                    const h = parseInt(hour);
+                    if (!isNaN(h) && h >= 0 && h < 24) {
+                        hourlyActivity[h] += (seconds as number);
+                    }
+                }
+            }
+        });
+
         res.status(200).json({
             status: 'success',
-            data: stats[0] || {}
+            data: {
+                ...(stats[0] || {}),
+                topSearches,
+                contentGaps,
+                hourlyActivity // Array [0..23] of total seconds
+            }
         });
     } catch (error) {
         next(error);
