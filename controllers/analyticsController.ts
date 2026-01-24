@@ -75,7 +75,8 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
 
             if (article) {
                 const category = article.category || 'General';
-                const lean = article.lean_bias || 'Center';
+                // FIX: Type assertion used here to prevent build error if lean_bias is missing from Interface
+                const lean = (article as any).lean_bias || 'Center';
                 const seconds = metrics.article;
 
                 // Atomic Update to UserStats
@@ -109,7 +110,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
 // @access  Admin
 export const getAnalyticsOverview = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        // Simple aggregation for \"Today\"
+        // Simple aggregation for "Today"
         const startOfDay = new Date();
         startOfDay.setHours(0,0,0,0);
 
