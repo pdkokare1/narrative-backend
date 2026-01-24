@@ -2,7 +2,7 @@
 import { Request, Response, NextFunction } from 'express';
 import AnalyticsSession from '../models/analyticsSession';
 import UserStats from '../models/userStatsModel';
-import SearchLog from '../models/searchLogModel'; // NEW Import
+import SearchLog from '../models/searchLogModel';
 import Article from '../models/articleModel';
 import statsService from '../services/statsService';
 import redisClient from '../utils/redisClient'; 
@@ -102,7 +102,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
                 const category = article.category || 'General';
                 const lean = (article as any).lean_bias || 'Center';
                 
-                // NEW: Dayparting (Hour of Day)
+                // Dayparting (Hour of Day)
                 const currentHour = new Date().getHours(); // 0-23
 
                 const updatePayload: any = {
@@ -135,6 +135,33 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+// @desc    Link Anonymous Session to User ID
+// @route   POST /api/analytics/link-session
+// @access  Public
+export const linkSession = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { sessionId, userId } = req.body;
+
+        if (!sessionId || !userId) {
+             res.status(400).send('Missing data');
+             return; 
+        }
+
+        // Update the Session with the new User ID
+        await AnalyticsSession.findOneAndUpdate(
+            { sessionId },
+            { userId },
+            { new: true }
+        );
+
+        logger.info(`Session Stitched: ${sessionId} -> ${userId}`);
+
+        res.status(200).json({ status: 'linked' });
+    } catch (error) {
+        next(error);
+    }
+};
+
 // @desc    Get Quick Stats (For Admin Overview)
 // @route   GET /api/analytics/overview
 // @access  Admin
@@ -158,28 +185,22 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
             }
         ]);
 
-        // 2. NEW: Trending Searches (Top 5)
+        // 2. Trending Searches
         const topSearches = await SearchLog.find({ zeroResults: false })
             .sort({ count: -1 })
             .limit(5)
             .select('query count');
 
-        // 3. NEW: Content Gaps (Top 5 Searches with 0 results)
+        // 3. Content Gaps
         const contentGaps = await SearchLog.find({ zeroResults: true })
             .sort({ count: -1 })
             .limit(5)
             .select('query count');
 
-        // 4. NEW: Peak Hours (Aggregate from UserStats)
-        // We sum up the minutes for each hour across all users
-        // This is a simplified "Global Heatmap"
-        // Note: activityByHour is a Map in Mongoose, so aggregation is tricky.
-        // We will do a simple fetch and reduce for now (optimize later if >10k users)
-        
-        // Fetch users active in last 24h
+        // 4. Peak Hours
         const recentStats = await UserStats.find({ lastUpdated: { $gte: startOfDay } })
             .select('activityByHour')
-            .limit(100); // Sample size for speed
+            .limit(100); 
 
         const hourlyActivity = new Array(24).fill(0);
         recentStats.forEach(stat => {
@@ -199,7 +220,7 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
                 ...(stats[0] || {}),
                 topSearches,
                 contentGaps,
-                hourlyActivity // Array [0..23] of total seconds
+                hourlyActivity 
             }
         });
     } catch (error) {
