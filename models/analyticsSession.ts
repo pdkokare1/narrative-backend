@@ -5,6 +5,7 @@ export interface IInteraction {
   contentType: 'article' | 'narrative' | 'radio' | 'feed';
   contentId?: string;
   duration: number; // Seconds spent in this specific interaction
+  scrollDepth?: number; // NEW: Percentage (0-100) of content viewed
   timestamp: Date;
 }
 
@@ -51,6 +52,7 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
     contentType: { type: String, enum: ['article', 'narrative', 'radio', 'feed'] },
     contentId: String,
     duration: Number,
+    scrollDepth: Number, // NEW field
     timestamp: { type: Date, default: Date.now }
   }]
 }, {
