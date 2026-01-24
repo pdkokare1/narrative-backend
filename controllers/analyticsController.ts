@@ -26,14 +26,32 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       return;
     }
 
-    // 1. Update Session Analytics (Technical Data)
+    // 1. Calculate Quarterly Aggregates (from this payload)
+    const payloadQuarters = [0, 0, 0, 0];
+    if (interactions) {
+        interactions.forEach((i: any) => {
+            if (i.quarters && Array.isArray(i.quarters)) {
+                i.quarters.forEach((val: number, idx: number) => {
+                    if (idx < 4) payloadQuarters[idx] += val;
+                });
+            }
+        });
+    }
+
+    // 2. Update Session Analytics
     const updateOps: any = {
       $inc: {
         totalDuration: metrics.total || 0,
         articleDuration: metrics.article || 0,
         radioDuration: metrics.radio || 0,
         narrativeDuration: metrics.narrative || 0,
-        feedDuration: metrics.feed || 0
+        feedDuration: metrics.feed || 0,
+        
+        // NEW: Increment global quarters
+        'quarterlyRetention.0': payloadQuarters[0],
+        'quarterlyRetention.1': payloadQuarters[1],
+        'quarterlyRetention.2': payloadQuarters[2],
+        'quarterlyRetention.3': payloadQuarters[3]
       },
       $set: {
         updatedAt: new Date()
@@ -59,7 +77,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       { upsert: true, new: true }
     );
 
-    // 2. Consolidate UserStats Logic
+    // 3. Consolidate UserStats Logic
     if (userId && metrics.article > 0) {
         
         const articleInteraction = interactions?.find((i: any) => 
@@ -70,11 +88,12 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
             const seconds = metrics.article;
             const articleId = articleInteraction.contentId;
             const wordCount = articleInteraction.wordCount || 0; 
+            const quarters = articleInteraction.quarters || [0,0,0,0];
 
-            // --- SKIMMING DETECTION ---
             let isSkimming = false;
             let totalSecondsOnArticle = seconds; 
 
+            // --- REDIS CACHE for Accumulation ---
             if (redisClient.isReady()) {
                 const client = redisClient.getClient();
                 if (client) {
@@ -82,13 +101,32 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
                     totalSecondsOnArticle = await client.incrBy(key, seconds);
                     await client.expire(key, 86400); 
 
-                    // WPM Check
+                    // --- TRUE READ VALIDATION ---
+                    // Rule 1: WPM Check
                     if (wordCount > 50 && totalSecondsOnArticle > 5) {
                         const minutes = totalSecondsOnArticle / 60;
                         const wpm = wordCount / minutes;
+                        if (wpm > 600) isSkimming = true;
+                    }
+                    
+                    // NEW: Rule 2: Quarter Check (Accumulate these in Redis too)
+                    // We check if they have now visited Q3 or Q4 significantly
+                    const qKey = `article_quarters:${userId}:${articleId}`;
+                    // Store simplistic bitmask: 1=visited
+                    if (quarters[2] > 2) await client.setbit(qKey, 2, 1);
+                    if (quarters[3] > 2) await client.setbit(qKey, 3, 1);
+                    
+                    // If they have accumulated > 30s AND hit Q3 or Q4, it's a True Read
+                    // We use a separate key to ensure we only credit "Read" once per article
+                    const readCreditKey = `article_read_credited:${userId}:${articleId}`;
+                    const alreadyCredited = await client.get(readCreditKey);
 
-                        if (wpm > 600) {
-                            isSkimming = true;
+                    if (!alreadyCredited && !isSkimming && totalSecondsOnArticle > 30) {
+                        const hitDeep = await client.getbit(qKey, 3); // Checked Q4
+                        if (hitDeep === 1) {
+                            // CREDIT THE READ
+                            await UserStats.updateOne({ userId }, { $inc: { articlesReadCount: 1 } });
+                            await client.set(readCreditKey, '1', 'EX', 86400 * 30); // Don't credit again for a month
                         }
                     }
                 }
@@ -101,9 +139,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
             if (article) {
                 const category = article.category || 'General';
                 const lean = (article as any).lean_bias || 'Center';
-                
-                // Dayparting (Hour of Day)
-                const currentHour = new Date().getHours(); // 0-23
+                const currentHour = new Date().getHours(); 
 
                 const updatePayload: any = {
                     $inc: {
@@ -113,7 +149,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
                     $set: { lastUpdated: new Date() }
                 };
 
-                // Only add to Interest Profile if they are actually reading
+                // Only add to Interest Profile if not skimming
                 if (!isSkimming) {
                     updatePayload.$inc[`topicInterest.${category}`] = seconds;
                     updatePayload.$inc[`leanExposure.${lean}`] = seconds;
@@ -141,21 +177,12 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
 export const linkSession = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const { sessionId, userId } = req.body;
-
         if (!sessionId || !userId) {
              res.status(400).send('Missing data');
              return; 
         }
-
-        // Update the Session with the new User ID
-        await AnalyticsSession.findOneAndUpdate(
-            { sessionId },
-            { userId },
-            { new: true }
-        );
-
+        await AnalyticsSession.findOneAndUpdate({ sessionId }, { userId }, { new: true });
         logger.info(`Session Stitched: ${sessionId} -> ${userId}`);
-
         res.status(200).json({ status: 'linked' });
     } catch (error) {
         next(error);
@@ -170,7 +197,6 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
         const startOfDay = new Date();
         startOfDay.setHours(0,0,0,0);
 
-        // 1. Basic Counts
         const stats = await AnalyticsSession.aggregate([
             { $match: { updatedAt: { $gte: startOfDay } } },
             { 
@@ -185,19 +211,12 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
             }
         ]);
 
-        // 2. Trending Searches
         const topSearches = await SearchLog.find({ zeroResults: false })
-            .sort({ count: -1 })
-            .limit(5)
-            .select('query count');
+            .sort({ count: -1 }).limit(5).select('query count');
 
-        // 3. Content Gaps
         const contentGaps = await SearchLog.find({ zeroResults: true })
-            .sort({ count: -1 })
-            .limit(5)
-            .select('query count');
+            .sort({ count: -1 }).limit(5).select('query count');
 
-        // 4. Peak Hours
         const recentStats = await UserStats.find({ lastUpdated: { $gte: startOfDay } })
             .select('activityByHour')
             .limit(100); 
