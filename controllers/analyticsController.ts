@@ -80,6 +80,10 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
     // 3. Update User Stats (Personalization Profile)
     if (userId) {
         
+        // NEW: Apply Decay BEFORE adding fresh data
+        // This ensures the baseline is current before we increment it.
+        await statsService.applyInterestDecay(userId);
+
         // A. Prepare the Update Payload
         const userStatsUpdate: any = { 
             $inc: {}, 
