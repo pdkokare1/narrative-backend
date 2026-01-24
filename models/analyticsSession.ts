@@ -2,17 +2,18 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
 export interface IInteraction {
-  contentType: 'article' | 'narrative' | 'radio' | 'feed' | 'copy' | 'audio_action' | 'search';
+  contentType: 'article' | 'narrative' | 'radio' | 'feed' | 'copy' | 'audio_action' | 'search' | 'ui_interaction';
   contentId?: string;
   duration?: number; 
   scrollDepth?: number; 
   
-  // High-Fidelity Data
   text?: string; 
   audioAction?: 'skip' | 'pause' | 'complete' | 'start'; 
   
-  // NEW: Search Data
   query?: string;
+  
+  // NEW: Quarterly Retention (Array of seconds)
+  quarters?: number[]; 
 
   timestamp: Date;
 }
@@ -34,6 +35,9 @@ export interface IAnalyticsSession extends Document {
 
   interactions: IInteraction[];
   
+  // NEW: Aggregate retention across entire session
+  quarterlyRetention: number[]; // [Q1, Q2, Q3, Q4] in seconds
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -52,11 +56,14 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
   platform: String,
   userAgent: String,
   country: String,
+  
+  // NEW: Default to 0,0,0,0
+  quarterlyRetention: { type: [Number], default: [0, 0, 0, 0] },
 
   interactions: [{
     contentType: { 
       type: String, 
-      enum: ['article', 'narrative', 'radio', 'feed', 'copy', 'audio_action', 'search'] 
+      enum: ['article', 'narrative', 'radio', 'feed', 'copy', 'audio_action', 'search', 'ui_interaction'] 
     },
     contentId: String,
     duration: Number,
@@ -65,8 +72,10 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
     text: String,
     audioAction: { type: String, enum: ['skip', 'pause', 'complete', 'start'] },
     
-    // NEW Field
     query: String,
+    
+    // NEW
+    quarters: [Number],
     
     timestamp: { type: Date, default: Date.now }
   }]
