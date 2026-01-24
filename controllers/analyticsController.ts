@@ -47,7 +47,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         narrativeDuration: metrics.narrative || 0,
         feedDuration: metrics.feed || 0,
         
-        // NEW: Increment global quarters
+        // Increment global quarters
         'quarterlyRetention.0': payloadQuarters[0],
         'quarterlyRetention.1': payloadQuarters[1],
         'quarterlyRetention.2': payloadQuarters[2],
@@ -109,24 +109,25 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
                         if (wpm > 600) isSkimming = true;
                     }
                     
-                    // NEW: Rule 2: Quarter Check (Accumulate these in Redis too)
-                    // We check if they have now visited Q3 or Q4 significantly
+                    // Rule 2: Quarter Check
+                    // FIX: Use camelCase 'setBit' for Redis v4+
                     const qKey = `article_quarters:${userId}:${articleId}`;
-                    // Store simplistic bitmask: 1=visited
-                    if (quarters[2] > 2) await client.setbit(qKey, 2, 1);
-                    if (quarters[3] > 2) await client.setbit(qKey, 3, 1);
+                    if (quarters[2] > 2) await client.setBit(qKey, 2, 1);
+                    if (quarters[3] > 2) await client.setBit(qKey, 3, 1);
                     
                     // If they have accumulated > 30s AND hit Q3 or Q4, it's a True Read
-                    // We use a separate key to ensure we only credit "Read" once per article
                     const readCreditKey = `article_read_credited:${userId}:${articleId}`;
                     const alreadyCredited = await client.get(readCreditKey);
 
                     if (!alreadyCredited && !isSkimming && totalSecondsOnArticle > 30) {
-                        const hitDeep = await client.getbit(qKey, 3); // Checked Q4
+                        // FIX: Use camelCase 'getBit'
+                        const hitDeep = await client.getBit(qKey, 3); 
                         if (hitDeep === 1) {
                             // CREDIT THE READ
                             await UserStats.updateOne({ userId }, { $inc: { articlesReadCount: 1 } });
-                            await client.set(readCreditKey, '1', 'EX', 86400 * 30); // Don't credit again for a month
+                            
+                            // FIX: Use options object { EX: seconds } for Redis v4+
+                            await client.set(readCreditKey, '1', { EX: 86400 * 30 });
                         }
                     }
                 }
@@ -217,19 +218,24 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
         const contentGaps = await SearchLog.find({ zeroResults: true })
             .sort({ count: -1 }).limit(5).select('query count');
 
+        // FIX: Use .lean() to get Plain Objects, avoiding Mongoose Map issues
         const recentStats = await UserStats.find({ lastUpdated: { $gte: startOfDay } })
             .select('activityByHour')
-            .limit(100); 
+            .limit(100)
+            .lean(); 
 
         const hourlyActivity = new Array(24).fill(0);
-        recentStats.forEach(stat => {
+        
+        // FIX: safe iteration over POJO
+        recentStats.forEach((stat: any) => {
             if (stat.activityByHour) {
-                for (const [hour, seconds] of stat.activityByHour.entries()) {
+                Object.entries(stat.activityByHour).forEach(([hour, seconds]) => {
                     const h = parseInt(hour);
+                    const s = typeof seconds === 'number' ? seconds : 0;
                     if (!isNaN(h) && h >= 0 && h < 24) {
-                        hourlyActivity[h] += (seconds as number);
+                        hourlyActivity[h] += s;
                     }
-                }
+                });
             }
         });
 
