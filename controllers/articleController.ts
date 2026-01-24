@@ -2,6 +2,7 @@
 import { Request, Response, NextFunction } from 'express';
 import Article from '../models/articleModel'; 
 import articleService from '../services/articleService'; 
+import statsService from '../services/statsService'; // NEW Import
 import catchAsync from '../utils/asyncHandler'; 
 import AppError from '../utils/AppError'; 
 import { FeedFilters } from '../types';
@@ -19,7 +20,9 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
 
   const result = await articleService.searchArticles(query);
 
-  // FIXED: Structure matches Frontend expectations (articles & pagination)
+  // NEW: Log the search asynchronously (Fire & Forget)
+  statsService.logSearch(query, result.total).catch(err => console.error(err));
+
   res.status(200).json({
     status: 'success',
     pagination: { total: result.total },
@@ -29,9 +32,8 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
 
 // --- 3. Main Feed (Triple Zone) ---
 export const getMainFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  const userId = (req as any).user?.uid; // Optional Auth
+  const userId = (req as any).user?.uid; 
   
-  // Extract all potential filters for the service
   const filters: FeedFilters = {
     category: req.query.category as string,
     politicalLean: req.query.politicalLean as string,
@@ -42,7 +44,6 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
     offset: Number(req.query.offset) || 0,
     startDate: req.query.startDate as string,
     endDate: req.query.endDate as string,
-    // NEW: Topic Filter for InFocus Bar
     topic: req.query.topic as string 
   };
 
@@ -56,9 +57,8 @@ export const getMainFeed = catchAsync(async (req: Request, res: Response, next: 
   });
 });
 
-// --- 4. NEW: In Focus Feed (Narratives) ---
+// --- 4. In Focus Feed (Narratives) ---
 export const getInFocusFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
-  // FIXED: Pass pagination params (limit/offset) to service so infinite scroll works
   const filters: FeedFilters = { 
       category: req.query.category as string,
       limit: Number(req.query.limit) || 20,
@@ -77,7 +77,6 @@ export const getInFocusFeed = catchAsync(async (req: Request, res: Response, nex
 // --- 5. Balanced Feed (Anti-Echo Chamber) ---
 export const getBalancedFeed = catchAsync(async (req: Request, res: Response, next: NextFunction) => {
   const userId = (req as any).user?.uid; 
-  // This feed relies heavily on UserStats, so userId is critical if available
   const result = await articleService.getBalancedFeed(userId);
 
   res.status(200).json({
