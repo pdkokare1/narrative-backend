@@ -93,11 +93,26 @@ class StatsService {
         }
     }
 
-    // 4. Update User Personalization Vector (Moved from Route)
+    // 4. Update User Personalization Vector (Lazy Update)
     // Calculates the "Average Taste" based on last 50 reads
+    // OPTIMIZED: Uses Redis to throttle updates (1 update per 5 reads)
     async updateUserVector(userId: string) {
         try {
-            // A. Get last 50 viewed article IDs
+            // A. Throttling Check
+            if (redisClient.isReady()) {
+                const client = redisClient.getClient();
+                if (client) {
+                    const countKey = `vector_update_count:${userId}`;
+                    const count = await client.incr(countKey);
+                    
+                    // Only run logic every 5th call to save DB resources
+                    if (count % 5 !== 0) {
+                        return;
+                    }
+                }
+            }
+
+            // B. Get last 50 viewed article IDs
             const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
                 .sort({ timestamp: -1 })
                 .limit(50) 
@@ -107,7 +122,7 @@ class StatsService {
 
             const articleIds = recentLogs.map(log => log.articleId);
 
-            // B. Fetch embeddings for these articles
+            // C. Fetch embeddings for these articles
             const articles = await Article.find({ 
                 _id: { $in: articleIds },
                 embedding: { $exists: true, $not: { $size: 0 } }
@@ -115,7 +130,7 @@ class StatsService {
 
             if (articles.length === 0) return;
 
-            // C. Calculate Average Vector (Centroid)
+            // D. Calculate Average Vector (Centroid)
             const vectorLength = articles[0].embedding!.length;
             const avgVector = new Array(vectorLength).fill(0);
 
@@ -131,7 +146,7 @@ class StatsService {
                 avgVector[i] = avgVector[i] / articles.length;
             }
 
-            // D. Update Profile
+            // E. Update Profile
             await Profile.updateOne({ userId }, { userEmbedding: avgVector });
             // logger.info(`🧠 User Vector Updated for ${userId}`);
 
