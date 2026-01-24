@@ -8,58 +8,13 @@ import Article from '../models/articleModel';
 import Profile from '../models/profileModel';
 import gamificationService from '../services/gamificationService';
 import ttsService from '../services/ttsService'; 
+import statsService from '../services/statsService'; // NEW: Import Stats Service
 import { checkAuth } from '../middleware/authMiddleware'; 
 
 const router = express.Router();
 
 // Apply Auth Middleware to all routes
 router.use(checkAuth); 
-
-// --- HELPER: Update User Personalization Vector ---
-// Calculates the "Average Taste" based on last 50 reads
-async function updateUserVector(userId: string) {
-    try {
-        // 1. Get last 50 viewed article IDs
-        const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
-            .sort({ timestamp: -1 })
-            .limit(50) 
-            .select('articleId');
-
-        if (recentLogs.length === 0) return;
-
-        const articleIds = recentLogs.map(log => log.articleId);
-
-        // 2. Fetch embeddings for these articles
-        const articles = await Article.find({ 
-            _id: { $in: articleIds },
-            embedding: { $exists: true, $not: { $size: 0 } }
-        }).select('embedding');
-
-        if (articles.length === 0) return;
-
-        // 3. Calculate Average Vector (Centroid)
-        const vectorLength = articles[0].embedding!.length;
-        const avgVector = new Array(vectorLength).fill(0);
-
-        articles.forEach(article => {
-            const vec = article.embedding!;
-            for (let i = 0; i < vectorLength; i++) {
-                avgVector[i] += vec[i];
-            }
-        });
-
-        // Divide by count to get average
-        for (let i = 0; i < vectorLength; i++) {
-            avgVector[i] = avgVector[i] / articles.length;
-        }
-
-        // 4. Update Profile
-        await Profile.updateOne({ userId }, { userEmbedding: avgVector });
-
-    } catch (error) {
-        console.error("❌ Vector Update Failed:", error);
-    }
-}
 
 // --- 1. Log View (Analysis) ---
 router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req: Request, res: Response) => {
@@ -69,7 +24,7 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
     // Log Action
     await ActivityLog.create({ userId, articleId, action: 'view_analysis' });
     
-    // Update User Stats
+    // Update User Stats (Profile Counter)
     await Profile.findOneAndUpdate({ userId }, { $inc: { articlesViewedCount: 1 } });
     
     // --- SMART AUDIO PRE-FETCH ---
@@ -91,7 +46,8 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
     })();
 
     // --- UPDATE PERSONALIZATION VECTOR ---
-    updateUserVector(userId).catch(err => console.error(err));
+    // Moved to Service to keep route clean. Fire and forget.
+    statsService.updateUserVector(userId).catch(err => console.error(err));
 
     // Check for Badges
     const streakBadge = await gamificationService.updateStreak(userId);
@@ -135,15 +91,11 @@ router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req:
     await ActivityLog.create({ userId, articleId, action: 'read_external' });
     
     // Also update vector on external read
-    updateUserVector(userId).catch(err => console.error(err));
+    statsService.updateUserVector(userId).catch(err => console.error(err));
 
     const newBadge = await gamificationService.updateStreak(userId);
 
     res.status(200).json({ message: 'Logged read', newBadge });
 }));
-
-// --- REMOVED: Heartbeat (Redundant) ---
-// The heartbeat logic has been moved to analyticsController.ts (trackActivity)
-// to ensure a single source of truth and prevent data disconnects.
 
 export default router;
