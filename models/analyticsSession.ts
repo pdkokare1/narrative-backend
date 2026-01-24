@@ -2,36 +2,36 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
 export interface IInteraction {
-  contentType: 'article' | 'narrative' | 'radio' | 'feed' | 'copy' | 'audio_action';
+  contentType: 'article' | 'narrative' | 'radio' | 'feed' | 'copy' | 'audio_action' | 'search';
   contentId?: string;
-  duration?: number; // Seconds spent (for views)
-  scrollDepth?: number; // Percentage (0-100)
+  duration?: number; 
+  scrollDepth?: number; 
   
-  // NEW: High-Fidelity Data
-  text?: string; // The text they copied
-  audioAction?: 'skip' | 'pause' | 'complete' | 'start'; // The specific audio behavior
+  // High-Fidelity Data
+  text?: string; 
+  audioAction?: 'skip' | 'pause' | 'complete' | 'start'; 
   
+  // NEW: Search Data
+  query?: string;
+
   timestamp: Date;
 }
 
 export interface IAnalyticsSession extends Document {
-  userId?: string;     // Optional: specific user ID if logged in
-  sessionId: string;   // Required: Unique ID for this browser session
-  date: Date;          // For daily aggregation
+  userId?: string;     
+  sessionId: string;   
+  date: Date;          
   
-  // Aggregate Metrics (Seconds)
   totalDuration: number;
   articleDuration: number;
   radioDuration: number;
   narrativeDuration: number;
   feedDuration: number;
 
-  // The Device/User Info
-  platform: string;    // 'web', 'ios', 'android'
+  platform: string;    
   userAgent: string;
   country?: string;
 
-  // Granular Log
   interactions: IInteraction[];
   
   createdAt: Date;
@@ -56,15 +56,17 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
   interactions: [{
     contentType: { 
       type: String, 
-      enum: ['article', 'narrative', 'radio', 'feed', 'copy', 'audio_action'] 
+      enum: ['article', 'narrative', 'radio', 'feed', 'copy', 'audio_action', 'search'] 
     },
     contentId: String,
     duration: Number,
     scrollDepth: Number,
     
-    // NEW Fields
     text: String,
     audioAction: { type: String, enum: ['skip', 'pause', 'complete', 'start'] },
+    
+    // NEW Field
+    query: String,
     
     timestamp: { type: Date, default: Date.now }
   }]
