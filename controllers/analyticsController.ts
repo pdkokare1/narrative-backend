@@ -38,14 +38,14 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         });
     }
 
-    // 2. Update Session Analytics
+    // 2. Update Session Analytics (Raw Logs)
     const updateOps: any = {
       $inc: {
-        totalDuration: metrics.total || 0,
-        articleDuration: metrics.article || 0,
-        radioDuration: metrics.radio || 0,
-        narrativeDuration: metrics.narrative || 0,
-        feedDuration: metrics.feed || 0,
+        totalDuration: metrics?.total || 0,
+        articleDuration: metrics?.article || 0,
+        radioDuration: metrics?.radio || 0,
+        narrativeDuration: metrics?.narrative || 0,
+        feedDuration: metrics?.feed || 0,
         
         // Increment global quarters
         'quarterlyRetention.0': payloadQuarters[0],
@@ -77,91 +77,112 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       { upsert: true, new: true }
     );
 
-    // 3. Consolidate UserStats Logic
-    if (userId && metrics.article > 0) {
+    // 3. Update User Stats (Personalization Profile)
+    if (userId) {
         
-        const articleInteraction = interactions?.find((i: any) => 
-            i.contentType === 'article' && i.contentId
-        );
+        // A. Prepare the Update Payload
+        const userStatsUpdate: any = { 
+            $inc: {}, 
+            $set: { lastUpdated: new Date() } 
+        };
+        let hasUpdates = false;
 
-        if (articleInteraction && articleInteraction.contentId) {
-            const seconds = metrics.article;
-            const articleId = articleInteraction.contentId;
-            const wordCount = articleInteraction.wordCount || 0; 
-            const quarters = articleInteraction.quarters || [0,0,0,0];
+        // B. Process "Time Spent" on Articles
+        if (metrics?.article > 0) {
+            const articleInteraction = interactions?.find((i: any) => 
+                i.contentType === 'article' && i.contentId
+            );
 
-            let isSkimming = false;
-            let totalSecondsOnArticle = seconds; 
+            if (articleInteraction && articleInteraction.contentId) {
+                const seconds = metrics.article;
+                const articleId = articleInteraction.contentId;
+                const wordCount = articleInteraction.wordCount || 0; 
+                const quarters = articleInteraction.quarters || [0,0,0,0];
 
-            // --- REDIS CACHE for Accumulation ---
-            if (redisClient.isReady()) {
-                const client = redisClient.getClient();
-                if (client) {
-                    const key = `article_time:${userId}:${articleId}`;
-                    totalSecondsOnArticle = await client.incrBy(key, seconds);
-                    await client.expire(key, 86400); 
+                let isSkimming = false;
+                let totalSecondsOnArticle = seconds; 
 
-                    // --- TRUE READ VALIDATION ---
-                    // Rule 1: WPM Check
-                    if (wordCount > 50 && totalSecondsOnArticle > 5) {
-                        const minutes = totalSecondsOnArticle / 60;
-                        const wpm = wordCount / minutes;
-                        if (wpm > 600) isSkimming = true;
-                    }
-                    
-                    // Rule 2: Quarter Check
-                    // FIX: Use camelCase 'setBit' for Redis v4+
-                    const qKey = `article_quarters:${userId}:${articleId}`;
-                    if (quarters[2] > 2) await client.setBit(qKey, 2, 1);
-                    if (quarters[3] > 2) await client.setBit(qKey, 3, 1);
-                    
-                    // If they have accumulated > 30s AND hit Q3 or Q4, it's a True Read
-                    const readCreditKey = `article_read_credited:${userId}:${articleId}`;
-                    const alreadyCredited = await client.get(readCreditKey);
+                // --- REDIS CACHE for Accumulation ---
+                if (redisClient.isReady()) {
+                    const client = redisClient.getClient();
+                    if (client) {
+                        const key = `article_time:${userId}:${articleId}`;
+                        totalSecondsOnArticle = await client.incrBy(key, seconds);
+                        await client.expire(key, 86400); 
 
-                    if (!alreadyCredited && !isSkimming && totalSecondsOnArticle > 30) {
-                        // FIX: Use camelCase 'getBit'
-                        const hitDeep = await client.getBit(qKey, 3); 
-                        if (hitDeep === 1) {
-                            // CREDIT THE READ
-                            await UserStats.updateOne({ userId }, { $inc: { articlesReadCount: 1 } });
-                            
-                            // FIX: Use options object { EX: seconds } for Redis v4+
-                            await client.set(readCreditKey, '1', { EX: 86400 * 30 });
+                        // --- TRUE READ VALIDATION ---
+                        // Rule 1: WPM Check
+                        if (wordCount > 50 && totalSecondsOnArticle > 5) {
+                            const minutes = totalSecondsOnArticle / 60;
+                            const wpm = wordCount / minutes;
+                            if (wpm > 600) isSkimming = true;
+                        }
+                        
+                        // Rule 2: Quarter Check
+                        const qKey = `article_quarters:${userId}:${articleId}`;
+                        if (quarters[2] > 2) await client.setBit(qKey, 2, 1);
+                        if (quarters[3] > 2) await client.setBit(qKey, 3, 1);
+                        
+                        // If they have accumulated > 30s AND hit Q3 or Q4, it's a True Read
+                        const readCreditKey = `article_read_credited:${userId}:${articleId}`;
+                        const alreadyCredited = await client.get(readCreditKey);
+
+                        if (!alreadyCredited && !isSkimming && totalSecondsOnArticle > 30) {
+                            const hitDeep = await client.getBit(qKey, 3); 
+                            if (hitDeep === 1) {
+                                // CREDIT THE READ
+                                await UserStats.updateOne({ userId }, { $inc: { articlesReadCount: 1 } });
+                                await client.set(readCreditKey, '1', { EX: 86400 * 30 });
+                            }
                         }
                     }
                 }
-            }
 
-            // Lookup Category & Lean
-            const article = await Article.findById(articleId)
-                .select('category lean_bias');
+                // Lookup Category & Lean to update Interest Profile
+                const article = await Article.findById(articleId).select('category lean_bias');
 
-            if (article) {
-                const category = article.category || 'General';
-                const lean = (article as any).lean_bias || 'Center';
-                const currentHour = new Date().getHours(); 
+                if (article) {
+                    const category = article.category || 'General';
+                    const lean = (article as any).lean_bias || 'Center';
+                    const currentHour = new Date().getHours(); 
 
-                const updatePayload: any = {
-                    $inc: {
-                        totalTimeSpent: seconds, 
-                        [`activityByHour.${currentHour}`]: seconds 
-                    },
-                    $set: { lastUpdated: new Date() }
-                };
+                    userStatsUpdate.$inc.totalTimeSpent = seconds;
+                    userStatsUpdate.$inc[`activityByHour.${currentHour}`] = seconds;
 
-                // Only add to Interest Profile if not skimming
-                if (!isSkimming) {
-                    updatePayload.$inc[`topicInterest.${category}`] = seconds;
-                    updatePayload.$inc[`leanExposure.${lean}`] = seconds;
+                    // Only add to Interest Profile if not skimming
+                    if (!isSkimming) {
+                        userStatsUpdate.$inc[`topicInterest.${category}`] = seconds;
+                        userStatsUpdate.$inc[`leanExposure.${lean}`] = seconds;
+                    }
+                    hasUpdates = true;
                 }
-
-                await UserStats.findOneAndUpdate(
-                    { userId },
-                    updatePayload,
-                    { upsert: true }
-                );
             }
+        }
+
+        // C. Process "Impressions" (Negative/Passive Interest)
+        // This runs even if they didn't click anything (just scrolling feed)
+        if (interactions && interactions.length > 0) {
+            interactions.forEach((i: any) => {
+                if (i.contentType === 'impression' && i.text) {
+                    // text format is "Type:Category" (e.g., "Article:Technology")
+                    const parts = i.text.split(':');
+                    if (parts.length === 2) {
+                        const category = parts[1];
+                        // Increment negative interest count
+                        userStatsUpdate.$inc[`negativeInterest.${category}`] = 1;
+                        hasUpdates = true;
+                    }
+                }
+            });
+        }
+
+        // D. Execute Single Update
+        if (hasUpdates) {
+             await UserStats.findOneAndUpdate(
+                { userId },
+                userStatsUpdate,
+                { upsert: true }
+             );
         }
     }
 
