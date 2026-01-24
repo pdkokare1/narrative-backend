@@ -4,27 +4,26 @@ import mongoose, { Document, Schema } from 'mongoose';
 export interface IUserStats extends Document {
   userId: string;
   totalTimeSpent: number; // in seconds
+  
+  // NEW: Quality Metric
+  articlesReadCount: number; // Only counts "True Reads"
+
   averageAttentionSpan: number; // in seconds
   
-  // The "Echo Chamber" Meter (Minutes spent)
   leanExposure: {
     Left: number;
     Center: number;
     Right: number;
   };
 
-  // Topic Velocity (Minutes spent per category)
   topicInterest: {
     [category: string]: number;
   };
 
-  // NEW: Dayparting (Habit Tracking)
-  // Map of "Hour (0-23)" -> Minutes Spent
   activityByHour: {
     [hour: string]: number;
   };
   
-  // Derived Engagement
   engagementScore: number; // 0-100
   lastUpdated: Date;
 }
@@ -32,6 +31,10 @@ export interface IUserStats extends Document {
 const userStatsSchema = new Schema<IUserStats>({
   userId: { type: String, required: true, unique: true, index: true },
   totalTimeSpent: { type: Number, default: 0 },
+  
+  // NEW: Default 0
+  articlesReadCount: { type: Number, default: 0 },
+
   averageAttentionSpan: { type: Number, default: 0 },
   
   leanExposure: {
@@ -42,7 +45,6 @@ const userStatsSchema = new Schema<IUserStats>({
   
   topicInterest: { type: Map, of: Number, default: {} },
 
-  // NEW: Activity Histogram
   activityByHour: { type: Map, of: Number, default: {} },
   
   engagementScore: { type: Number, default: 50 },
