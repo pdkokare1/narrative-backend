@@ -2,10 +2,15 @@
 import mongoose, { Schema, Document, Model } from 'mongoose';
 
 export interface IInteraction {
-  contentType: 'article' | 'narrative' | 'radio' | 'feed';
+  contentType: 'article' | 'narrative' | 'radio' | 'feed' | 'copy' | 'audio_action';
   contentId?: string;
-  duration: number; // Seconds spent in this specific interaction
-  scrollDepth?: number; // NEW: Percentage (0-100) of content viewed
+  duration?: number; // Seconds spent (for views)
+  scrollDepth?: number; // Percentage (0-100)
+  
+  // NEW: High-Fidelity Data
+  text?: string; // The text they copied
+  audioAction?: 'skip' | 'pause' | 'complete' | 'start'; // The specific audio behavior
+  
   timestamp: Date;
 }
 
@@ -26,7 +31,7 @@ export interface IAnalyticsSession extends Document {
   userAgent: string;
   country?: string;
 
-  // Granular Log (Optional - stores the sequence)
+  // Granular Log
   interactions: IInteraction[];
   
   createdAt: Date;
@@ -49,10 +54,18 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
   country: String,
 
   interactions: [{
-    contentType: { type: String, enum: ['article', 'narrative', 'radio', 'feed'] },
+    contentType: { 
+      type: String, 
+      enum: ['article', 'narrative', 'radio', 'feed', 'copy', 'audio_action'] 
+    },
     contentId: String,
     duration: Number,
-    scrollDepth: Number, // NEW field
+    scrollDepth: Number,
+    
+    // NEW Fields
+    text: String,
+    audioAction: { type: String, enum: ['skip', 'pause', 'complete', 'start'] },
+    
     timestamp: { type: Date, default: Date.now }
   }]
 }, {
