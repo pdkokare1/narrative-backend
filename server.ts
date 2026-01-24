@@ -22,6 +22,7 @@ import { apiLimiter } from './middleware/rateLimiters';
 // Routes
 import apiRouter from './routes/index'; 
 import shareRoutes from './routes/shareRoutes'; 
+import analyticsRoutes from './routes/analyticsRoutes'; // <--- NEW IMPORT
 
 const app = express();
 
@@ -100,6 +101,10 @@ app.use('/api/v1/', apiLimiter);
 // FIX: Mount share routes at BOTH root and /api to handle different URL constructions
 app.use('/share', shareRoutes); 
 app.use('/api/share', shareRoutes);
+
+// NEW: Analytics Routes (Mounted before generic API router to avoid conflicts)
+app.use('/api/analytics', analyticsRoutes); 
+app.use('/api/v1/analytics', analyticsRoutes);
 
 app.use('/api/v1', apiRouter);
 // Fallback
