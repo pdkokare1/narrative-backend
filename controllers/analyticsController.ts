@@ -190,6 +190,48 @@ export const linkSession = async (req: Request, res: Response, next: NextFunctio
     }
 };
 
+// NEW: Get User Stats for Dashboard
+// @desc    Get Personalized User Stats
+// @route   GET /api/analytics/user-stats
+// @access  Private
+export const getUserStats = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        // Authenticated user ID from Request (via Middleware) or Query param as fallback
+        const userId = (req as any).user?.uid || req.query.userId;
+        
+        if (!userId) {
+             res.status(400).json({ status: 'error', message: 'User ID required' });
+             return;
+        }
+
+        const stats = await UserStats.findOne({ userId });
+        
+        // Calculate percentages for the UI
+        let leanPercentages = { Left: 0, Center: 0, Right: 0 };
+        if (stats && stats.leanExposure) {
+            const total = (stats.leanExposure.Left || 0) + (stats.leanExposure.Center || 0) + (stats.leanExposure.Right || 0);
+            if (total > 0) {
+                leanPercentages = {
+                    Left: Math.round((stats.leanExposure.Left / total) * 100),
+                    Center: Math.round((stats.leanExposure.Center / total) * 100),
+                    Right: Math.round((stats.leanExposure.Right / total) * 100)
+                };
+            }
+        }
+
+        res.status(200).json({
+            status: 'success',
+            data: {
+                ...(stats ? stats.toObject() : {}),
+                leanPercentages
+            }
+        });
+
+    } catch (error) {
+        next(error);
+    }
+};
+
 // @desc    Get Quick Stats (For Admin Overview)
 // @route   GET /api/analytics/overview
 // @access  Admin
