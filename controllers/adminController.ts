@@ -6,7 +6,8 @@ import Profile from '../models/profileModel';
 import SystemConfig from '../models/systemConfigModel';
 import ActivityLog from '../models/activityLogModel';
 import Narrative from '../models/narrativeModel';
-import AnalyticsSession from '../models/analyticsSession'; // NEW IMPORT
+import AnalyticsSession from '../models/analyticsSession'; 
+import UserStats from '../models/userStatsModel'; // NEW IMPORT
 import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
 import logger from '../utils/logger';
@@ -26,31 +27,48 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
       SystemConfig.countDocuments({})
     ]);
 
-    // 2. Chart Data: Activity over last 7 days
     const sevenDaysAgo = new Date();
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
-    const activityStats = await ActivityLog.aggregate([
-      { $match: { timestamp: { $gte: sevenDaysAgo } } },
+    // 2. NEW: Engagement Split Graph (Reading vs Listening)
+    // We sum up duration per day for the last 7 days
+    const engagementStats = await AnalyticsSession.aggregate([
+      { $match: { date: { $gte: sevenDaysAgo } } },
       {
         $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-          count: { $sum: 1 }
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$date" } },
+          reading: { $sum: "$articleDuration" },
+          listening: { $sum: "$radioDuration" }
         }
       },
       { $sort: { _id: 1 } }
     ]);
 
-    // --- NEW: DEEP ENGAGEMENT METRICS (Last 7 Days) ---
+    // 3. NEW: Political Compass Data (Pie Chart)
+    // Summing up total minutes spent on Left/Center/Right across ALL users
+    const leanAgg = await UserStats.aggregate([
+        {
+          $group: {
+              _id: null,
+              left: { $sum: "$leanExposure.Left" },
+              center: { $sum: "$leanExposure.Center" },
+              right: { $sum: "$leanExposure.Right" }
+          }
+        }
+    ]);
+    // Default to 0 if no stats exist yet
+    const leanData = leanAgg[0] || { left: 0, center: 0, right: 0 };
+
+    // 4. Deep Engagement Metrics (Avg Session, Scroll, Retention)
     
-    // A. Average Session Time (Real Attention)
+    // A. Average Session Time
     const sessionTimeAgg = await AnalyticsSession.aggregate([
         { $match: { date: { $gte: sevenDaysAgo } } },
         { $group: { _id: null, avgTime: { $avg: "$totalDuration" } } }
     ]);
     const avgSessionTime = sessionTimeAgg[0]?.avgTime || 0;
 
-    // B. Average Scroll Depth (Content Depth)
+    // B. Average Scroll Depth
     const scrollDepthAgg = await AnalyticsSession.aggregate([
         { $match: { date: { $gte: sevenDaysAgo } } },
         { $unwind: "$interactions" },
@@ -62,7 +80,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
     ]);
     const avgScrollDepth = scrollDepthAgg[0]?.avgDepth || 0;
 
-    // C. Audio Stickiness (Retention Rate)
+    // C. Audio Stickiness
     const audioStatsAgg = await AnalyticsSession.aggregate([
         { $match: { date: { $gte: sevenDaysAgo } } },
         { $unwind: "$interactions" },
@@ -91,12 +109,19 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
           systemConfigs: configCount,
           systemStatus: 'Operational', 
           databaseStatus: 'Connected',
-          // New Metrics
+          // Metrics
           avgSessionTime: Math.round(avgSessionTime),
           avgScrollDepth: Math.round(avgScrollDepth),
           audioRetention
         },
-        chartData: activityStats
+        // Updated Graph Data Structure
+        graphData: engagementStats, 
+        // New Pie Data
+        leanData: { 
+            left: Math.round(leanData.left / 60), // Convert seconds to minutes
+            center: Math.round(leanData.center / 60),
+            right: Math.round(leanData.right / 60)
+        }
       }
     });
   } catch (error) {
