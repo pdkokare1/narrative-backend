@@ -16,7 +16,13 @@ export interface IUserStats extends Document {
     Right: number;
   };
 
+  // Topics they click/read
   topicInterest: {
+    [category: string]: number;
+  };
+
+  // NEW: Topics they see but IGNORE (Survivorship Bias Fix)
+  negativeInterest: {
     [category: string]: number;
   };
 
@@ -44,6 +50,9 @@ const userStatsSchema = new Schema<IUserStats>({
   },
   
   topicInterest: { type: Map, of: Number, default: {} },
+  
+  // NEW: Negative Interest Map
+  negativeInterest: { type: Map, of: Number, default: {} },
 
   activityByHour: { type: Map, of: Number, default: {} },
   
