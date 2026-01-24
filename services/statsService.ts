@@ -2,7 +2,8 @@
 import Article from '../models/articleModel';
 import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
-import SearchLog from '../models/searchLogModel'; // NEW Import
+import SearchLog from '../models/searchLogModel';
+import UserStats, { IUserStats } from '../models/userStatsModel'; // Updated Import
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
 
@@ -151,7 +152,7 @@ class StatsService {
         }
     }
 
-    // 5. NEW: Log Search Query
+    // 5. Log Search Query
     async logSearch(query: string, resultCount: number) {
         try {
             const normalized = query.toLowerCase().trim();
@@ -174,6 +175,72 @@ class StatsService {
             );
         } catch (error) {
             logger.error("❌ Search Log Failed:", error);
+        }
+    }
+
+    // 6. NEW: Apply Recency Decay (The "Time Fade" Protocol)
+    // Ensures old interests fade over time so the profile adapts to new habits.
+    async applyInterestDecay(userId: string) {
+        try {
+            const stats = await UserStats.findOne({ userId });
+            if (!stats) return;
+
+            const lastUpdate = new Date(stats.lastUpdated).getTime();
+            const now = Date.now();
+            const hoursSinceUpdate = (now - lastUpdate) / (1000 * 60 * 60);
+
+            // Only run decay if at least 24 hours have passed to save DB ops
+            if (hoursSinceUpdate < 24) return;
+
+            const daysPassed = Math.floor(hoursSinceUpdate / 24);
+            // Decay Factor: 5% decay per day (0.95 ^ days)
+            // Example: After 7 days, value is ~70% of original. After 30 days, ~21%.
+            const decayFactor = Math.pow(0.95, daysPassed);
+
+            // A. Decay Lean Exposure (Object)
+            if (stats.leanExposure) {
+                stats.leanExposure.Left = Math.round((stats.leanExposure.Left || 0) * decayFactor);
+                stats.leanExposure.Center = Math.round((stats.leanExposure.Center || 0) * decayFactor);
+                stats.leanExposure.Right = Math.round((stats.leanExposure.Right || 0) * decayFactor);
+            }
+
+            // B. Decay Topic Interest (Map)
+            // We use Mongoose Map iteration
+            if (stats.topicInterest) {
+                stats.topicInterest.forEach((value, key) => {
+                    const newValue = Math.round(value * decayFactor);
+                    // PRUNING: If interest drops below 10 seconds, remove it to keep doc clean
+                    if (newValue < 10) {
+                        stats.topicInterest.delete(key);
+                    } else {
+                        stats.topicInterest.set(key, newValue);
+                    }
+                });
+            }
+
+            // C. Decay Negative Interest (Survivorship Bias Map)
+            if (stats.negativeInterest) {
+                stats.negativeInterest.forEach((value, key) => {
+                    const newValue = Math.round(value * decayFactor);
+                    // Prune negatives faster (if < 5 interactions, forget it)
+                    if (newValue < 5) {
+                        stats.negativeInterest.delete(key);
+                    } else {
+                        stats.negativeInterest.set(key, newValue);
+                    }
+                });
+            }
+
+            // Mark as modified since we are mutating Maps directly
+            stats.lastUpdated = new Date();
+            stats.markModified('topicInterest');
+            stats.markModified('negativeInterest');
+            
+            await stats.save();
+            // logger.info(`📉 Applied decay to user ${userId} (Factor: ${decayFactor.toFixed(2)})`);
+
+        } catch (error) {
+            logger.error("❌ Decay Update Failed:", error);
         }
     }
 }
