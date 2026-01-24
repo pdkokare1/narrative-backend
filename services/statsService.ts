@@ -2,6 +2,7 @@
 import Article from '../models/articleModel';
 import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
+import SearchLog from '../models/searchLogModel'; // NEW Import
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
 
@@ -94,18 +95,15 @@ class StatsService {
     }
 
     // 4. Update User Personalization Vector (Lazy Update)
-    // Calculates the "Average Taste" based on last 50 reads
-    // OPTIMIZED: Uses Redis to throttle updates (1 update per 5 reads)
     async updateUserVector(userId: string) {
         try {
-            // A. Throttling Check
+            // A. Throttling Check (From Previous Step)
             if (redisClient.isReady()) {
                 const client = redisClient.getClient();
                 if (client) {
                     const countKey = `vector_update_count:${userId}`;
                     const count = await client.incr(countKey);
                     
-                    // Only run logic every 5th call to save DB resources
                     if (count % 5 !== 0) {
                         return;
                     }
@@ -122,7 +120,7 @@ class StatsService {
 
             const articleIds = recentLogs.map(log => log.articleId);
 
-            // C. Fetch embeddings for these articles
+            // C. Fetch embeddings
             const articles = await Article.find({ 
                 _id: { $in: articleIds },
                 embedding: { $exists: true, $not: { $size: 0 } }
@@ -130,7 +128,7 @@ class StatsService {
 
             if (articles.length === 0) return;
 
-            // D. Calculate Average Vector (Centroid)
+            // D. Calculate Centroid
             const vectorLength = articles[0].embedding!.length;
             const avgVector = new Array(vectorLength).fill(0);
 
@@ -141,17 +139,41 @@ class StatsService {
                 }
             });
 
-            // Divide by count to get average
             for (let i = 0; i < vectorLength; i++) {
                 avgVector[i] = avgVector[i] / articles.length;
             }
 
             // E. Update Profile
             await Profile.updateOne({ userId }, { userEmbedding: avgVector });
-            // logger.info(`🧠 User Vector Updated for ${userId}`);
 
         } catch (error) {
             logger.error("❌ Vector Update Failed:", error);
+        }
+    }
+
+    // 5. NEW: Log Search Query
+    async logSearch(query: string, resultCount: number) {
+        try {
+            const normalized = query.toLowerCase().trim();
+            if (normalized.length < 2) return;
+
+            // Upsert the log: Increment count, update last searched
+            await SearchLog.findOneAndUpdate(
+                { normalizedQuery: normalized },
+                { 
+                    $inc: { count: 1 },
+                    $set: { 
+                        query: query, // Keep most recent casing
+                        lastSearched: new Date(),
+                        zeroResults: resultCount === 0,
+                        // Simple moving average for result count (approx)
+                        resultCountAvg: resultCount 
+                    }
+                },
+                { upsert: true }
+            );
+        } catch (error) {
+            logger.error("❌ Search Log Failed:", error);
         }
     }
 }
