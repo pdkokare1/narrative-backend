@@ -5,6 +5,7 @@ import Article from '../models/articleModel';
 import Profile from '../models/profileModel'; 
 import SystemConfig from '../models/systemConfigModel';
 import ActivityLog from '../models/activityLogModel';
+import Narrative from '../models/narrativeModel'; // NEW IMPORT
 import AppError from '../utils/AppError';
 import { CONSTANTS } from '../utils/constants';
 import logger from '../utils/logger';
@@ -58,7 +59,7 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
   }
 };
 
-// --- ACTIVITY LOGS (NEW) ---
+// --- ACTIVITY LOGS ---
 
 // @desc    Get Activity Logs (Paginated)
 // @route   GET /api/admin/logs
@@ -419,7 +420,7 @@ export const toggleArticleVisibility = async (req: Request, res: Response, next:
   }
 };
 
-// --- USER MANAGEMENT (Batch 2) ---
+// --- USER MANAGEMENT ---
 
 // @desc    Get All Users (Searchable)
 // @route   GET /api/admin/users
@@ -521,7 +522,7 @@ export const updateUserStatus = async (req: Request, res: Response, next: NextFu
   }
 };
 
-// --- SYSTEM CONFIGURATION (Batch 2) ---
+// --- SYSTEM CONFIGURATION ---
 
 // @desc    Get System Configs
 // @route   GET /api/admin/config
@@ -574,4 +575,87 @@ export const updateSystemConfig = async (req: Request, res: Response, next: Next
   } catch (error) {
     next(error);
   }
+};
+
+// --- NARRATIVE MANAGEMENT (NEW) ---
+
+// @desc    Get All Narratives
+// @route   GET /api/admin/narratives
+// @access  Admin
+export const getAllNarratives = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const skip = (page - 1) * limit;
+
+        // Sort by lastUpdated to see newest stories first
+        const narratives = await Narrative.find({})
+            .sort({ lastUpdated: -1 })
+            .skip(skip)
+            .limit(limit);
+
+        const total = await Narrative.countDocuments({});
+
+        res.status(200).json({
+            status: 'success',
+            results: narratives.length,
+            total,
+            page,
+            pages: Math.ceil(total / limit),
+            data: { narratives }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// @desc    Get Single Narrative
+// @route   GET /api/admin/narratives/:id
+// @access  Admin
+export const getNarrativeById = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = req.params;
+        const narrative = await Narrative.findById(id);
+
+        if (!narrative) {
+            return next(new AppError('Narrative not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
+        }
+
+        res.status(200).json({
+            status: 'success',
+            data: { narrative }
+        });
+    } catch (error) {
+        next(error);
+    }
+};
+
+// @desc    Update Narrative Content
+// @route   PATCH /api/admin/narratives/:id
+// @access  Admin
+export const updateNarrative = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { id } = req.params;
+        const updates = req.body;
+
+        delete updates._id; // Prevent ID tampering
+
+        const narrative = await Narrative.findByIdAndUpdate(id, updates, {
+            new: true,
+            runValidators: true
+        });
+
+        if (!narrative) {
+            return next(new AppError('Narrative not found', 404, CONSTANTS.ERROR_CODES.NOT_FOUND));
+        }
+
+        logger.info(`Admin ${req.user?.uid || 'Unknown'} updated narrative: ${id}`);
+
+        res.status(200).json({
+            status: 'success',
+            data: { narrative }
+        });
+    } catch (error) {
+        next(error);
+    }
 };
