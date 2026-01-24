@@ -1,5 +1,6 @@
 // services/gamificationService.ts
 import Profile from '../models/profileModel';
+import UserStats from '../models/userStatsModel';
 import { IBadge } from '../types';
 
 class GamificationService {
@@ -42,7 +43,12 @@ class GamificationService {
         await profile.save();
         
         // Check for Streak Badges
-        return await this.checkStreakBadges(profile);
+        const streakBadge = await this.checkStreakBadges(profile);
+        
+        // Check for Perspective Badge (Async, don't block)
+        this.checkPerspectiveBadge(userId);
+
+        return streakBadge;
     }
 
     // --- 2. Badge Logic ---
@@ -107,6 +113,39 @@ class GamificationService {
         
         if (awardedBadge) await profile.save();
         return awardedBadge;
+    }
+
+    // --- 3. Perspective Hunter Badge ---
+    // Rewards users for reading across the political spectrum
+    async checkPerspectiveBadge(userId: string): Promise<void> {
+        try {
+            const stats = await UserStats.findOne({ userId });
+            if (!stats) return;
+
+            // Threshold: 10 minutes (600 seconds) on BOTH sides
+            const THRESHOLD = 600; 
+
+            const left = stats.leanExposure?.Left || 0;
+            const right = stats.leanExposure?.Right || 0;
+
+            if (left > THRESHOLD && right > THRESHOLD) {
+                const profile = await Profile.findOne({ userId });
+                if (profile && !profile.badges.some((b: IBadge) => b.id === 'perspective_hunter')) {
+                    const newBadge = {
+                        id: 'perspective_hunter',
+                        label: 'Perspective Hunter',
+                        icon: '⚖️',
+                        description: 'Read over 10 mins of both Left and Right perspectives.',
+                        earnedAt: new Date()
+                    };
+                    profile.badges.push(newBadge);
+                    await profile.save();
+                    console.log(`🏆 Badge Awarded: Perspective Hunter for ${userId}`);
+                }
+            }
+        } catch (err) {
+            console.error('Error checking perspective badge:', err);
+        }
     }
 }
 
