@@ -132,9 +132,29 @@ export const getUserStats = async (req: Request, res: Response, next: NextFuncti
                 totalTimeSpent: 0,
                 articlesReadCount: 0,
                 averageAttentionSpan: 0,
-                engagementScore: 0
+                engagementScore: 0,
+                dailyStats: {
+                    date: new Date(),
+                    timeSpent: 0,
+                    articlesRead: 0,
+                    goalsMet: false
+                }
             });
             return;
+        }
+
+        // LAZY RESET: If dailyStats is from yesterday, show 0 to the user
+        // (We don't save to DB here to avoid read-time writes, but the frontend will see clean data)
+        const lastDate = stats.dailyStats?.date ? new Date(stats.dailyStats.date) : new Date(0);
+        const isSameDay = lastDate.toDateString() === new Date().toDateString();
+
+        if (!isSameDay) {
+            stats.dailyStats = {
+                date: new Date(),
+                timeSpent: 0,
+                articlesRead: 0,
+                goalsMet: false
+            };
         }
 
         res.status(200).json(stats);
