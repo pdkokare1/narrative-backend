@@ -83,6 +83,9 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
   timestamps: true 
 });
 
+// TTL Index: Delete sessions after 30 days (2592000 seconds)
+analyticsSessionSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 });
+
 const AnalyticsSession: Model<IAnalyticsSession> = mongoose.model<IAnalyticsSession>('AnalyticsSession', analyticsSessionSchema);
 
 export default AnalyticsSession;
