@@ -53,19 +53,18 @@ class StatsService {
             // 3. Update Global Time
             stats.totalTimeSpent = (stats.totalTimeSpent || 0) + duration;
 
-            // 4. "True Read" Validation
+            // 4. "True Read" Validation (Enhanced for Anti-Gaming)
             let isTrueRead = false;
             
             // Logic A: Standard Text Reading
             if (interaction.contentType === 'article' || interaction.contentType === 'narrative') {
-                // Avg reading speed ~250 wpm. Threshold 50% of expected time.
-                if (wordCount > 50 && duration > 10) {
-                    const expectedTimeSeconds = (wordCount / 250) * 60;
-                    const minimumThreshold = expectedTimeSeconds * 0.5; 
+                // Average reading speed is ~250 wpm. Skimming is ~500+. 
+                // We set limit at 600 wpm to catch "scroll-to-bottom" cheaters.
+                const wpm = duration > 0 ? wordCount / (duration / 60) : 9999;
 
-                    if (duration >= minimumThreshold && scrollDepth > 50) {
-                        isTrueRead = true;
-                    }
+                // STRICT CHECK: Must be > 30s, > 75% scroll, and reasonable speed
+                if (wordCount > 100 && scrollDepth > 75 && duration > 30 && wpm < 600) {
+                    isTrueRead = true;
                 }
             }
 
@@ -96,12 +95,17 @@ class StatsService {
             // Pass timezone for accurate daily reset
             await this.checkHabitProgress(userId, stats, duration, isTrueRead, timezone);
 
-            await stats.save();
-
-            // 7. (Optional) Trigger Vector Update if True Read
+            // 7. Trigger Vector Update if True Read
             if (isTrueRead) {
                 this.updateUserVector(userId);
             }
+
+            // 8. Update Topic Interests (Explicitly for Reads)
+            if (interaction.contentId && (interaction.contentType === 'article' || interaction.contentType === 'narrative')) {
+                 await this.updateInterests(stats, interaction.contentId, duration);
+            }
+
+            await stats.save();
 
         } catch (error) {
             logger.error(`❌ Error processing interaction for user ${userId}:`, error);
@@ -192,58 +196,109 @@ class StatsService {
     }
 
     // --- NEW: Habit & Streak Engine ---
-    async checkHabitProgress(userId: string, stats: IUserStats, duration: number, isTrueRead: boolean, timezone?: string) {
+    async checkHabitProgress(userId: string, stats: any, duration: number, isTrueRead: boolean, timezone?: string) {
         try {
             const now = new Date();
-            
-            // 1. Check for "New Day" Reset using Timezone
-            // If timezone is provided, convert 'now' to user's local date string
-            // otherwise fallback to UTC
             const tz = timezone || 'UTC';
-            const userDateString = now.toLocaleString('en-US', { timeZone: tz }).split(',')[0]; // "M/D/YYYY"
 
-            const lastDateObj = stats.dailyStats?.date ? new Date(stats.dailyStats.date) : new Date(0);
-            const lastDateString = lastDateObj.toLocaleString('en-US', { timeZone: tz }).split(',')[0];
+            // 1. Determine "Today" and "Yesterday" in User's Timezone
+            const getDayString = (date: Date) => date.toLocaleDateString('en-CA', { timeZone: tz });
+            const todayStr = getDayString(now);
+            const lastActiveStr = stats.lastActiveDate ? getDayString(stats.lastActiveDate) : null;
 
-            const isSameDay = userDateString === lastDateString;
+            // 2. STREAK LOGIC
+            // If it's a new day, we check continuity
+            if (todayStr !== lastActiveStr) {
+                const yesterday = new Date(now);
+                yesterday.setDate(yesterday.getDate() - 1);
+                const yesterdayStr = getDayString(yesterday);
 
-            if (!isSameDay) {
-                // It's a new day! Reset counters.
-                stats.dailyStats = {
-                    date: now,
-                    timeSpent: 0,
-                    articlesRead: 0,
-                    goalsMet: false
-                };
+                // If last active was yesterday, increment streak. Else reset.
+                if (lastActiveStr === yesterdayStr) {
+                    stats.currentStreak = (stats.currentStreak || 0) + 1;
+                } else {
+                    stats.currentStreak = 1; 
+                }
+
+                // Update Personal Best
+                if (stats.currentStreak > (stats.longestStreak || 0)) {
+                    stats.longestStreak = stats.currentStreak;
+                }
+            }
+            stats.lastActiveDate = now;
+
+            // 3. HISTORY LOGGING (Last 30 Days)
+            // Ensure array exists (backward compatibility)
+            if (!stats.recentDailyHistory) stats.recentDailyHistory = [];
+            
+            // Find today's entry
+            let dailyEntry = stats.recentDailyHistory.find((d: any) => d.date === todayStr);
+
+            if (!dailyEntry) {
+                dailyEntry = { date: todayStr, timeSpent: 0, articlesRead: 0, goalsMet: false };
+                // Keep history manageable
+                if (stats.recentDailyHistory.length >= 30) stats.recentDailyHistory.shift();
+                stats.recentDailyHistory.push(dailyEntry);
             }
 
-            // 2. Update Daily Counters
-            stats.dailyStats.timeSpent += duration;
-            if (isTrueRead) stats.dailyStats.articlesRead += 1;
+            // Update Metrics
+            dailyEntry.timeSpent += duration;
+            if (isTrueRead) dailyEntry.articlesRead += 1;
 
-            // 3. Load Profile to check Goals & Streaks
-            // We only need to check streaks if the goal hasn't been met yet today
-            if (!stats.dailyStats.goalsMet) {
+            // 4. SYNC LEGACY FIELD (For current dashboard compatibility)
+            stats.dailyStats = {
+                date: now,
+                timeSpent: dailyEntry.timeSpent,
+                articlesRead: dailyEntry.articlesRead,
+                goalsMet: dailyEntry.goalsMet // will be updated below
+            };
+
+            // 5. CHECK GOALS
+            if (!dailyEntry.goalsMet) {
                 const profile = await Profile.findOne({ userId });
-                if (profile && profile.habits && profile.habits.length > 0) {
-                    
-                    // Find the primary daily habit (defaulting to 15 mins if not found)
-                    const dailyHabit = profile.habits.find(h => h.type === 'daily_minutes');
-                    const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; // default 15 mins
+                const dailyHabit = profile?.habits?.find((h:any) => h.type === 'daily_minutes');
+                const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; // default 15 mins
 
-                    // 4. Did we just cross the finish line?
-                    if (stats.dailyStats.timeSpent >= targetSeconds) {
-                        stats.dailyStats.goalsMet = true;
-                        
-                        // --- STREAK LOGIC (DELEGATED TO GAMIFICATION SERVICE) ---
-                        // Pass timezone to ensure streak logic respects local midnight
-                        await gamificationService.updateStreak(userId, timezone);
-                    }
+                if (dailyEntry.timeSpent >= targetSeconds) {
+                    dailyEntry.goalsMet = true;
+                    stats.dailyStats.goalsMet = true;
+                    
+                    // Trigger Gamification Service for Badges/XP
+                    await gamificationService.updateStreak(userId, timezone);
                 }
             }
         } catch (error) {
             logger.error(`Habit Check Error:`, error);
         }
+    }
+
+    // --- HELPER: Update Interests (Critical for Transparency Modal) ---
+    private async updateInterests(stats: any, articleId: string, duration: number) {
+        try {
+            const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category');
+            if (!article) return;
+
+            const interestWeight = Math.min(duration, 120); // Cap at 2 mins weight
+
+            // Update Topics
+            if (article.topics && Array.isArray(article.topics)) {
+                if (!stats.topicInterest) stats.topicInterest = new Map();
+                article.topics.forEach(topic => {
+                    const current = stats.topicInterest.get(topic) || 0;
+                    stats.topicInterest.set(topic, current + interestWeight);
+                });
+            }
+
+            // Update Bias
+            if (article.detectedBias !== undefined) {
+                let bucket = 'Center';
+                if (article.detectedBias <= -0.3) bucket = 'Left';
+                if (article.detectedBias >= 0.3) bucket = 'Right';
+                
+                if (!stats.leanExposure) stats.leanExposure = { Left: 0, Center: 0, Right: 0 };
+                stats.leanExposure[bucket] = (stats.leanExposure[bucket] || 0) + interestWeight;
+            }
+        } catch (e) { /* silent fail */ }
     }
 
     // 1. Calculate and Cache Trending Topics
