@@ -20,8 +20,10 @@ class StatsService {
                 return;
             }
 
-            // 2. Filter for Content Interactions only
-            if (interaction.contentType !== 'article' && interaction.contentType !== 'narrative') {
+            // 2. Filter for Content Interactions only (Updated to include Audio)
+            if (interaction.contentType !== 'article' && 
+                interaction.contentType !== 'narrative' && 
+                interaction.contentType !== 'audio_action') {
                 return;
             }
 
@@ -37,19 +39,32 @@ class StatsService {
 
             // 4. "True Read" Validation
             let isTrueRead = false;
-            // Avg reading speed ~250 wpm. Threshold 50% of expected time.
-            if (wordCount > 50 && duration > 10) {
-                const expectedTimeSeconds = (wordCount / 250) * 60;
-                const minimumThreshold = expectedTimeSeconds * 0.5; 
+            
+            // Logic A: Standard Text Reading
+            if (interaction.contentType === 'article' || interaction.contentType === 'narrative') {
+                // Avg reading speed ~250 wpm. Threshold 50% of expected time.
+                if (wordCount > 50 && duration > 10) {
+                    const expectedTimeSeconds = (wordCount / 250) * 60;
+                    const minimumThreshold = expectedTimeSeconds * 0.5; 
 
-                if (duration >= minimumThreshold && scrollDepth > 50) {
-                    isTrueRead = true;
+                    if (duration >= minimumThreshold && scrollDepth > 50) {
+                        isTrueRead = true;
+                    }
                 }
+            }
+
+            // Logic B: Audio Completion
+            if (interaction.contentType === 'audio_action' && interaction.audioAction === 'complete') {
+                isTrueRead = true;
+                // Note: We use the 'complete' event as the verification of consumption.
+                logger.info(`🎧 Audio Completion Verified for User ${userId}`);
             }
 
             if (isTrueRead) {
                 stats.articlesReadCount = (stats.articlesReadCount || 0) + 1;
-                logger.info(`📖 True Read Recorded: User ${userId} | Time: ${duration}s | Depth: ${scrollDepth}%`);
+                // Log the read type for clarity
+                const readType = interaction.contentType === 'audio_action' ? 'Audio Listen' : 'Text Read';
+                logger.info(`📖 True Read Recorded (${readType}): User ${userId} | Time: ${duration}s | Depth: ${scrollDepth}%`);
             }
 
             // 5. Update Average Attention Span
