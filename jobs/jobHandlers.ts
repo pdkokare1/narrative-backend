@@ -4,6 +4,8 @@ import logger from '../utils/logger';
 import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import redisClient from '../utils/redisClient';
+import notificationService from '../services/notificationService'; // We will create this next
+import UserStats from '../models/userStatsModel';
 
 /**
  * Handler: Update Trending Topics
@@ -12,6 +14,37 @@ export const handleUpdateTrending = async (job: Job) => {
     logger.info(`👷 Job ${job.id}: Updating Trending Topics...`);
     await statsService.updateTrendingTopics();
     return { status: 'completed' };
+};
+
+/**
+ * Handler: Smart Notifications
+ * Finds users whose peak activity is NOW and sends a briefing.
+ */
+export const handleSmartNotifications = async (job: Job) => {
+    const currentHour = new Date().getHours().toString();
+    logger.info(`🔔 Checking Smart Notifications for Hour: ${currentHour}`);
+
+    try {
+        // 1. Find users who are active at this hour
+        // Query: users where activityByHour.currentHour > 100 seconds (meaning they actually use it then)
+        const activeUsers = await UserStats.find({
+            [`activityByHour.${currentHour}`]: { $gt: 100 }
+        }).select('userId activityByHour');
+
+        logger.info(`🎯 Found ${activeUsers.length} potential users for Hour ${currentHour}`);
+
+        let sentCount = 0;
+        for (const userStat of activeUsers) {
+            // 2. Dispatch Smart Alert
+            const sent = await notificationService.sendSmartAlert(userStat.userId, currentHour);
+            if (sent) sentCount++;
+        }
+
+        return { status: 'completed', sent: sentCount };
+    } catch (error: any) {
+        logger.error(`❌ Smart Notification Error: ${error.message}`);
+        throw error;
+    }
 };
 
 /**
@@ -33,7 +66,6 @@ export const handleFetchFeed = async (job: Job) => {
     let failCount = 0;
 
     // 2. Process Sequentially (Inline)
-    // This bypasses the queue "black hole" issue entirely.
     for (let i = 0; i < articles.length; i++) {
         const article = articles[i];
         const progressPrefix = `[${i + 1}/${articles.length}]`;
@@ -41,7 +73,6 @@ export const handleFetchFeed = async (job: Job) => {
         try {
             logger.info(`🔄 ${progressPrefix} Processing: "${article.title?.substring(0, 30)}..."`);
             
-            // Call the processor directly
             const result = await newsFetcher.processArticleJob(article);
 
             if (result === 'SAVED_FRESH' || result === 'SAVED_INHERITED') {
@@ -51,17 +82,14 @@ export const handleFetchFeed = async (job: Job) => {
                 logger.info(`⚠️ ${progressPrefix} Skipped: ${result}`);
             }
 
-            // Report progress to BullMQ to prevent timeouts
             await job.updateProgress(Math.round(((i + 1) / articles.length) * 100));
 
         } catch (err: any) {
             failCount++;
             logger.error(`❌ ${progressPrefix} Failed: ${err.message}`);
-            // Continue to next article - don't stop the whole batch
         }
     }
 
-    // 3. Invalidate Cache if we saved anything
     if (successCount > 0) {
         await redisClient.del('feed:default:page0');
         logger.info(`🧹 Feed Cache Invalidated. New content available.`);
@@ -73,7 +101,6 @@ export const handleFetchFeed = async (job: Job) => {
 
 /**
  * Handler: Process Single Article
- * (Kept as fallback, but mostly unused now with Inline logic)
  */
 export const handleProcessArticle = async (job: Job) => {
     logger.info(`⚙️ Processing Pipeline Starting [${job.id}]`);
