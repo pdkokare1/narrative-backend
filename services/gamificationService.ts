@@ -5,7 +5,7 @@ import { IBadge } from '../types';
 
 class GamificationService {
     
-    // --- 1. Streak Logic ---
+    // --- 1. Streak Logic (With Freezes) ---
     async updateStreak(userId: string): Promise<IBadge | null> {
         const profile = await Profile.findOne({ userId });
         if (!profile) return null;
@@ -13,30 +13,43 @@ class GamificationService {
         const now = new Date();
         const lastActive = profile.lastActiveDate ? new Date(profile.lastActiveDate) : new Date(0);
         
-        // Normalize to midnight to compare "days"
+        // Normalize to midnight
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
         const lastDate = new Date(lastActive.getFullYear(), lastActive.getMonth(), lastActive.getDate()).getTime();
         const oneDay = 24 * 60 * 60 * 1000;
 
-        // A. Same day activity? Do nothing.
-        if (today === lastDate) {
+        const diffTime = today - lastDate;
+        const diffDays = Math.round(diffTime / oneDay);
+
+        // A. Same day? Do nothing.
+        if (diffDays === 0) {
             return null;
         }
 
         // B. Consecutive day? Increment.
-        if (today - lastDate === oneDay) {
+        if (diffDays === 1) {
             profile.currentStreak += 1;
             console.log(`🔥 Streak Incremented for ${profile.username}: ${profile.currentStreak}`);
         } 
-        // C. Missed a day? Reset.
-        else {
-            // Only reset if it's not the very first activity
-            if (profile.lastActiveDate) {
-                profile.currentStreak = 1;
-                console.log(`❄️ Streak Reset for ${profile.username}`);
+        // C. Missed days? Check Freezes.
+        else if (diffDays > 1) {
+            const missedDays = diffDays - 1;
+            
+            // Do they have enough freezes to cover the gap?
+            if (profile.streakFreezes >= missedDays) {
+                profile.streakFreezes -= missedDays;
+                // We DON'T reset. We increment because they are active today.
+                // It effectively "stitches" the gap.
+                profile.currentStreak += 1; 
+                console.log(`❄️ Streak Frozen for ${profile.username}. Used ${missedDays} freezes.`);
             } else {
-                profile.currentStreak = 1; // First ever action
+                // Not enough freezes -> Reset
+                profile.currentStreak = 1; 
+                console.log(`💔 Streak Reset for ${profile.username}. Gap: ${missedDays} days.`);
             }
+        } else {
+             // Should not happen (diffDays < 0), but safety fallback
+             profile.currentStreak = 1;
         }
 
         profile.lastActiveDate = now;
@@ -45,7 +58,7 @@ class GamificationService {
         // Check for Streak Badges
         const streakBadge = await this.checkStreakBadges(profile);
         
-        // Check for Perspective Badge (Async, don't block)
+        // Check for Perspective Badge (Async)
         this.checkPerspectiveBadge(userId);
 
         return streakBadge;
@@ -116,13 +129,11 @@ class GamificationService {
     }
 
     // --- 3. Perspective Hunter Badge ---
-    // Rewards users for reading across the political spectrum
     async checkPerspectiveBadge(userId: string): Promise<void> {
         try {
             const stats = await UserStats.findOne({ userId });
             if (!stats) return;
 
-            // Threshold: 10 minutes (600 seconds) on BOTH sides
             const THRESHOLD = 600; 
 
             const left = stats.leanExposure?.Left || 0;
