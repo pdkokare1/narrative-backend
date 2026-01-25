@@ -19,8 +19,19 @@ export interface IUserStats extends Document {
   // Topics they click/read
   topicInterest: Map<string, number>;
 
-  // NEW: Topics they see but IGNORE (Survivorship Bias Fix)
+  // Topics they see (Impressions) - Used to calculate CTR/Bias
+  topicImpressions: Map<string, number>;
+
+  // Topics they see but IGNORE (Survivorship Bias Fix)
   negativeInterest: Map<string, number>;
+
+  // Daily Progress for Habits
+  dailyStats: {
+    date: Date;          // The day this stat belongs to
+    timeSpent: number;   // Seconds read TODAY
+    articlesRead: number; // Articles read TODAY
+    goalsMet: boolean;   // Has the daily goal been triggered?
+  };
 
   activityByHour: Map<string, number>;
   
@@ -32,7 +43,6 @@ const userStatsSchema = new Schema<IUserStats>({
   userId: { type: String, required: true, unique: true, index: true },
   totalTimeSpent: { type: Number, default: 0 },
   
-  // NEW: Default 0
   articlesReadCount: { type: Number, default: 0 },
 
   averageAttentionSpan: { type: Number, default: 0 },
@@ -45,8 +55,19 @@ const userStatsSchema = new Schema<IUserStats>({
   
   topicInterest: { type: Map, of: Number, default: {} },
   
-  // NEW: Negative Interest Map
+  // NEW: Impressions Map
+  topicImpressions: { type: Map, of: Number, default: {} },
+
+  // Negative Interest Map
   negativeInterest: { type: Map, of: Number, default: {} },
+
+  // NEW: Daily Stats Tracking
+  dailyStats: {
+    date: { type: Date, default: Date.now },
+    timeSpent: { type: Number, default: 0 },
+    articlesRead: { type: Number, default: 0 },
+    goalsMet: { type: Boolean, default: false }
+  },
 
   activityByHour: { type: Map, of: Number, default: {} },
   
