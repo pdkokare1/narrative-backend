@@ -6,11 +6,13 @@ import SearchLog from '../models/searchLogModel';
 import UserStats, { IUserStats } from '../models/userStatsModel'; 
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
+import gamificationService from './gamificationService';
 
 class StatsService {
     
     // --- MAIN PIPELINE: Interaction Processing ---
-    async processInteraction(userId: string, interaction: any) {
+    // Updated: Now accepts optional timezone for accurate streak tracking
+    async processInteraction(userId: string, interaction: any, timezone?: string) {
         try {
             if (!userId || !interaction) return;
 
@@ -30,9 +32,23 @@ class StatsService {
             const stats = await UserStats.findOne({ userId });
             if (!stats) return; // Safety check
 
+            // NEW: Update Timezone if provided
+            if (timezone) stats.lastTimezone = timezone;
+
             const duration = interaction.duration || 0; // seconds
             const scrollDepth = interaction.scrollDepth || 0; // percentage
             const wordCount = interaction.wordCount || 0;
+            
+            // NEW: Save Stop Point (Resume Reading)
+            if (interaction.scrollPosition && interaction.contentId) {
+                // Initialize map if missing (mongoose map edge case)
+                if (!stats.readingProgress) stats.readingProgress = new Map();
+                
+                // Only update if they scrolled further than 100px (avoid saving "top of page")
+                if (interaction.scrollPosition > 100) {
+                    stats.readingProgress.set(interaction.contentId, interaction.scrollPosition);
+                }
+            }
 
             // 3. Update Global Time
             stats.totalTimeSpent = (stats.totalTimeSpent || 0) + duration;
@@ -77,7 +93,8 @@ class StatsService {
             stats.lastUpdated = new Date();
             
             // 6. HABIT & STREAK TRACKING (The "Daily Ritual")
-            await this.checkHabitProgress(userId, stats, duration, isTrueRead);
+            // Pass timezone for accurate daily reset
+            await this.checkHabitProgress(userId, stats, duration, isTrueRead, timezone);
 
             await stats.save();
 
@@ -175,14 +192,20 @@ class StatsService {
     }
 
     // --- NEW: Habit & Streak Engine ---
-    async checkHabitProgress(userId: string, stats: IUserStats, duration: number, isTrueRead: boolean) {
+    async checkHabitProgress(userId: string, stats: IUserStats, duration: number, isTrueRead: boolean, timezone?: string) {
         try {
             const now = new Date();
             
-            // 1. Check for "New Day" Reset
-            // Compare dates (YYYY-MM-DD)
-            const lastDate = stats.dailyStats?.date ? new Date(stats.dailyStats.date) : new Date(0);
-            const isSameDay = lastDate.toDateString() === now.toDateString();
+            // 1. Check for "New Day" Reset using Timezone
+            // If timezone is provided, convert 'now' to user's local date string
+            // otherwise fallback to UTC
+            const tz = timezone || 'UTC';
+            const userDateString = now.toLocaleString('en-US', { timeZone: tz }).split(',')[0]; // "M/D/YYYY"
+
+            const lastDateObj = stats.dailyStats?.date ? new Date(stats.dailyStats.date) : new Date(0);
+            const lastDateString = lastDateObj.toLocaleString('en-US', { timeZone: tz }).split(',')[0];
+
+            const isSameDay = userDateString === lastDateString;
 
             if (!isSameDay) {
                 // It's a new day! Reset counters.
@@ -212,42 +235,9 @@ class StatsService {
                     if (stats.dailyStats.timeSpent >= targetSeconds) {
                         stats.dailyStats.goalsMet = true;
                         
-                        // --- STREAK LOGIC ---
-                        const yesterday = new Date();
-                        yesterday.setDate(yesterday.getDate() - 1);
-                        
-                        const lastActive = profile.lastActiveDate ? new Date(profile.lastActiveDate) : new Date(0);
-                        const isConsecutive = lastActive.toDateString() === yesterday.toDateString();
-                        const isToday = lastActive.toDateString() === now.toDateString();
-
-                        if (!isToday) {
-                            if (isConsecutive) {
-                                // Perfect streak
-                                profile.currentStreak += 1;
-                            } else {
-                                // Streak Broken? Check Freezes.
-                                const daysGap = Math.floor((now.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24));
-                                
-                                if (daysGap > 1 && profile.streakFreezes > 0) {
-                                    // Saved by the freeze!
-                                    profile.streakFreezes -= 1;
-                                    // Streak continues (phantom increment logic or just keep it?)
-                                    // We keep the number but don't increment, or increment?
-                                    // Standard logic: You used a freeze, you keep the streak alive.
-                                    profile.currentStreak += 1;
-                                    logger.info(`❄️ Streak Saved by Freeze for User ${userId}`);
-                                } else if (daysGap > 1) {
-                                    // Sorry, back to 1
-                                    profile.currentStreak = 1;
-                                } else {
-                                    // First day ever or restart
-                                    profile.currentStreak = 1;
-                                }
-                            }
-                            profile.lastActiveDate = now;
-                            await profile.save();
-                            logger.info(`🔥 Streak Updated for User ${userId}: ${profile.currentStreak}`);
-                        }
+                        // --- STREAK LOGIC (DELEGATED TO GAMIFICATION SERVICE) ---
+                        // Pass timezone to ensure streak logic respects local midnight
+                        await gamificationService.updateStreak(userId, timezone);
                     }
                 }
             }
