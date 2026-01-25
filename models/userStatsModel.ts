@@ -17,18 +17,12 @@ export interface IUserStats extends Document {
   };
 
   // Topics they click/read
-  topicInterest: {
-    [category: string]: number;
-  };
+  topicInterest: Map<string, number>;
 
   // NEW: Topics they see but IGNORE (Survivorship Bias Fix)
-  negativeInterest: {
-    [category: string]: number;
-  };
+  negativeInterest: Map<string, number>;
 
-  activityByHour: {
-    [hour: string]: number;
-  };
+  activityByHour: Map<string, number>;
   
   engagementScore: number; // 0-100
   lastUpdated: Date;
