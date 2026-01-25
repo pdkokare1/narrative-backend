@@ -8,7 +8,6 @@ import logger from '../utils/logger';
 
 // @desc    Track User Activity (Heartbeat & Beacon)
 // @route   POST /api/analytics/track
-// @access  Public (Can be anonymous)
 export const trackActivity = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { 
@@ -24,7 +23,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       return;
     }
 
-    // 1. Calculate Quarterly Aggregates (from this payload)
+    // 1. Calculate Quarterly Aggregates
     const payloadQuarters = [0, 0, 0, 0];
     if (interactions && Array.isArray(interactions)) {
         interactions.forEach((i: any) => {
@@ -35,8 +34,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
             }
         });
 
-        // --- NEW: Process True Reads (Async) ---
-        // We do not await this to keep the beacon fast.
+        // Async: Process True Reads
         if (userId) {
             Promise.all(interactions.map((interaction: any) => 
                 statsService.processInteraction(userId, interaction)
@@ -44,7 +42,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         }
     }
 
-    // 2. Update Session Analytics (Raw Logs)
+    // 2. Update Session Analytics
     const updateOps: any = {
       $inc: {
         totalDuration: metrics?.total || 0,
@@ -58,10 +56,9 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         'quarterlyRetention.3': payloadQuarters[3],
       },
       $set: { updatedAt: new Date() },
-      $push: { interactions: { $each: interactions || [] } } // Append interactions
+      $push: { interactions: { $each: interactions || [] } }
     };
 
-    // Set static fields only on insert (using setOnInsert) or if missing
     if (userId) updateOps.$set.userId = userId;
     if (meta?.platform) updateOps.$set.platform = meta.platform;
     if (meta?.userAgent) updateOps.$set.userAgent = meta.userAgent;
@@ -73,7 +70,6 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
     );
 
     // 3. Update Real-time User Stats (Lightweight)
-    // Heavy updates (True Reads) are handled by statsService.processInteraction above.
     if (userId && metrics?.total > 0) {
         const hour = new Date().getHours().toString();
         const incObject: any = { 
@@ -90,7 +86,6 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
 
     res.status(200).send('ok');
   } catch (error) {
-    // Analytics should not crash the app, just log it
     console.error('Track Error:', error);
     res.status(200).send('ok'); 
   }
@@ -117,9 +112,40 @@ export const linkSession = async (req: Request, res: Response, next: NextFunctio
     }
 };
 
-// @desc    Get Admin Analytics Dashboard
-// @route   GET /api/analytics/dashboard
-export const getDashboardStats = async (req: Request, res: Response, next: NextFunction) => {
+// @desc    Get User Stats (For My Dashboard)
+// @route   GET /api/analytics/user-stats
+export const getUserStats = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const userId = req.user?.uid;
+        if (!userId) {
+            res.status(400).json({ message: 'User ID required' });
+            return;
+        }
+
+        // Fetch the Smart Stats (True Reads, Attention Span)
+        const stats = await UserStats.findOne({ userId }).lean();
+
+        // If no stats yet, return default structure
+        if (!stats) {
+            res.status(200).json({
+                userId,
+                totalTimeSpent: 0,
+                articlesReadCount: 0,
+                averageAttentionSpan: 0,
+                engagementScore: 0
+            });
+            return;
+        }
+
+        res.status(200).json(stats);
+    } catch (error) {
+        next(error);
+    }
+};
+
+// @desc    Get Admin Analytics Overview (Renamed from getDashboardStats)
+// @route   GET /api/analytics/overview
+export const getAnalyticsOverview = async (req: Request, res: Response, next: NextFunction) => {
     try {
         const startOfDay = new Date();
         startOfDay.setHours(0,0,0,0);
@@ -152,7 +178,6 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
         const contentGaps = await SearchLog.find({ zeroResults: true })
             .sort({ count: -1 }).limit(5).select('query count');
 
-        // FIX: Use .lean() to get Plain Objects, avoiding Mongoose Map issues
         const recentStats = await UserStats.find({ lastUpdated: { $gte: startOfDay } })
             .select('activityByHour')
             .limit(100)
@@ -160,7 +185,6 @@ export const getDashboardStats = async (req: Request, res: Response, next: NextF
 
         const hourlyActivity = new Array(24).fill(0);
         
-        // FIX: safe iteration over POJO
         recentStats.forEach((stat: any) => {
             if (stat.activityByHour) {
                 Object.entries(stat.activityByHour).forEach(([hour, seconds]) => {
