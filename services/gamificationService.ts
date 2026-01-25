@@ -29,7 +29,6 @@ class GamificationService {
         // B. Consecutive day? Increment.
         if (diffDays === 1) {
             profile.currentStreak += 1;
-            console.log(`🔥 Streak Incremented for ${profile.username}: ${profile.currentStreak}`);
         } 
         // C. Missed days? Check Freezes.
         else if (diffDays > 1) {
@@ -41,11 +40,9 @@ class GamificationService {
                 // We DON'T reset. We increment because they are active today.
                 // It effectively "stitches" the gap.
                 profile.currentStreak += 1; 
-                console.log(`❄️ Streak Frozen for ${profile.username}. Used ${missedDays} freezes.`);
             } else {
                 // Not enough freezes -> Reset
                 profile.currentStreak = 1; 
-                console.log(`💔 Streak Reset for ${profile.username}. Gap: ${missedDays} days.`);
             }
         } else {
              // Should not happen (diffDays < 0), but safety fallback
@@ -60,6 +57,9 @@ class GamificationService {
         
         // Check for Perspective Badge (Async)
         this.checkPerspectiveBadge(userId);
+
+        // NEW: Check for Reader Badges (Async)
+        this.checkReadBadges(userId);
 
         return streakBadge;
     }
@@ -86,7 +86,6 @@ class GamificationService {
                         earnedAt: new Date()
                     };
                     profile.badges.push(awardedBadge);
-                    console.log(`🏆 Badge Awarded: ${badge.label}`);
                 }
             }
         }
@@ -95,20 +94,26 @@ class GamificationService {
         return awardedBadge;
     }
 
+    // NEW: Updated to use TRUE READ count from UserStats
     async checkReadBadges(userId: string): Promise<IBadge | null> {
         const profile = await Profile.findOne({ userId });
-        if (!profile) return null;
+        const stats = await UserStats.findOne({ userId });
+        
+        if (!profile || !stats) return null;
 
-        const count = profile.articlesViewedCount;
+        const count = stats.articlesReadCount || 0;
+        const avgSpan = stats.averageAttentionSpan || 0;
         
         const viewBadges = [
-            { id: 'reader_10', label: 'Informed', threshold: 10, icon: '📰' },
-            { id: 'reader_50', label: 'Well Read', threshold: 50, icon: '📚' },
-            { id: 'reader_100', label: 'News Junkie', threshold: 100, icon: '🧠' }
+            { id: 'reader_10', label: 'Informed', threshold: 10, icon: '📰', desc: 'Read 10 full articles.' },
+            { id: 'reader_50', label: 'Well Read', threshold: 50, icon: '📚', desc: 'Read 50 full articles.' },
+            { id: 'reader_100', label: 'News Junkie', threshold: 100, icon: '🧠', desc: 'Read 100 full articles.' }
         ];
 
         let awardedBadge: IBadge | null = null;
+        let profileChanged = false;
 
+        // A. Check Volume Badges
         for (const badge of viewBadges) {
             if (count >= badge.threshold) {
                 if (!profile.badges.some((b: IBadge) => b.id === badge.id)) {
@@ -116,15 +121,33 @@ class GamificationService {
                         id: badge.id,
                         label: badge.label,
                         icon: badge.icon,
-                        description: `Read ${badge.threshold} articles.`,
+                        description: badge.desc,
                         earnedAt: new Date()
                     };
                     profile.badges.push(awardedBadge);
+                    profileChanged = true;
                 }
             }
         }
+
+        // B. Check Attention/Quality Badge (Deep Diver)
+        // 180 seconds = 3 minutes average attention span
+        if (avgSpan > 180 && count > 5) {
+             if (!profile.badges.some((b: IBadge) => b.id === 'deep_diver')) {
+                const deepBadge = {
+                    id: 'deep_diver',
+                    label: 'Deep Diver',
+                    icon: '🌊',
+                    description: 'Average attention span over 3 minutes.',
+                    earnedAt: new Date()
+                };
+                profile.badges.push(deepBadge);
+                profileChanged = true;
+                if (!awardedBadge) awardedBadge = deepBadge;
+             }
+        }
         
-        if (awardedBadge) await profile.save();
+        if (profileChanged) await profile.save();
         return awardedBadge;
     }
 
@@ -151,7 +174,6 @@ class GamificationService {
                     };
                     profile.badges.push(newBadge);
                     await profile.save();
-                    console.log(`🏆 Badge Awarded: Perspective Hunter for ${userId}`);
                 }
             }
         } catch (err) {
