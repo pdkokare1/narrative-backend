@@ -56,7 +56,6 @@ class StatsService {
             // Logic B: Audio Completion
             if (interaction.contentType === 'audio_action' && interaction.audioAction === 'complete') {
                 isTrueRead = true;
-                // Note: We use the 'complete' event as the verification of consumption.
                 logger.info(`🎧 Audio Completion Verified for User ${userId}`);
             }
 
@@ -65,6 +64,9 @@ class StatsService {
                 // Log the read type for clarity
                 const readType = interaction.contentType === 'audio_action' ? 'Audio Listen' : 'Text Read';
                 logger.info(`📖 True Read Recorded (${readType}): User ${userId} | Time: ${duration}s | Depth: ${scrollDepth}%`);
+                
+                // NEW: Check for Content Fatigue (Burnout Protection)
+                await this.checkContentFatigue(userId, interaction.text);
             }
 
             // 5. Update Average Attention Span
@@ -134,6 +136,41 @@ class StatsService {
 
         } catch (error) {
             // Fail silently for impressions to reduce noise
+        }
+    }
+
+    // --- NEW: Content Fatigue Detection ---
+    async checkContentFatigue(userId: string, topicString: string) {
+        try {
+            // Expect topicString format "article:Politics" or just "Politics"
+            if (!topicString || !redisClient.isReady()) return;
+            
+            const topic = topicString.includes(':') ? topicString.split(':')[1] : topicString;
+            if (!topic || topic === 'undefined') return;
+
+            const client = redisClient.getClient();
+            if (!client) return;
+
+            const key = `fatigue_monitor:${userId}`;
+            
+            // 1. Push topic to recent list
+            await client.lPush(key, topic);
+            // 2. Keep only last 10 items
+            await client.lTrim(key, 0, 9);
+            
+            // 3. Check frequency
+            const recentTopics = await client.lRange(key, 0, -1);
+            const count = recentTopics.filter(t => t === topic).length;
+
+            // 4. Trigger Fatigue if > 5 reads of same topic recently
+            if (count > 5) {
+                logger.info(`💤 Content Fatigue Detected: User ${userId} is tired of ${topic}`);
+                // Set a temporary block/suppression key for 2 hours (7200 seconds)
+                await client.setEx(`fatigue_block:${userId}:${topic}`, 7200, 'true');
+            }
+
+        } catch (error) {
+            logger.warn('Fatigue check failed', error);
         }
     }
 
