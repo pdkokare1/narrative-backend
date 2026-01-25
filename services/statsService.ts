@@ -9,6 +9,67 @@ import logger from '../utils/logger';
 
 class StatsService {
     
+    // --- NEW: Interaction Processing (The "True Read" Logic) ---
+    async processInteraction(userId: string, interaction: any) {
+        try {
+            if (!userId || !interaction) return;
+
+            // Only process articles for Stats (ignore UI clicks for now)
+            if (interaction.contentType !== 'article' && interaction.contentType !== 'narrative') {
+                return;
+            }
+
+            const stats = await UserStats.findOne({ userId });
+            if (!stats) {
+                // Should exist if user created, but safety check
+                return;
+            }
+
+            const duration = interaction.duration || 0; // seconds
+            const scrollDepth = interaction.scrollDepth || 0; // percentage
+            const wordCount = interaction.wordCount || 0;
+
+            // 1. Update Total Time
+            stats.totalTimeSpent = (stats.totalTimeSpent || 0) + duration;
+
+            // 2. "True Read" Validation
+            // Avg reading speed ~250 wpm. 
+            // We consider it a "Read" if they spent at least 50% of the expected time.
+            let isTrueRead = false;
+            
+            if (wordCount > 50 && duration > 10) {
+                const expectedTimeSeconds = (wordCount / 250) * 60;
+                const minimumThreshold = expectedTimeSeconds * 0.5; // 50% threshold
+
+                if (duration >= minimumThreshold && scrollDepth > 50) {
+                    isTrueRead = true;
+                }
+            }
+
+            if (isTrueRead) {
+                stats.articlesReadCount = (stats.articlesReadCount || 0) + 1;
+                logger.info(`📖 True Read Recorded: User ${userId} | Time: ${duration}s | Depth: ${scrollDepth}%`);
+            }
+
+            // 3. Update Average Attention Span
+            // Simple moving average based on True Reads (approximated for habit tracking)
+            if (stats.articlesReadCount > 0) {
+                stats.averageAttentionSpan = Math.round(stats.totalTimeSpent / stats.articlesReadCount);
+            }
+
+            stats.lastUpdated = new Date();
+            await stats.save();
+
+            // 4. (Optional) Trigger Vector Update if True Read
+            if (isTrueRead) {
+                this.updateUserVector(userId);
+            }
+
+        } catch (error) {
+            logger.error(`❌ Error processing interaction for user ${userId}:`, error);
+        }
+    }
+
     // 1. Calculate and Cache Trending Topics
     async updateTrendingTopics() {
         try {
@@ -178,8 +239,7 @@ class StatsService {
         }
     }
 
-    // 6. NEW: Apply Recency Decay (The "Time Fade" Protocol)
-    // Ensures old interests fade over time so the profile adapts to new habits.
+    // 6. Apply Recency Decay (The "Time Fade" Protocol)
     async applyInterestDecay(userId: string) {
         try {
             const stats = await UserStats.findOne({ userId });
@@ -194,7 +254,6 @@ class StatsService {
 
             const daysPassed = Math.floor(hoursSinceUpdate / 24);
             // Decay Factor: 5% decay per day (0.95 ^ days)
-            // Example: After 7 days, value is ~70% of original. After 30 days, ~21%.
             const decayFactor = Math.pow(0.95, daysPassed);
 
             // A. Decay Lean Exposure (Object)
@@ -205,11 +264,9 @@ class StatsService {
             }
 
             // B. Decay Topic Interest (Map)
-            // We use Mongoose Map iteration
             if (stats.topicInterest) {
                 stats.topicInterest.forEach((value, key) => {
                     const newValue = Math.round(value * decayFactor);
-                    // PRUNING: If interest drops below 10 seconds, remove it to keep doc clean
                     if (newValue < 10) {
                         stats.topicInterest.delete(key);
                     } else {
@@ -222,7 +279,6 @@ class StatsService {
             if (stats.negativeInterest) {
                 stats.negativeInterest.forEach((value, key) => {
                     const newValue = Math.round(value * decayFactor);
-                    // Prune negatives faster (if < 5 interactions, forget it)
                     if (newValue < 5) {
                         stats.negativeInterest.delete(key);
                     } else {
@@ -231,13 +287,11 @@ class StatsService {
                 });
             }
 
-            // Mark as modified since we are mutating Maps directly
             stats.lastUpdated = new Date();
             stats.markModified('topicInterest');
             stats.markModified('negativeInterest');
             
             await stats.save();
-            // logger.info(`📉 Applied decay to user ${userId} (Factor: ${decayFactor.toFixed(2)})`);
 
         } catch (error) {
             logger.error("❌ Decay Update Failed:", error);
