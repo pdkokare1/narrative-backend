@@ -5,20 +5,26 @@ import { IBadge } from '../types';
 
 class GamificationService {
     
-    // --- 1. Streak Logic (With Freezes) ---
-    async updateStreak(userId: string): Promise<IBadge | null> {
+    // --- 1. Streak Logic (With Freezes & Timezones) ---
+    async updateStreak(userId: string, timezone: string = 'UTC'): Promise<IBadge | null> {
         const profile = await Profile.findOne({ userId });
         if (!profile) return null;
 
         const now = new Date();
         const lastActive = profile.lastActiveDate ? new Date(profile.lastActiveDate) : new Date(0);
         
-        // Normalize to midnight
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-        const lastDate = new Date(lastActive.getFullYear(), lastActive.getMonth(), lastActive.getDate()).getTime();
-        const oneDay = 24 * 60 * 60 * 1000;
+        // Normalize to USER's midnight
+        // We use toLocaleString to get the date in the user's timezone, then parse that back
+        // This ensures "Today" vs "Yesterday" respects where the user lives.
+        const userTodayString = now.toLocaleString('en-US', { timeZone: timezone }).split(',')[0];
+        const userLastDateString = lastActive.toLocaleString('en-US', { timeZone: timezone }).split(',')[0];
 
-        const diffTime = today - lastDate;
+        // Create Date objects from these strings to compare diff in days (ignoring hours)
+        const todayDate = new Date(userTodayString).getTime();
+        const lastDate = new Date(userLastDateString).getTime();
+        
+        const oneDay = 24 * 60 * 60 * 1000;
+        const diffTime = todayDate - lastDate;
         const diffDays = Math.round(diffTime / oneDay);
 
         // A. Same day? Do nothing.
