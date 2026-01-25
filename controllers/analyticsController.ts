@@ -34,7 +34,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
             }
         });
 
-        // Async: Process True Reads
+        // Async: Process True Reads & Impressions
         if (userId) {
             Promise.all(interactions.map((interaction: any) => 
                 statsService.processInteraction(userId, interaction)
@@ -144,7 +144,6 @@ export const getUserStats = async (req: Request, res: Response, next: NextFuncti
         }
 
         // LAZY RESET: If dailyStats is from yesterday, show 0 to the user
-        // (We don't save to DB here to avoid read-time writes, but the frontend will see clean data)
         const lastDate = stats.dailyStats?.date ? new Date(stats.dailyStats.date) : new Date(0);
         const isSameDay = lastDate.toDateString() === new Date().toDateString();
 
@@ -170,6 +169,7 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
         const startOfDay = new Date();
         startOfDay.setHours(0,0,0,0);
 
+        // 1. Session Stats
         const stats = await AnalyticsSession.aggregate([
             { $match: { updatedAt: { $gte: startOfDay } } },
             {
@@ -192,12 +192,14 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
             }
         ]);
 
+        // 2. Search Intelligence
         const topSearches = await SearchLog.find({ zeroResults: false })
             .sort({ count: -1 }).limit(5).select('query count');
 
         const contentGaps = await SearchLog.find({ zeroResults: true })
             .sort({ count: -1 }).limit(5).select('query count');
 
+        // 3. Hourly Activity (Heatmap)
         const recentStats = await UserStats.find({ lastUpdated: { $gte: startOfDay } })
             .select('activityByHour')
             .limit(100)
@@ -217,13 +219,29 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
             }
         });
 
+        // 4. NEW: Survivorship Bias (Global Negative Interest)
+        // Aggregates the 'negativeInterest' map across all users to find what is universally ignored
+        const mostIgnored = await UserStats.aggregate([
+            { $match: { negativeInterest: { $exists: true, $ne: {} } } },
+            { $project: { items: { $objectToArray: "$negativeInterest" } } },
+            { $unwind: "$items" },
+            { $group: { 
+                _id: "$items.k", 
+                userCount: { $sum: 1 }, // How many users ignore this
+                totalIntensity: { $sum: "$items.v" } // Total negative score
+            }},
+            { $sort: { userCount: -1 } },
+            { $limit: 5 }
+        ]);
+
         res.status(200).json({
             status: 'success',
             data: {
                 ...(stats[0] || {}),
                 topSearches,
                 contentGaps,
-                hourlyActivity 
+                hourlyActivity,
+                mostIgnored // New data field
             }
         });
     } catch (error) {
