@@ -36,8 +36,11 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
 
         // Async: Process True Reads & Impressions
         if (userId) {
+            // NEW: Pass Timezone to stats service for accurate streaks
+            const userTimezone = meta?.timezone || 'UTC';
+            
             Promise.all(interactions.map((interaction: any) => 
-                statsService.processInteraction(userId, interaction)
+                statsService.processInteraction(userId, interaction, userTimezone)
             )).catch(err => logger.error('Interaction Processing Error:', err));
         }
     }
