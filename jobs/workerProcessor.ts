@@ -6,7 +6,8 @@ import dbLoader from '../utils/dbLoader';
 import { 
     handleUpdateTrending, 
     handleFetchFeed, 
-    handleProcessArticle 
+    handleProcessArticle,
+    handleSmartNotifications // NEW: Imported
 } from './jobHandlers';
 
 /**
@@ -19,7 +20,7 @@ export default async function workerProcessor(job: Job) {
         logger.info(`📥 Worker Picked Up: "${job.data.title?.substring(0, 40)}..." (ID: ${job.id})`);
     }
 
-    // 1. Ensure Database Connection (Safe Check)
+    // 1. Ensure Database Connection (Safe Check) - RESTORED
     // In threaded mode, we might already be connected.
     if (mongoose.connection.readyState !== 1) {
         await dbLoader.connect();
@@ -39,6 +40,14 @@ export default async function workerProcessor(job: Job) {
 
             case 'process-article':
                 return await handleProcessArticle(job);
+
+            // NEW: Smart Notifications Handler
+            case 'smart-notifications':
+                return await handleSmartNotifications(job);
+
+            case 'daily-cleanup':
+                // No-op or handled directly in scheduler, but good to have a safe return
+                return { status: 'skipped' };
 
             default:
                 logger.warn(`⚠️ Unknown Job Type in Processor: ${job.name}`);
