@@ -3,9 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import AnalyticsSession from '../models/analyticsSession';
 import UserStats from '../models/userStatsModel';
 import SearchLog from '../models/searchLogModel';
-import Article from '../models/articleModel';
 import statsService from '../services/statsService';
-import redisClient from '../utils/redisClient'; 
 import logger from '../utils/logger';
 
 // @desc    Track User Activity (Heartbeat & Beacon)
