@@ -5,7 +5,7 @@ import { Queue } from 'bullmq';
 import config from '../utils/config';
 import { CONSTANTS } from '../utils/constants';
 import axios from 'axios'; 
-import Article from '../models/articleModel'; // Imported for Direct Cleanup
+import Article from '../models/articleModel'; 
 
 // Define queues
 const newsQueue = new Queue(CONSTANTS.QUEUE.NAME, {
@@ -125,7 +125,13 @@ export const startScheduler = async () => {
       await newsQueue.add('fetch-feed', {}, { removeOnComplete: true });
   });
 
-  // 7. Daily Cleanup & Trash Purge (Midnight)
+  // 7. NEW: Smart Notification Dispatcher (Hourly)
+  // Runs at minute 0 of every hour. Checks if any users are "active" at this time.
+  safeSchedule('smart-notifications', '0 * * * *', async () => {
+      await newsQueue.add('smart-notifications', {}, { removeOnComplete: true });
+  });
+
+  // 8. Daily Cleanup & Trash Purge (Midnight)
   safeSchedule('daily-cleanup', '0 0 * * *', async () => {
       // A. Standard Cache Cleanup
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
@@ -147,5 +153,5 @@ export const startScheduler = async () => {
       }
   });
 
-  logger.info('✅ Schedules registered: Heartbeat(4m), Trending(30m), Feed(45m/2h), TrashPurge(24h)');
+  logger.info('✅ Schedules registered: Heartbeat, Trending, Feed, SmartNotifs, Cleanup');
 };
