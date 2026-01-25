@@ -5,7 +5,7 @@ export interface IUserStats extends Document {
   userId: string;
   totalTimeSpent: number; // in seconds
   
-  // NEW: Quality Metric
+  // Quality Metric
   articlesReadCount: number; // Only counts "True Reads"
 
   averageAttentionSpan: number; // in seconds
@@ -25,14 +25,27 @@ export interface IUserStats extends Document {
   // Topics they see but IGNORE (Survivorship Bias Fix)
   negativeInterest: Map<string, number>;
 
-  // NEW: Reading Progress (Stop Points)
+  // Reading Progress (Stop Points)
   // Maps Article ID -> Scroll Position (pixels)
   readingProgress: Map<string, number>;
 
-  // NEW: Last known timezone (for streak calculation)
+  // Last known timezone (for streak calculation)
   lastTimezone: string;
 
-  // Daily Progress for Habits
+  // --- HABIT & STREAK TRACKING (NEW) ---
+  currentStreak: number;
+  longestStreak: number;
+  lastActiveDate: Date; // Used to check if streak is alive
+
+  // Historical Data (Last 30 Days) - New field to support history graph
+  recentDailyHistory: Array<{
+    date: string; // YYYY-MM-DD format for easy lookup
+    timeSpent: number;
+    articlesRead: number;
+    goalsMet: boolean;
+  }>;
+
+  // Existing Daily Progress (Preserved for backward compatibility)
   dailyStats: {
     date: Date;          // The day this stat belongs to
     timeSpent: number;   // Seconds read TODAY
@@ -62,17 +75,29 @@ const userStatsSchema = new Schema<IUserStats>({
   
   topicInterest: { type: Map, of: Number, default: {} },
   
-  // NEW: Impressions Map
+  // Impressions Map
   topicImpressions: { type: Map, of: Number, default: {} },
 
   // Negative Interest Map
   negativeInterest: { type: Map, of: Number, default: {} },
 
-  // NEW: Stop Points
+  // Stop Points
   readingProgress: { type: Map, of: Number, default: {} },
   lastTimezone: { type: String, default: 'UTC' },
 
-  // NEW: Daily Stats Tracking
+  // --- HABIT & STREAK TRACKING (NEW) ---
+  currentStreak: { type: Number, default: 0 },
+  longestStreak: { type: Number, default: 0 },
+  lastActiveDate: { type: Date, default: Date.now },
+
+  recentDailyHistory: [{
+    date: { type: String }, 
+    timeSpent: { type: Number, default: 0 },
+    articlesRead: { type: Number, default: 0 },
+    goalsMet: { type: Boolean, default: false }
+  }],
+
+  // Daily Stats Tracking (Preserved)
   dailyStats: {
     date: { type: Date, default: Date.now },
     timeSpent: { type: Number, default: 0 },
