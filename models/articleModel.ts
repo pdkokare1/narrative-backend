@@ -7,6 +7,10 @@ export interface ArticleDocument extends Omit<IArticle, '_id'>, Document {
   createdAt: Date;
   updatedAt: Date;
   deletedAt?: Date | null; // NEW: Track when item was moved to trash
+  
+  // NEW: Fields required by StatsService (Type Compatibility)
+  topics?: string[];
+  detectedBias?: number; // -1 (Left) to 1 (Right)
 }
 
 // Interface for the Model (Static Methods)
@@ -40,6 +44,9 @@ const articleSchema = new Schema<ArticleDocument>({
   biasLabel: String,
   biasComponents: Schema.Types.Mixed,
   
+  // NEW: Numerical Bias for Vector/Stats calculations (-1 to 1)
+  detectedBias: { type: Number, default: 0, index: true },
+
   credibilityScore: { type: Number, default: 0, min: 0, max: 100 },
   credibilityGrade: String,
   credibilityComponents: Schema.Types.Mixed,
@@ -63,6 +70,9 @@ const articleSchema = new Schema<ArticleDocument>({
   country: { type: String, index: true, trim: true, default: 'Global' }, 
   primaryNoun: { type: String, trim: true, default: null },
   secondaryNoun: { type: String, trim: true, default: null },
+
+  // NEW: Array of topics for Interest Profiling
+  topics: { type: [String], index: true, default: [] },
 
   // Feed Optimization Flag
   // true = This is the latest version of the story in its cluster
