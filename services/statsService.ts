@@ -3,43 +3,44 @@ import Article from '../models/articleModel';
 import ActivityLog from '../models/activityLogModel';
 import Profile from '../models/profileModel';
 import SearchLog from '../models/searchLogModel';
-import UserStats, { IUserStats } from '../models/userStatsModel'; // Updated Import
+import UserStats, { IUserStats } from '../models/userStatsModel'; 
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
 
 class StatsService {
     
-    // --- NEW: Interaction Processing (The "True Read" Logic) ---
+    // --- MAIN PIPELINE: Interaction Processing ---
     async processInteraction(userId: string, interaction: any) {
         try {
             if (!userId || !interaction) return;
 
-            // Only process articles for Stats (ignore UI clicks for now)
+            // 1. Handle Impressions (Passive Bias Tracking)
+            if (interaction.contentType === 'impression') {
+                await this.processImpression(userId, interaction);
+                return;
+            }
+
+            // 2. Filter for Content Interactions only
             if (interaction.contentType !== 'article' && interaction.contentType !== 'narrative') {
                 return;
             }
 
             const stats = await UserStats.findOne({ userId });
-            if (!stats) {
-                // Should exist if user created, but safety check
-                return;
-            }
+            if (!stats) return; // Safety check
 
             const duration = interaction.duration || 0; // seconds
             const scrollDepth = interaction.scrollDepth || 0; // percentage
             const wordCount = interaction.wordCount || 0;
 
-            // 1. Update Total Time
+            // 3. Update Global Time
             stats.totalTimeSpent = (stats.totalTimeSpent || 0) + duration;
 
-            // 2. "True Read" Validation
-            // Avg reading speed ~250 wpm. 
-            // We consider it a "Read" if they spent at least 50% of the expected time.
+            // 4. "True Read" Validation
             let isTrueRead = false;
-            
+            // Avg reading speed ~250 wpm. Threshold 50% of expected time.
             if (wordCount > 50 && duration > 10) {
                 const expectedTimeSeconds = (wordCount / 250) * 60;
-                const minimumThreshold = expectedTimeSeconds * 0.5; // 50% threshold
+                const minimumThreshold = expectedTimeSeconds * 0.5; 
 
                 if (duration >= minimumThreshold && scrollDepth > 50) {
                     isTrueRead = true;
@@ -51,22 +52,155 @@ class StatsService {
                 logger.info(`📖 True Read Recorded: User ${userId} | Time: ${duration}s | Depth: ${scrollDepth}%`);
             }
 
-            // 3. Update Average Attention Span
-            // Simple moving average based on True Reads (approximated for habit tracking)
+            // 5. Update Average Attention Span
             if (stats.articlesReadCount > 0) {
                 stats.averageAttentionSpan = Math.round(stats.totalTimeSpent / stats.articlesReadCount);
             }
 
             stats.lastUpdated = new Date();
+            
+            // 6. HABIT & STREAK TRACKING (The "Daily Ritual")
+            await this.checkHabitProgress(userId, stats, duration, isTrueRead);
+
             await stats.save();
 
-            // 4. (Optional) Trigger Vector Update if True Read
+            // 7. (Optional) Trigger Vector Update if True Read
             if (isTrueRead) {
                 this.updateUserVector(userId);
             }
 
         } catch (error) {
             logger.error(`❌ Error processing interaction for user ${userId}:`, error);
+        }
+    }
+
+    // --- NEW: Impression Processing (Survivorship Bias) ---
+    async processImpression(userId: string, interaction: any) {
+        try {
+            // text format expected: "article:Politics" or "narrative:Technology"
+            const info = interaction.text || '';
+            const [type, topic] = info.split(':');
+
+            if (!topic || topic === 'undefined') return;
+
+            const stats = await UserStats.findOne({ userId });
+            if (!stats) return;
+
+            // Init Maps if missing
+            if (!stats.topicImpressions) stats.topicImpressions = new Map();
+            if (!stats.negativeInterest) stats.negativeInterest = new Map();
+            if (!stats.topicInterest) stats.topicInterest = new Map();
+
+            // 1. Increment Impression Count
+            const currentImpressions = (stats.topicImpressions.get(topic) || 0) + 1;
+            stats.topicImpressions.set(topic, currentImpressions);
+
+            // 2. Check for "Negative Interest" (High Exposure, Low Clicks)
+            // Logic: If user has seen topic > 5 times, check Click/Impression ratio
+            if (currentImpressions >= 5) {
+                const clicks = stats.topicInterest.get(topic) || 0;
+                const ratio = clicks / currentImpressions;
+
+                // If CTR is below 10%, consider it "Negative Interest"
+                if (ratio < 0.1) {
+                    const negativeScore = (stats.negativeInterest.get(topic) || 0) + 1;
+                    stats.negativeInterest.set(topic, negativeScore);
+                } else {
+                    // If they start clicking, remove from negative interest
+                    if (stats.negativeInterest.has(topic)) {
+                        stats.negativeInterest.delete(topic);
+                    }
+                }
+            }
+
+            stats.markModified('topicImpressions');
+            stats.markModified('negativeInterest');
+            await stats.save();
+
+        } catch (error) {
+            // Fail silently for impressions to reduce noise
+        }
+    }
+
+    // --- NEW: Habit & Streak Engine ---
+    async checkHabitProgress(userId: string, stats: IUserStats, duration: number, isTrueRead: boolean) {
+        try {
+            const now = new Date();
+            
+            // 1. Check for "New Day" Reset
+            // Compare dates (YYYY-MM-DD)
+            const lastDate = stats.dailyStats?.date ? new Date(stats.dailyStats.date) : new Date(0);
+            const isSameDay = lastDate.toDateString() === now.toDateString();
+
+            if (!isSameDay) {
+                // It's a new day! Reset counters.
+                stats.dailyStats = {
+                    date: now,
+                    timeSpent: 0,
+                    articlesRead: 0,
+                    goalsMet: false
+                };
+            }
+
+            // 2. Update Daily Counters
+            stats.dailyStats.timeSpent += duration;
+            if (isTrueRead) stats.dailyStats.articlesRead += 1;
+
+            // 3. Load Profile to check Goals & Streaks
+            // We only need to check streaks if the goal hasn't been met yet today
+            if (!stats.dailyStats.goalsMet) {
+                const profile = await Profile.findOne({ userId });
+                if (profile && profile.habits && profile.habits.length > 0) {
+                    
+                    // Find the primary daily habit (defaulting to 15 mins if not found)
+                    const dailyHabit = profile.habits.find(h => h.type === 'daily_minutes');
+                    const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; // default 15 mins
+
+                    // 4. Did we just cross the finish line?
+                    if (stats.dailyStats.timeSpent >= targetSeconds) {
+                        stats.dailyStats.goalsMet = true;
+                        
+                        // --- STREAK LOGIC ---
+                        const yesterday = new Date();
+                        yesterday.setDate(yesterday.getDate() - 1);
+                        
+                        const lastActive = profile.lastActiveDate ? new Date(profile.lastActiveDate) : new Date(0);
+                        const isConsecutive = lastActive.toDateString() === yesterday.toDateString();
+                        const isToday = lastActive.toDateString() === now.toDateString();
+
+                        if (!isToday) {
+                            if (isConsecutive) {
+                                // Perfect streak
+                                profile.currentStreak += 1;
+                            } else {
+                                // Streak Broken? Check Freezes.
+                                const daysGap = Math.floor((now.getTime() - lastActive.getTime()) / (1000 * 60 * 60 * 24));
+                                
+                                if (daysGap > 1 && profile.streakFreezes > 0) {
+                                    // Saved by the freeze!
+                                    profile.streakFreezes -= 1;
+                                    // Streak continues (phantom increment logic or just keep it?)
+                                    // We keep the number but don't increment, or increment?
+                                    // Standard logic: You used a freeze, you keep the streak alive.
+                                    profile.currentStreak += 1;
+                                    logger.info(`❄️ Streak Saved by Freeze for User ${userId}`);
+                                } else if (daysGap > 1) {
+                                    // Sorry, back to 1
+                                    profile.currentStreak = 1;
+                                } else {
+                                    // First day ever or restart
+                                    profile.currentStreak = 1;
+                                }
+                            }
+                            profile.lastActiveDate = now;
+                            await profile.save();
+                            logger.info(`🔥 Streak Updated for User ${userId}: ${profile.currentStreak}`);
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            logger.error(`Habit Check Error:`, error);
         }
     }
 
@@ -151,15 +285,14 @@ class StatsService {
             await client.expire(key, 60 * 60 * 24 * 7);
 
         } catch (error) {
-            // Silent fail is acceptable for stats to avoid breaking the main flow
-            // console.warn('Stats increment failed', error);
+            // Silent fail is acceptable for stats
         }
     }
 
     // 4. Update User Personalization Vector (Lazy Update)
     async updateUserVector(userId: string) {
         try {
-            // A. Throttling Check (From Previous Step)
+            // A. Throttling Check
             if (redisClient.isReady()) {
                 const client = redisClient.getClient();
                 if (client) {
@@ -219,16 +352,14 @@ class StatsService {
             const normalized = query.toLowerCase().trim();
             if (normalized.length < 2) return;
 
-            // Upsert the log: Increment count, update last searched
             await SearchLog.findOneAndUpdate(
                 { normalizedQuery: normalized },
                 { 
                     $inc: { count: 1 },
                     $set: { 
-                        query: query, // Keep most recent casing
+                        query: query,
                         lastSearched: new Date(),
                         zeroResults: resultCount === 0,
-                        // Simple moving average for result count (approx)
                         resultCountAvg: resultCount 
                     }
                 },
@@ -249,21 +380,20 @@ class StatsService {
             const now = Date.now();
             const hoursSinceUpdate = (now - lastUpdate) / (1000 * 60 * 60);
 
-            // Only run decay if at least 24 hours have passed to save DB ops
+            // Only run decay if at least 24 hours have passed
             if (hoursSinceUpdate < 24) return;
 
             const daysPassed = Math.floor(hoursSinceUpdate / 24);
-            // Decay Factor: 5% decay per day (0.95 ^ days)
             const decayFactor = Math.pow(0.95, daysPassed);
 
-            // A. Decay Lean Exposure (Object)
+            // A. Decay Lean Exposure
             if (stats.leanExposure) {
                 stats.leanExposure.Left = Math.round((stats.leanExposure.Left || 0) * decayFactor);
                 stats.leanExposure.Center = Math.round((stats.leanExposure.Center || 0) * decayFactor);
                 stats.leanExposure.Right = Math.round((stats.leanExposure.Right || 0) * decayFactor);
             }
 
-            // B. Decay Topic Interest (Map)
+            // B. Decay Topic Interest
             if (stats.topicInterest) {
                 stats.topicInterest.forEach((value, key) => {
                     const newValue = Math.round(value * decayFactor);
@@ -275,7 +405,7 @@ class StatsService {
                 });
             }
 
-            // C. Decay Negative Interest (Survivorship Bias Map)
+            // C. Decay Negative Interest
             if (stats.negativeInterest) {
                 stats.negativeInterest.forEach((value, key) => {
                     const newValue = Math.round(value * decayFactor);
