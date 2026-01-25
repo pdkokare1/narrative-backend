@@ -25,6 +25,13 @@ export interface IUserStats extends Document {
   // Topics they see but IGNORE (Survivorship Bias Fix)
   negativeInterest: Map<string, number>;
 
+  // NEW: Reading Progress (Stop Points)
+  // Maps Article ID -> Scroll Position (pixels)
+  readingProgress: Map<string, number>;
+
+  // NEW: Last known timezone (for streak calculation)
+  lastTimezone: string;
+
   // Daily Progress for Habits
   dailyStats: {
     date: Date;          // The day this stat belongs to
@@ -60,6 +67,10 @@ const userStatsSchema = new Schema<IUserStats>({
 
   // Negative Interest Map
   negativeInterest: { type: Map, of: Number, default: {} },
+
+  // NEW: Stop Points
+  readingProgress: { type: Map, of: Number, default: {} },
+  lastTimezone: { type: String, default: 'UTC' },
 
   // NEW: Daily Stats Tracking
   dailyStats: {
