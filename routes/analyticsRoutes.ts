@@ -20,4 +20,8 @@ router.get('/user-stats', checkAuth, analyticsController.getUserStats);
 // 4. Admin Overview (Protected)
 router.get('/overview', checkAuth, analyticsController.getAnalyticsOverview);
 
+// 5. Tune Feed (User Control) - Protected
+// Allows user to remove negative filters or reset interests
+router.post('/tune-feed', checkAuth, analyticsController.tuneUserFeed);
+
 export default router;
