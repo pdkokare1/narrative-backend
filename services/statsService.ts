@@ -11,7 +11,6 @@ import gamificationService from './gamificationService';
 class StatsService {
     
     // --- MAIN PIPELINE: Interaction Processing ---
-    // Updated: Now accepts optional timezone for accurate streak tracking
     async processInteraction(userId: string, interaction: any, timezone?: string) {
         try {
             if (!userId || !interaction) return;
@@ -22,7 +21,7 @@ class StatsService {
                 return;
             }
 
-            // 2. Filter for Content Interactions only (Updated to include Audio)
+            // 2. Filter for Content Interactions
             if (interaction.contentType !== 'article' && 
                 interaction.contentType !== 'narrative' && 
                 interaction.contentType !== 'audio_action') {
@@ -30,21 +29,23 @@ class StatsService {
             }
 
             const stats = await UserStats.findOne({ userId });
-            if (!stats) return; // Safety check
+            if (!stats) return; 
 
-            // NEW: Update Timezone if provided
+            // NEW: Update Timezone
             if (timezone) stats.lastTimezone = timezone;
 
             const duration = interaction.duration || 0; // seconds
             const scrollDepth = interaction.scrollDepth || 0; // percentage
             const wordCount = interaction.wordCount || 0;
+            const focusScore = interaction.focusScore || 100; // New: Default to 100
             
+            // NEW: Update Global Focus Score (Moving Average)
+            // Weight recent interaction 10%, historical 90%
+            stats.focusScoreAvg = Math.round(((stats.focusScoreAvg || 100) * 0.9) + (focusScore * 0.1));
+
             // NEW: Save Stop Point (Resume Reading)
             if (interaction.scrollPosition && interaction.contentId) {
-                // Initialize map if missing (mongoose map edge case)
                 if (!stats.readingProgress) stats.readingProgress = new Map();
-                
-                // Only update if they scrolled further than 100px (avoid saving "top of page")
                 if (interaction.scrollPosition > 100) {
                     stats.readingProgress.set(interaction.contentId, interaction.scrollPosition);
                 }
@@ -53,17 +54,16 @@ class StatsService {
             // 3. Update Global Time
             stats.totalTimeSpent = (stats.totalTimeSpent || 0) + duration;
 
-            // 4. "True Read" Validation (Enhanced for Anti-Gaming)
+            // 4. "True Read" Validation (Enhanced)
             let isTrueRead = false;
             
             // Logic A: Standard Text Reading
             if (interaction.contentType === 'article' || interaction.contentType === 'narrative') {
-                // Average reading speed is ~250 wpm. Skimming is ~500+. 
-                // We set limit at 600 wpm to catch "scroll-to-bottom" cheaters.
                 const wpm = duration > 0 ? wordCount / (duration / 60) : 9999;
 
-                // STRICT CHECK: Must be > 30s, > 75% scroll, and reasonable speed
-                if (wordCount > 100 && scrollDepth > 75 && duration > 30 && wpm < 600) {
+                // STRICT CHECK: Must be > 30s, > 75% scroll, reasonable speed
+                // NEW: Added Focus Score check. If they tabbed away constantly (score < 50), it's not a true read.
+                if (wordCount > 100 && scrollDepth > 75 && duration > 30 && wpm < 600 && focusScore > 40) {
                     isTrueRead = true;
                 }
             }
@@ -76,11 +76,9 @@ class StatsService {
 
             if (isTrueRead) {
                 stats.articlesReadCount = (stats.articlesReadCount || 0) + 1;
-                // Log the read type for clarity
                 const readType = interaction.contentType === 'audio_action' ? 'Audio Listen' : 'Text Read';
-                logger.info(`📖 True Read Recorded (${readType}): User ${userId} | Time: ${duration}s | Depth: ${scrollDepth}%`);
+                logger.info(`📖 True Read Recorded (${readType}): User ${userId} | Time: ${duration}s | Focus: ${focusScore}`);
                 
-                // NEW: Check for Content Fatigue (Burnout Protection)
                 await this.checkContentFatigue(userId, interaction.text);
             }
 
@@ -92,15 +90,14 @@ class StatsService {
             stats.lastUpdated = new Date();
             
             // 6. HABIT & STREAK TRACKING (The "Daily Ritual")
-            // Pass timezone for accurate daily reset
             await this.checkHabitProgress(userId, stats, duration, isTrueRead, timezone);
 
-            // 7. Trigger Vector Update if True Read
+            // 7. Trigger Vector Update
             if (isTrueRead) {
                 this.updateUserVector(userId);
             }
 
-            // 8. Update Topic Interests (Explicitly for Reads)
+            // 8. Update Topic Interests
             if (interaction.contentId && (interaction.contentType === 'article' || interaction.contentType === 'narrative')) {
                  await this.updateInterests(stats, interaction.contentId, duration);
             }
@@ -112,10 +109,9 @@ class StatsService {
         }
     }
 
-    // --- NEW: Impression Processing (Survivorship Bias) ---
+    // --- NEW: Impression Processing ---
     async processImpression(userId: string, interaction: any) {
         try {
-            // text format expected: "article:Politics" or "narrative:Technology"
             const info = interaction.text || '';
             const [type, topic] = info.split(':');
 
@@ -124,27 +120,22 @@ class StatsService {
             const stats = await UserStats.findOne({ userId });
             if (!stats) return;
 
-            // Init Maps if missing
             if (!stats.topicImpressions) stats.topicImpressions = new Map();
             if (!stats.negativeInterest) stats.negativeInterest = new Map();
             if (!stats.topicInterest) stats.topicInterest = new Map();
 
-            // 1. Increment Impression Count
             const currentImpressions = (stats.topicImpressions.get(topic) || 0) + 1;
             stats.topicImpressions.set(topic, currentImpressions);
 
-            // 2. Check for "Negative Interest" (High Exposure, Low Clicks)
-            // Logic: If user has seen topic > 5 times, check Click/Impression ratio
+            // Negative Interest Logic
             if (currentImpressions >= 5) {
                 const clicks = stats.topicInterest.get(topic) || 0;
                 const ratio = clicks / currentImpressions;
 
-                // If CTR is below 10%, consider it "Negative Interest"
                 if (ratio < 0.1) {
                     const negativeScore = (stats.negativeInterest.get(topic) || 0) + 1;
                     stats.negativeInterest.set(topic, negativeScore);
                 } else {
-                    // If they start clicking, remove from negative interest
                     if (stats.negativeInterest.has(topic)) {
                         stats.negativeInterest.delete(topic);
                     }
@@ -156,14 +147,13 @@ class StatsService {
             await stats.save();
 
         } catch (error) {
-            // Fail silently for impressions to reduce noise
+            // Fail silently
         }
     }
 
     // --- NEW: Content Fatigue Detection ---
     async checkContentFatigue(userId: string, topicString: string) {
         try {
-            // Expect topicString format "article:Politics" or just "Politics"
             if (!topicString || !redisClient.isReady()) return;
             
             const topic = topicString.includes(':') ? topicString.split(':')[1] : topicString;
@@ -173,20 +163,14 @@ class StatsService {
             if (!client) return;
 
             const key = `fatigue_monitor:${userId}`;
-            
-            // 1. Push topic to recent list
             await client.lPush(key, topic);
-            // 2. Keep only last 10 items
             await client.lTrim(key, 0, 9);
             
-            // 3. Check frequency
             const recentTopics = await client.lRange(key, 0, -1);
             const count = recentTopics.filter(t => t === topic).length;
 
-            // 4. Trigger Fatigue if > 5 reads of same topic recently
             if (count > 5) {
                 logger.info(`💤 Content Fatigue Detected: User ${userId} is tired of ${topic}`);
-                // Set a temporary block/suppression key for 2 hours (7200 seconds)
                 await client.setEx(`fatigue_block:${userId}:${topic}`, 7200, 'true');
             }
 
@@ -195,75 +179,86 @@ class StatsService {
         }
     }
 
-    // --- NEW: Habit & Streak Engine ---
+    // --- NEW: Habit & Streak Engine with FREEZE Protocol ---
     async checkHabitProgress(userId: string, stats: any, duration: number, isTrueRead: boolean, timezone?: string) {
         try {
             const now = new Date();
             const tz = timezone || 'UTC';
 
-            // 1. Determine "Today" and "Yesterday" in User's Timezone
             const getDayString = (date: Date) => date.toLocaleDateString('en-CA', { timeZone: tz });
             const todayStr = getDayString(now);
-            const lastActiveStr = stats.lastActiveDate ? getDayString(stats.lastActiveDate) : null;
+            
+            // Handle new user case
+            const lastActiveDate = stats.lastActiveDate ? new Date(stats.lastActiveDate) : new Date(0);
+            const lastActiveStr = getDayString(lastActiveDate);
 
-            // 2. STREAK LOGIC
-            // If it's a new day, we check continuity
+            // If it's a NEW DAY (not the same as last active)
             if (todayStr !== lastActiveStr) {
                 const yesterday = new Date(now);
                 yesterday.setDate(yesterday.getDate() - 1);
                 const yesterdayStr = getDayString(yesterday);
 
-                // If last active was yesterday, increment streak. Else reset.
+                // Scenario 1: Consecutive Day (Streak continues)
                 if (lastActiveStr === yesterdayStr) {
                     stats.currentStreak = (stats.currentStreak || 0) + 1;
-                } else {
-                    stats.currentStreak = 1; 
+                    
+                    // Reward: Every 7 days, earn a freeze (Max 3)
+                    if (stats.currentStreak % 7 === 0 && (stats.streakFreezes || 0) < 3) {
+                        stats.streakFreezes = (stats.streakFreezes || 0) + 1;
+                    }
+                } 
+                // Scenario 2: Missed Day (Check for Freeze)
+                else {
+                    const daysMissed = Math.floor((now.getTime() - lastActiveDate.getTime()) / (1000 * 60 * 60 * 24));
+                    
+                    // Only use freeze if missed just 1-2 days (don't freeze for a month of absence)
+                    if (daysMissed <= 2 && (stats.streakFreezes || 0) > 0) {
+                        stats.streakFreezes -= 1;
+                        stats.lastFreezeUsed = now;
+                        logger.info(`❄️ Streak Freeze Used for User ${userId}`);
+                        // Do NOT reset streak.
+                    } else {
+                        // Reset Streak
+                        stats.currentStreak = 1; 
+                    }
                 }
 
-                // Update Personal Best
                 if (stats.currentStreak > (stats.longestStreak || 0)) {
                     stats.longestStreak = stats.currentStreak;
                 }
             }
             stats.lastActiveDate = now;
 
-            // 3. HISTORY LOGGING (Last 30 Days)
-            // Ensure array exists (backward compatibility)
+            // HISTORY LOGGING
             if (!stats.recentDailyHistory) stats.recentDailyHistory = [];
             
-            // Find today's entry
             let dailyEntry = stats.recentDailyHistory.find((d: any) => d.date === todayStr);
 
             if (!dailyEntry) {
                 dailyEntry = { date: todayStr, timeSpent: 0, articlesRead: 0, goalsMet: false };
-                // Keep history manageable
                 if (stats.recentDailyHistory.length >= 30) stats.recentDailyHistory.shift();
                 stats.recentDailyHistory.push(dailyEntry);
             }
 
-            // Update Metrics
             dailyEntry.timeSpent += duration;
             if (isTrueRead) dailyEntry.articlesRead += 1;
 
-            // 4. SYNC LEGACY FIELD (For current dashboard compatibility)
             stats.dailyStats = {
                 date: now,
                 timeSpent: dailyEntry.timeSpent,
                 articlesRead: dailyEntry.articlesRead,
-                goalsMet: dailyEntry.goalsMet // will be updated below
+                goalsMet: dailyEntry.goalsMet 
             };
 
-            // 5. CHECK GOALS
+            // CHECK GOALS
             if (!dailyEntry.goalsMet) {
                 const profile = await Profile.findOne({ userId });
                 const dailyHabit = profile?.habits?.find((h:any) => h.type === 'daily_minutes');
-                const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; // default 15 mins
+                const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; 
 
                 if (dailyEntry.timeSpent >= targetSeconds) {
                     dailyEntry.goalsMet = true;
                     stats.dailyStats.goalsMet = true;
-                    
-                    // Trigger Gamification Service for Badges/XP
                     await gamificationService.updateStreak(userId, timezone);
                 }
             }
@@ -272,15 +267,14 @@ class StatsService {
         }
     }
 
-    // --- HELPER: Update Interests (Critical for Transparency Modal) ---
+    // --- HELPER: Update Interests ---
     private async updateInterests(stats: any, articleId: string, duration: number) {
         try {
             const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category');
             if (!article) return;
 
-            const interestWeight = Math.min(duration, 120); // Cap at 2 mins weight
+            const interestWeight = Math.min(duration, 120); 
 
-            // Update Topics
             if (article.topics && Array.isArray(article.topics)) {
                 if (!stats.topicInterest) stats.topicInterest = new Map();
                 article.topics.forEach(topic => {
@@ -289,7 +283,6 @@ class StatsService {
                 });
             }
 
-            // Update Bias
             if (article.detectedBias !== undefined) {
                 let bucket = 'Center';
                 if (article.detectedBias <= -0.3) bucket = 'Left';
@@ -306,7 +299,6 @@ class StatsService {
         try {
             const twoDaysAgo = new Date(Date.now() - 48 * 60 * 60 * 1000);
             
-            // Aggregation: Group by Cluster Topic -> Count -> Sort
             const results = await Article.aggregate([
                 { 
                     $match: { 
@@ -318,11 +310,10 @@ class StatsService {
                     $group: { 
                         _id: "$clusterTopic", 
                         count: { $sum: 1 },
-                        // Get the highest trust score in this cluster as a sample
                         sampleScore: { $max: "$trustScore" } 
                     } 
                 },
-                { $match: { count: { $gte: 2 } } }, // Only topics with at least 2 articles
+                { $match: { count: { $gte: 2 } } }, 
                 { $sort: { count: -1 } },
                 { $limit: 12 }
             ]);
@@ -333,10 +324,7 @@ class StatsService {
                 score: r.sampleScore || 0
             }));
 
-            // Save to Redis (Expire in 1 hour)
             await redisClient.set('trending_topics_smart', topics, 3600);
-            logger.info(`🔥 Trending Topics Updated: ${topics.length} topics found.`);
-            
             return topics;
 
         } catch (error: any) {
@@ -345,7 +333,7 @@ class StatsService {
         }
     }
 
-    // 2. Get Global Bias Distribution (Cached)
+    // 2. Get Global Bias Distribution
     async getGlobalStats() {
         const CACHE_KEY = 'global_bias_stats';
         const cached = await redisClient.get(CACHE_KEY);
@@ -355,54 +343,42 @@ class StatsService {
             { $group: { _id: "$politicalLean", count: { $sum: 1 } } }
         ]);
         
-        // Transform to cleaner object
         const result = stats.reduce((acc, curr) => {
             acc[curr._id] = curr.count;
             return acc;
         }, {} as Record<string, number>);
 
-        await redisClient.set(CACHE_KEY, result, 3600 * 4); // Cache for 4 hours
+        await redisClient.set(CACHE_KEY, result, 3600 * 4);
         return result;
     }
 
-    // 3. Increment Counter (FIX for Pipeline)
+    // 3. Increment Counter
     async increment(metric: string) {
         try {
             if (!redisClient.isReady()) return;
-            
             const client = redisClient.getClient();
             if (!client) return;
 
-            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            const today = new Date().toISOString().split('T')[0]; 
             const key = `stats:${today}:${metric}`;
-            
-            // Atomic increment
             await client.incr(key);
-            // Ensure it cleans up after 7 days
             await client.expire(key, 60 * 60 * 24 * 7);
-
         } catch (error) {
-            // Silent fail is acceptable for stats
         }
     }
 
-    // 4. Update User Personalization Vector (Lazy Update)
+    // 4. Update User Personalization Vector
     async updateUserVector(userId: string) {
         try {
-            // A. Throttling Check
             if (redisClient.isReady()) {
                 const client = redisClient.getClient();
                 if (client) {
                     const countKey = `vector_update_count:${userId}`;
                     const count = await client.incr(countKey);
-                    
-                    if (count % 5 !== 0) {
-                        return;
-                    }
+                    if (count % 5 !== 0) return;
                 }
             }
 
-            // B. Get last 50 viewed article IDs
             const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
                 .sort({ timestamp: -1 })
                 .limit(50) 
@@ -412,7 +388,6 @@ class StatsService {
 
             const articleIds = recentLogs.map(log => log.articleId);
 
-            // C. Fetch embeddings
             const articles = await Article.find({ 
                 _id: { $in: articleIds },
                 embedding: { $exists: true, $not: { $size: 0 } }
@@ -420,7 +395,6 @@ class StatsService {
 
             if (articles.length === 0) return;
 
-            // D. Calculate Centroid
             const vectorLength = articles[0].embedding!.length;
             const avgVector = new Array(vectorLength).fill(0);
 
@@ -435,7 +409,6 @@ class StatsService {
                 avgVector[i] = avgVector[i] / articles.length;
             }
 
-            // E. Update Profile
             await Profile.updateOne({ userId }, { userEmbedding: avgVector });
 
         } catch (error) {
@@ -467,7 +440,7 @@ class StatsService {
         }
     }
 
-    // 6. Apply Recency Decay (The "Time Fade" Protocol)
+    // 6. Apply Recency Decay
     async applyInterestDecay(userId: string) {
         try {
             const stats = await UserStats.findOne({ userId });
@@ -477,20 +450,17 @@ class StatsService {
             const now = Date.now();
             const hoursSinceUpdate = (now - lastUpdate) / (1000 * 60 * 60);
 
-            // Only run decay if at least 24 hours have passed
             if (hoursSinceUpdate < 24) return;
 
             const daysPassed = Math.floor(hoursSinceUpdate / 24);
             const decayFactor = Math.pow(0.95, daysPassed);
 
-            // A. Decay Lean Exposure
             if (stats.leanExposure) {
                 stats.leanExposure.Left = Math.round((stats.leanExposure.Left || 0) * decayFactor);
                 stats.leanExposure.Center = Math.round((stats.leanExposure.Center || 0) * decayFactor);
                 stats.leanExposure.Right = Math.round((stats.leanExposure.Right || 0) * decayFactor);
             }
 
-            // B. Decay Topic Interest
             if (stats.topicInterest) {
                 stats.topicInterest.forEach((value, key) => {
                     const newValue = Math.round(value * decayFactor);
@@ -502,7 +472,6 @@ class StatsService {
                 });
             }
 
-            // C. Decay Negative Interest
             if (stats.negativeInterest) {
                 stats.negativeInterest.forEach((value, key) => {
                     const newValue = Math.round(value * decayFactor);
