@@ -97,7 +97,7 @@ class StatsService {
                 this.updateUserVector(userId);
             }
 
-            // 8. Update Topic Interests
+            // 8. Update Topic Interests AND Perspective Score
             if (interaction.contentId && (interaction.contentType === 'article' || interaction.contentType === 'narrative')) {
                  await this.updateInterests(stats, interaction.contentId, duration);
             }
@@ -267,7 +267,7 @@ class StatsService {
         }
     }
 
-    // --- HELPER: Update Interests ---
+    // --- HELPER: Update Interests & Diversity ---
     private async updateInterests(stats: any, articleId: string, duration: number) {
         try {
             const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category');
@@ -275,6 +275,7 @@ class StatsService {
 
             const interestWeight = Math.min(duration, 120); 
 
+            // 1. Update Topic Interest
             if (article.topics && Array.isArray(article.topics)) {
                 if (!stats.topicInterest) stats.topicInterest = new Map();
                 article.topics.forEach(topic => {
@@ -283,15 +284,60 @@ class StatsService {
                 });
             }
 
+            // 2. Update Political Lean & Diversity Score
             if (article.detectedBias !== undefined) {
                 let bucket = 'Center';
                 if (article.detectedBias <= -0.3) bucket = 'Left';
                 if (article.detectedBias >= 0.3) bucket = 'Right';
                 
+                // Update Exposure Count
                 if (!stats.leanExposure) stats.leanExposure = { Left: 0, Center: 0, Right: 0 };
                 stats.leanExposure[bucket] = (stats.leanExposure[bucket] || 0) + interestWeight;
+
+                // --- NEW: Calculate Diversity Score (Echo Chamber Breaker) ---
+                if (!stats.lastLeanSequence) stats.lastLeanSequence = [];
+                
+                // Add current read to sequence (Keep last 10)
+                stats.lastLeanSequence.push(bucket);
+                if (stats.lastLeanSequence.length > 10) {
+                    stats.lastLeanSequence.shift();
+                }
+
+                // Analyze the Mix
+                const sequence = stats.lastLeanSequence;
+                const leftCount = sequence.filter(x => x === 'Left').length;
+                const rightCount = sequence.filter(x => x === 'Right').length;
+                const centerCount = sequence.filter(x => x === 'Center').length;
+                const total = sequence.length;
+
+                // Base Score: 50 (Neutral)
+                let diversity = 50;
+
+                // If they have meaningful history (>3 items)
+                if (total > 3) {
+                    // Perfect Balance: 100
+                    if (leftCount > 0 && rightCount > 0 && centerCount > 0) {
+                        diversity = 100;
+                    } 
+                    // Healthy Mix (Left+Right, Left+Center, Right+Center): 75
+                    else if ((leftCount > 0 && rightCount > 0) || (leftCount > 0 && centerCount > 0) || (rightCount > 0 && centerCount > 0)) {
+                        diversity = 75;
+                    }
+                    // Echo Chamber (Only Left or Only Right): 25
+                    else if ((leftCount === total) || (rightCount === total)) {
+                        diversity = 25;
+                    }
+                    // Only Center (Safe but not diverse): 60
+                    else {
+                        diversity = 60;
+                    }
+                }
+
+                stats.diversityScore = diversity;
             }
-        } catch (e) { /* silent fail */ }
+        } catch (e) { 
+            logger.warn('Error in updateInterests:', e);
+        }
     }
 
     // 1. Calculate and Cache Trending Topics
