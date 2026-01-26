@@ -1,6 +1,16 @@
 // models/userStatsModel.ts
 import mongoose, { Document, Schema } from 'mongoose';
 
+// NEW: Interface for granular habit tracking
+export interface IHabitStatus {
+  habitId?: string; // Optional link to a specific config ID
+  type: 'daily_minutes' | 'daily_articles' | 'daily_audio';
+  current: number;
+  target: number;
+  completed: boolean;
+  label?: string;
+}
+
 export interface IUserStats extends Document {
   userId: string;
   totalTimeSpent: number; // in seconds
@@ -62,6 +72,9 @@ export interface IUserStats extends Document {
   lastActiveDate: Date; 
   streakFreezes: number; // Number of "saves" available
   lastFreezeUsed: Date | null; // When the last freeze was consumed
+
+  // NEW: Multi-Habit Status (Runs parallel to dailyStats)
+  dailyHabitStatus?: IHabitStatus[];
 
   // Historical Data (Last 30 Days)
   recentDailyHistory: Array<{
@@ -142,6 +155,16 @@ const userStatsSchema = new Schema<IUserStats>({
   lastActiveDate: { type: Date, default: Date.now },
   streakFreezes: { type: Number, default: 1 }, // Start with 1 freeze
   lastFreezeUsed: { type: Date, default: null },
+
+  // NEW: Multi-Habit Schema
+  dailyHabitStatus: [{
+    habitId: String,
+    type: { type: String, enum: ['daily_minutes', 'daily_articles', 'daily_audio'] },
+    current: Number,
+    target: Number,
+    completed: Boolean,
+    label: String
+  }],
 
   recentDailyHistory: [{
     date: { type: String }, 
