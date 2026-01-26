@@ -76,6 +76,7 @@ export interface IUserStats extends Document {
   };
 
   activityByHour: Map<string, number>;
+  peakLearningTime?: number; // 0-23 (The Golden Hour)
   
   engagementScore: number; // 0-100
   lastUpdated: Date;
@@ -150,6 +151,7 @@ const userStatsSchema = new Schema<IUserStats>({
   },
 
   activityByHour: { type: Map, of: Number, default: {} },
+  peakLearningTime: { type: Number, default: null }, // NEW
   
   engagementScore: { type: Number, default: 50 },
   lastUpdated: { type: Date, default: Date.now }
