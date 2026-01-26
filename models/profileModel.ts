@@ -8,6 +8,17 @@ export interface IHabit {
   label: string;
 }
 
+export interface IQuest {
+  id: string;
+  type: 'read_opposing' | 'read_deep' | 'share_article' | 'topic_explorer';
+  target: number;      // e.g., 1
+  progress: number;    // e.g., 0
+  isCompleted: boolean;
+  reward: string;      // 'xp', 'streak_freeze'
+  description: string;
+  expiresAt: Date;
+}
+
 export interface IProfile extends Document {
   userId: string;
   email?: string;
@@ -17,9 +28,12 @@ export interface IProfile extends Document {
   // Gamification
   currentStreak: number;
   lastActiveDate?: Date;
-  streakFreezes: number; // NEW: Streak Protection
-  habits: IHabit[];      // NEW: Explicit Goals
+  streakFreezes: number; 
+  habits: IHabit[];      
   
+  // NEW: Quest System
+  quests: IQuest[];
+
   badges: IBadge[];
 
   // Stats Counters
@@ -31,9 +45,12 @@ export interface IProfile extends Document {
   notificationsEnabled: boolean;
   fcmToken?: string;
   
+  // NEW: Privacy Mode
+  isIncognito: boolean; // If true, stop tracking history
+
   // Personalization
   savedArticles: string[];
-  userEmbedding?: number[]; // 1536-dim vector
+  userEmbedding?: number[]; 
   
   role: 'user' | 'admin';
   createdAt: Date;
@@ -53,8 +70,8 @@ const profileSchema = new Schema<IProfile>({
   },
   phoneNumber: {
     type: String,
-    unique: true,
-    sparse: true
+    unique: true, 
+    sparse: true 
   },
   username: {
     type: String,
@@ -68,7 +85,7 @@ const profileSchema = new Schema<IProfile>({
   // Gamification
   currentStreak: { type: Number, default: 0 },
   lastActiveDate: { type: Date },
-  streakFreezes: { type: Number, default: 1 }, // Give 1 freebie
+  streakFreezes: { type: Number, default: 1 }, 
   
   habits: [{
     type: { type: String, enum: ['daily_minutes', 'weekly_articles'] },
@@ -76,6 +93,18 @@ const profileSchema = new Schema<IProfile>({
     label: String
   }],
   
+  // NEW: Quests
+  quests: [{
+    id: String,
+    type: { type: String, enum: ['read_opposing', 'read_deep', 'share_article', 'topic_explorer'] },
+    target: Number,
+    progress: { type: Number, default: 0 },
+    isCompleted: { type: Boolean, default: false },
+    reward: String,
+    description: String,
+    expiresAt: Date
+  }],
+
   badges: [{
     id: String,
     label: String,
@@ -93,9 +122,12 @@ const profileSchema = new Schema<IProfile>({
   notificationsEnabled: { type: Boolean, default: true },
   fcmToken: { type: String },
   
+  // NEW: Privacy
+  isIncognito: { type: Boolean, default: false },
+
   // Personalization
   savedArticles: [{ type: String }],
-  userEmbedding: { type: [Number], select: false }, // Heavy field
+  userEmbedding: { type: [Number], select: false }, 
   
   role: { type: String, enum: ['user', 'admin'], default: 'user' },
   
