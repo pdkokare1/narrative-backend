@@ -9,6 +9,7 @@ export interface IUserStats extends Document {
   articlesReadCount: number; // Only counts "True Reads"
 
   averageAttentionSpan: number; // in seconds
+  focusScoreAvg: number; // 0-100 (New: How often they stay on the tab)
   
   leanExposure: {
     Left: number;
@@ -32,14 +33,16 @@ export interface IUserStats extends Document {
   // Last known timezone (for streak calculation)
   lastTimezone: string;
 
-  // --- HABIT & STREAK TRACKING (NEW) ---
+  // --- HABIT & STREAK TRACKING ---
   currentStreak: number;
   longestStreak: number;
-  lastActiveDate: Date; // Used to check if streak is alive
+  lastActiveDate: Date; 
+  streakFreezes: number; // NEW: Number of "saves" available
+  lastFreezeUsed: Date | null; // NEW: When the last freeze was consumed
 
-  // Historical Data (Last 30 Days) - New field to support history graph
+  // Historical Data (Last 30 Days)
   recentDailyHistory: Array<{
-    date: string; // YYYY-MM-DD format for easy lookup
+    date: string; // YYYY-MM-DD
     timeSpent: number;
     articlesRead: number;
     goalsMet: boolean;
@@ -47,10 +50,10 @@ export interface IUserStats extends Document {
 
   // Existing Daily Progress (Preserved for backward compatibility)
   dailyStats: {
-    date: Date;          // The day this stat belongs to
-    timeSpent: number;   // Seconds read TODAY
-    articlesRead: number; // Articles read TODAY
-    goalsMet: boolean;   // Has the daily goal been triggered?
+    date: Date;          
+    timeSpent: number;   
+    articlesRead: number; 
+    goalsMet: boolean;   
   };
 
   activityByHour: Map<string, number>;
@@ -66,6 +69,7 @@ const userStatsSchema = new Schema<IUserStats>({
   articlesReadCount: { type: Number, default: 0 },
 
   averageAttentionSpan: { type: Number, default: 0 },
+  focusScoreAvg: { type: Number, default: 100 }, // Defaults to perfect focus
   
   leanExposure: {
     Left: { type: Number, default: 0 },
@@ -85,10 +89,12 @@ const userStatsSchema = new Schema<IUserStats>({
   readingProgress: { type: Map, of: Number, default: {} },
   lastTimezone: { type: String, default: 'UTC' },
 
-  // --- HABIT & STREAK TRACKING (NEW) ---
+  // --- HABIT & STREAK TRACKING ---
   currentStreak: { type: Number, default: 0 },
   longestStreak: { type: Number, default: 0 },
   lastActiveDate: { type: Date, default: Date.now },
+  streakFreezes: { type: Number, default: 1 }, // Start with 1 freeze
+  lastFreezeUsed: { type: Date, default: null },
 
   recentDailyHistory: [{
     date: { type: String }, 
