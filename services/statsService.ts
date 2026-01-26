@@ -303,7 +303,8 @@ class StatsService {
     // --- HELPER: Update Interests & Diversity ---
     private async updateInterests(stats: any, articleId: string, duration: number, timezone?: string, userId?: string) {
         try {
-            const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category');
+            // UPDATED: Added 'sentiment' to the select query
+            const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category sentiment');
             if (!article) return;
 
             const interestWeight = Math.min(duration, 120); 
@@ -395,6 +396,36 @@ class StatsService {
 
                 stats.diversityScore = diversity;
             }
+
+            // --- NEW: Sentiment Velocity (Doomscrolling Intervention) ---
+            if (article.sentiment) {
+                if (!stats.lastSentimentSequence) stats.lastSentimentSequence = [];
+                
+                stats.lastSentimentSequence.push(article.sentiment);
+                // Keep only last 5
+                if (stats.lastSentimentSequence.length > 5) {
+                    stats.lastSentimentSequence.shift();
+                }
+
+                // CHECK FOR DOOMSCROLLING (3 Negatives in a row)
+                const recent = stats.lastSentimentSequence;
+                const len = recent.length;
+                
+                if (len >= 3) {
+                    const last3 = recent.slice(-3);
+                    const allNegative = last3.every((s: string) => s === 'Negative');
+                    
+                    if (allNegative) {
+                        stats.suggestPalateCleanser = true;
+                        logger.info(`🚨 Doomscrolling Detected for User ${userId}: 3 Consecutive Negatives.`);
+                    } else if (article.sentiment === 'Positive') {
+                        // Reset if they read something positive
+                        stats.suggestPalateCleanser = false;
+                    }
+                }
+            }
+            // ------------------------------------------------------------
+
         } catch (e) { 
             logger.warn('Error in updateInterests:', e);
         }
