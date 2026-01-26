@@ -251,3 +251,27 @@ export const getAnalyticsOverview = async (req: Request, res: Response, next: Ne
         next(error);
     }
 };
+
+// @desc    Tune Feed (Unmute/Reset Interest)
+// @route   POST /api/analytics/tune-feed
+export const tuneUserFeed = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const userId = req.user?.uid;
+        const { action, topic } = req.body;
+
+        if (!userId || !action || !topic) {
+            res.status(400).json({ message: 'Missing required parameters' });
+            return;
+        }
+
+        const success = await statsService.manageFeedTuning(userId, action, topic);
+        
+        if (success) {
+            res.status(200).json({ status: 'success', message: `Topic ${topic} updated.` });
+        } else {
+            res.status(404).json({ message: 'User stats not found' });
+        }
+    } catch (error) {
+        next(error);
+    }
+};
