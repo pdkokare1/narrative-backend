@@ -3,7 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import AnalyticsSession from '../models/analyticsSession';
 import UserStats from '../models/userStatsModel';
 import SearchLog from '../models/searchLogModel';
-import Profile from '../models/profileModel'; // NEW: Import Profile
+import Profile from '../models/profileModel'; 
 import statsService from '../services/statsService';
 import logger from '../utils/logger';
 
@@ -20,7 +20,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
     } = req.body;
 
     if (!sessionId) {
-      res.status(200).send('ok');
+      res.status(200).json({ status: 'ok' });
       return;
     }
 
@@ -29,8 +29,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         const profile = await Profile.findOne({ userId }).select('isIncognito');
         if (profile?.isIncognito) {
             // In incognito mode, we do NOT log interactions or update stats.
-            // We just return success to keep the client happy.
-            res.status(200).send('incognito');
+            res.status(200).json({ status: 'incognito' });
             return;
         }
     }
@@ -52,9 +51,14 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
             // NEW: Pass Timezone to stats service for accurate streaks
             const userTimezone = meta?.timezone || 'UTC';
             
-            Promise.all(interactions.map((interaction: any) => 
-                statsService.processInteraction(userId, interaction, userTimezone)
-            )).catch(err => logger.error('Interaction Processing Error:', err));
+            // UPDATED: Await processing to provide immediate feedback
+            try {
+                await Promise.all(interactions.map((interaction: any) => 
+                    statsService.processInteraction(userId, interaction, userTimezone)
+                ));
+            } catch (err) {
+                logger.error('Interaction Processing Error:', err);
+            }
         }
     }
 
@@ -100,10 +104,21 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         );
     }
 
-    res.status(200).send('ok');
+    // 4. CHECK FOR FEEDBACK TRIGGERS (Palate Cleanser)
+    let command = null;
+    if (userId) {
+        // Check if the user needs an intervention (Doomscrolling detected)
+        const stats = await UserStats.findOne({ userId }).select('suggestPalateCleanser');
+        if (stats?.suggestPalateCleanser) {
+            command = 'trigger_palate_cleanser';
+        }
+    }
+
+    res.status(200).json({ status: 'ok', command });
+
   } catch (error) {
     console.error('Track Error:', error);
-    res.status(200).send('ok'); 
+    res.status(200).json({ status: 'error' }); 
   }
 };
 
