@@ -37,7 +37,8 @@ const articleSchema = new Schema<ArticleDocument>({
   
   // Analysis Data
   analysisType: { type: String, default: 'Full', enum: ['Full', 'SentimentOnly'] },
-  sentiment: { type: String, default: 'Neutral', enum: ['Positive', 'Negative', 'Neutral'] },
+  // UPDATED: Added index: true for fast "Palate Cleanser" retrieval
+  sentiment: { type: String, default: 'Neutral', enum: ['Positive', 'Negative', 'Neutral'], index: true },
   
   // Scores
   biasScore: { type: Number, default: 0, min: 0, max: 100 },
