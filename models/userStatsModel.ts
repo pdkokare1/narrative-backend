@@ -11,6 +11,10 @@ export interface IUserStats extends Document {
   averageAttentionSpan: number; // in seconds
   focusScoreAvg: number; // 0-100 (New: How often they stay on the tab)
   
+  // NEW: Perspective & Echo Chamber Tracking
+  diversityScore: number; // 0-100 (Higher = Better balanced diet)
+  lastLeanSequence: string[]; // Keep track of last 10 reads ['Left', 'Right', 'Center'...]
+
   leanExposure: {
     Left: number;
     Center: number;
@@ -37,8 +41,8 @@ export interface IUserStats extends Document {
   currentStreak: number;
   longestStreak: number;
   lastActiveDate: Date; 
-  streakFreezes: number; // NEW: Number of "saves" available
-  lastFreezeUsed: Date | null; // NEW: When the last freeze was consumed
+  streakFreezes: number; // Number of "saves" available
+  lastFreezeUsed: Date | null; // When the last freeze was consumed
 
   // Historical Data (Last 30 Days)
   recentDailyHistory: Array<{
@@ -71,6 +75,10 @@ const userStatsSchema = new Schema<IUserStats>({
   averageAttentionSpan: { type: Number, default: 0 },
   focusScoreAvg: { type: Number, default: 100 }, // Defaults to perfect focus
   
+  // NEW: Perspective Tracking
+  diversityScore: { type: Number, default: 50 }, // Start neutral
+  lastLeanSequence: { type: [String], default: [] }, // Store "Left", "Right", "Center"
+
   leanExposure: {
     Left: { type: Number, default: 0 },
     Center: { type: Number, default: 0 },
