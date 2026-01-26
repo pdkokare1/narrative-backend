@@ -15,6 +15,9 @@ export interface IInteraction {
   // NEW: Quarterly Retention (Array of seconds)
   quarters?: number[]; 
 
+  // NEW: Element-level Heatmap (Element ID -> Seconds)
+  heatmap?: Record<string, number>;
+
   timestamp: Date;
 }
 
@@ -77,6 +80,9 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
     // NEW
     quarters: [Number],
     
+    // NEW: Store flexible object for heatmap data
+    heatmap: { type: Map, of: Number },
+
     timestamp: { type: Date, default: Date.now }
   }]
 }, {
