@@ -21,6 +21,21 @@ export interface IUserStats extends Document {
     Right: number;
   };
 
+  // NEW: Time-of-Day Contextualization
+  leanExposureMorning?: {
+    Left: number;
+    Center: number;
+    Right: number;
+  };
+  leanExposureEvening?: {
+    Left: number;
+    Center: number;
+    Right: number;
+  };
+
+  // NEW: Reading Classification
+  readingStyle?: 'skimmer' | 'deep_reader' | 'balanced' | 'learner';
+
   // Topics they click/read
   topicInterest: Map<string, number>;
 
@@ -84,6 +99,21 @@ const userStatsSchema = new Schema<IUserStats>({
     Center: { type: Number, default: 0 },
     Right: { type: Number, default: 0 }
   },
+
+  // NEW: Time-of-Day Contextualization
+  leanExposureMorning: {
+    Left: { type: Number, default: 0 },
+    Center: { type: Number, default: 0 },
+    Right: { type: Number, default: 0 }
+  },
+  leanExposureEvening: {
+    Left: { type: Number, default: 0 },
+    Center: { type: Number, default: 0 },
+    Right: { type: Number, default: 0 }
+  },
+
+  // NEW: Reading Classification
+  readingStyle: { type: String, enum: ['skimmer', 'deep_reader', 'balanced', 'learner'], default: 'balanced' },
   
   topicInterest: { type: Map, of: Number, default: {} },
   
