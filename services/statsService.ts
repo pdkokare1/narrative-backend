@@ -90,6 +90,10 @@ class StatsService {
                 logger.info(`📖 True Read Recorded (${readType}): User ${userId} | Time: ${duration}s | Focus: ${focusScore}`);
                 
                 await this.checkContentFatigue(userId, interaction.text);
+
+                // --- NEW: Quest Integration ---
+                await gamificationService.processQuestEvent(userId, 'true_read', { duration });
+                // ------------------------------
             }
 
             // 5. Update Average Attention Span
@@ -109,7 +113,7 @@ class StatsService {
 
             // 8. Update Topic Interests AND Perspective Score
             if (interaction.contentId && (interaction.contentType === 'article' || interaction.contentType === 'narrative')) {
-                 await this.updateInterests(stats, interaction.contentId, duration, timezone);
+                 await this.updateInterests(stats, interaction.contentId, duration, timezone, userId);
             }
 
             // 9. NEW: Golden Hour Calculation
@@ -297,7 +301,7 @@ class StatsService {
     }
 
     // --- HELPER: Update Interests & Diversity ---
-    private async updateInterests(stats: any, articleId: string, duration: number, timezone?: string) {
+    private async updateInterests(stats: any, articleId: string, duration: number, timezone?: string, userId?: string) {
         try {
             const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category');
             if (!article) return;
@@ -322,6 +326,12 @@ class StatsService {
                 // Update Exposure Count
                 if (!stats.leanExposure) stats.leanExposure = { Left: 0, Center: 0, Right: 0 };
                 stats.leanExposure[bucket] = (stats.leanExposure[bucket] || 0) + interestWeight;
+
+                // --- NEW: Update Quest Progress (Echo Chamber Breaker) ---
+                if (userId) {
+                    await gamificationService.processQuestEvent(userId, 'read_article', { lean: bucket });
+                }
+                // --------------------------------------------------------
 
                 // --- NEW: Time-of-Day Contextualization ---
                 // Calculate Hour in User's Timezone
