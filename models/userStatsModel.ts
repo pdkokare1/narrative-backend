@@ -15,6 +15,10 @@ export interface IUserStats extends Document {
   diversityScore: number; // 0-100 (Higher = Better balanced diet)
   lastLeanSequence: string[]; // Keep track of last 10 reads ['Left', 'Right', 'Center'...]
 
+  // NEW: Sentiment Velocity (Doomscrolling Detection)
+  lastSentimentSequence: string[]; // Keep track of last 5 reads ['Negative', 'Positive'...]
+  suggestPalateCleanser: boolean; // Flag to trigger UI intervention
+
   leanExposure: {
     Left: number;
     Center: number;
@@ -94,6 +98,10 @@ const userStatsSchema = new Schema<IUserStats>({
   // NEW: Perspective Tracking
   diversityScore: { type: Number, default: 50 }, // Start neutral
   lastLeanSequence: { type: [String], default: [] }, // Store "Left", "Right", "Center"
+
+  // NEW: Sentiment Velocity
+  lastSentimentSequence: { type: [String], default: [] },
+  suggestPalateCleanser: { type: Boolean, default: false },
 
   leanExposure: {
     Left: { type: Number, default: 0 },
