@@ -259,6 +259,9 @@ class StatsService {
                 if (stats.currentStreak > (stats.longestStreak || 0)) {
                     stats.longestStreak = stats.currentStreak;
                 }
+
+                // Reset Daily Habit Status for the new day
+                stats.dailyHabitStatus = [];
             }
             stats.lastActiveDate = now;
 
@@ -283,18 +286,63 @@ class StatsService {
                 goalsMet: dailyEntry.goalsMet 
             };
 
-            // CHECK GOALS
-            if (!dailyEntry.goalsMet) {
-                const profile = await Profile.findOne({ userId });
-                const dailyHabit = profile?.habits?.find((h:any) => h.type === 'daily_minutes');
-                const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; 
+            // --- REFINED: Flexible Habit Checking ---
+            // 1. Fetch Profile to get habits
+            const profile = await Profile.findOne({ userId });
+            const habits = profile?.habits || []; 
 
-                if (dailyEntry.timeSpent >= targetSeconds) {
+            // 2. Initialize status array if needed
+            if (!stats.dailyHabitStatus) stats.dailyHabitStatus = [];
+
+            // 3. Process each configured habit
+            habits.forEach((habit: any) => {
+                const habitId = habit.id || habit._id || 'default_habit';
+                
+                // Find existing progress or create new
+                let progress = stats.dailyHabitStatus.find((s: any) => s.habitId === habitId || s.type === habit.type);
+                
+                if (!progress) {
+                    progress = {
+                        habitId: habitId,
+                        type: habit.type,
+                        current: 0,
+                        target: habit.target || 0,
+                        completed: false,
+                        label: habit.label || 'Daily Goal'
+                    };
+                    stats.dailyHabitStatus.push(progress);
+                }
+
+                // Update Progress based on Type
+                if (habit.type === 'daily_minutes') {
+                    // Convert seconds to minutes for comparison, or target to seconds
+                    // Usually habit.target is in minutes (e.g. 15). dailyEntry.timeSpent is seconds.
+                    progress.current = Math.floor(dailyEntry.timeSpent / 60);
+                } else if (habit.type === 'daily_articles') {
+                    progress.current = dailyEntry.articlesRead;
+                }
+
+                // Check Completion
+                if (progress.current >= progress.target) {
+                    progress.completed = true;
+                }
+            });
+
+            // 4. CHECK LEGACY GOALS (Primary Habit for Streaks)
+            // We preserve this exact logic so the UI streak doesn't break
+            const dailyHabit = habits.find((h:any) => h.type === 'daily_minutes');
+            // Default to 15 mins if no habit found
+            const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; 
+
+            if (dailyEntry.timeSpent >= targetSeconds) {
+                // Only trigger the streak update ONCE per day when goal is first met
+                if (!dailyEntry.goalsMet) {
                     dailyEntry.goalsMet = true;
                     stats.dailyStats.goalsMet = true;
                     await gamificationService.updateStreak(userId, timezone);
                 }
             }
+            
         } catch (error) {
             logger.error(`Habit Check Error:`, error);
         }
