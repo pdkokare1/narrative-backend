@@ -204,7 +204,8 @@ class GamificationService {
     // B. Create specific quests based on user needs
     private async generateQuests(userId: string): Promise<any[]> {
         const stats = await UserStats.findOne({ userId });
-        const quests = [];
+        // Fixed: Explicitly typed as any[] to allow pushing objects dynamically
+        const quests: any[] = [];
 
         // Quest 1: Deep Reading (Standard)
         quests.push({
