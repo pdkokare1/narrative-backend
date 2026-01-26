@@ -56,15 +56,25 @@ class StatsService {
 
             // 4. "True Read" Validation (Enhanced)
             let isTrueRead = false;
+            const wpm = duration > 0 ? wordCount / (duration / 60) : 9999;
             
             // Logic A: Standard Text Reading
             if (interaction.contentType === 'article' || interaction.contentType === 'narrative') {
-                const wpm = duration > 0 ? wordCount / (duration / 60) : 9999;
 
                 // STRICT CHECK: Must be > 30s, > 75% scroll, reasonable speed
                 // NEW: Added Focus Score check. If they tabbed away constantly (score < 50), it's not a true read.
                 if (wordCount > 100 && scrollDepth > 75 && duration > 30 && wpm < 600 && focusScore > 40) {
                     isTrueRead = true;
+                }
+
+                // NEW: Skimmer Detection
+                // If they scrolled deep (>50%) but read very fast (>600 WPM)
+                if (scrollDepth > 50 && wpm > 600) {
+                    stats.readingStyle = 'skimmer';
+                }
+                // If they read slowly (>60s) and deeply
+                else if (duration > 60 && scrollDepth > 80 && wpm < 400) {
+                    stats.readingStyle = 'deep_reader';
                 }
             }
 
@@ -99,7 +109,7 @@ class StatsService {
 
             // 8. Update Topic Interests AND Perspective Score
             if (interaction.contentId && (interaction.contentType === 'article' || interaction.contentType === 'narrative')) {
-                 await this.updateInterests(stats, interaction.contentId, duration);
+                 await this.updateInterests(stats, interaction.contentId, duration, timezone);
             }
 
             await stats.save();
@@ -268,7 +278,7 @@ class StatsService {
     }
 
     // --- HELPER: Update Interests & Diversity ---
-    private async updateInterests(stats: any, articleId: string, duration: number) {
+    private async updateInterests(stats: any, articleId: string, duration: number, timezone?: string) {
         try {
             const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category');
             if (!article) return;
@@ -293,6 +303,27 @@ class StatsService {
                 // Update Exposure Count
                 if (!stats.leanExposure) stats.leanExposure = { Left: 0, Center: 0, Right: 0 };
                 stats.leanExposure[bucket] = (stats.leanExposure[bucket] || 0) + interestWeight;
+
+                // --- NEW: Time-of-Day Contextualization ---
+                // Calculate Hour in User's Timezone
+                let hour = new Date().getHours(); // Default to Server Time
+                if (timezone) {
+                    try {
+                        const dateStr = new Date().toLocaleString("en-US", { timeZone: timezone, hour: 'numeric', hour12: false });
+                        hour = parseInt(dateStr, 10);
+                    } catch (e) { /* Fallback to server time */ }
+                }
+
+                // Morning: Before 12:00
+                if (hour < 12) {
+                    if (!stats.leanExposureMorning) stats.leanExposureMorning = { Left: 0, Center: 0, Right: 0 };
+                    stats.leanExposureMorning[bucket] = (stats.leanExposureMorning[bucket] || 0) + interestWeight;
+                }
+                // Evening: After 17:00 (5 PM)
+                else if (hour >= 17) {
+                    if (!stats.leanExposureEvening) stats.leanExposureEvening = { Left: 0, Center: 0, Right: 0 };
+                    stats.leanExposureEvening[bucket] = (stats.leanExposureEvening[bucket] || 0) + interestWeight;
+                }
 
                 // --- NEW: Calculate Diversity Score (Echo Chamber Breaker) ---
                 if (!stats.lastLeanSequence) stats.lastLeanSequence = [];
