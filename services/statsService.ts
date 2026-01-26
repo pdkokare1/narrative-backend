@@ -112,6 +112,25 @@ class StatsService {
                  await this.updateInterests(stats, interaction.contentId, duration, timezone);
             }
 
+            // 9. NEW: Golden Hour Calculation
+            // Dynamically calculate the user's peak learning hour based on historical activity
+            if (stats.activityByHour) {
+                let maxHour = -1;
+                let maxDuration = 0;
+                
+                // Using forEach on Map
+                stats.activityByHour.forEach((seconds, hourStr) => {
+                    if (seconds > maxDuration) {
+                        maxDuration = seconds;
+                        maxHour = parseInt(hourStr);
+                    }
+                });
+
+                if (maxHour >= 0 && maxHour <= 23) {
+                    stats.peakLearningTime = maxHour;
+                }
+            }
+
             await stats.save();
 
         } catch (error) {
