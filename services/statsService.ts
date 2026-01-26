@@ -539,6 +539,35 @@ class StatsService {
             logger.error("❌ Decay Update Failed:", error);
         }
     }
+
+    // 7. Tune Feed (Modify Interests Manually)
+    async manageFeedTuning(userId: string, action: string, topic: string) {
+        try {
+            const stats = await UserStats.findOne({ userId });
+            if (!stats) return false;
+
+            if (action === 'unmute_topic') {
+                if (stats.negativeInterest && stats.negativeInterest.has(topic)) {
+                    stats.negativeInterest.delete(topic);
+                    logger.info(`🔊 User ${userId} unmuted topic: ${topic}`);
+                }
+            } 
+            else if (action === 'remove_interest') {
+                if (stats.topicInterest && stats.topicInterest.has(topic)) {
+                    stats.topicInterest.delete(topic);
+                    logger.info(`🗑️ User ${userId} removed interest: ${topic}`);
+                }
+            }
+
+            stats.markModified('topicInterest');
+            stats.markModified('negativeInterest');
+            await stats.save();
+            return true;
+        } catch (error) {
+            logger.error('Error tuning feed:', error);
+            return false;
+        }
+    }
 }
 
 export default new StatsService();
