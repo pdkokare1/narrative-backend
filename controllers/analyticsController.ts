@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import AnalyticsSession from '../models/analyticsSession';
 import UserStats from '../models/userStatsModel';
 import SearchLog from '../models/searchLogModel';
+import Profile from '../models/profileModel'; // NEW: Import Profile
 import statsService from '../services/statsService';
 import logger from '../utils/logger';
 
@@ -22,6 +23,18 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       res.status(200).send('ok');
       return;
     }
+
+    // --- NEW: Privacy / Incognito Check ---
+    if (userId) {
+        const profile = await Profile.findOne({ userId }).select('isIncognito');
+        if (profile?.isIncognito) {
+            // In incognito mode, we do NOT log interactions or update stats.
+            // We just return success to keep the client happy.
+            res.status(200).send('incognito');
+            return;
+        }
+    }
+    // --------------------------------------
 
     // 1. Calculate Quarterly Aggregates
     const payloadQuarters = [0, 0, 0, 0];
