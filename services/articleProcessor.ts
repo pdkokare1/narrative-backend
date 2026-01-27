@@ -1,6 +1,6 @@
 // narrative-backend/services/articleProcessor.ts
 import { INewsSourceArticle } from '../types';
-import { cleanText, formatHeadline, getSimilarityScore } from '../utils/helpers';
+import { cleanText, formatHeadline, getSimilarityScore, calculateReadingComplexity } from '../utils/helpers';
 import { TRUSTED_SOURCES, JUNK_KEYWORDS } from '../utils/constants';
 import SystemConfig from '../models/systemConfigModel';
 import redis from '../utils/redisClient';
@@ -58,6 +58,13 @@ class ArticleProcessor {
             // B. Text Cleanup
             article.title = formatHeadline(article.title);
             article.description = cleanText(article.description || "");
+
+            // --- NEW: Calculate Cognitive Complexity ---
+            // We append this to the object. It will be saved when mapped to ArticleDocument
+            // Note: We are dynamically adding a property to INewsSourceArticle here.
+            // In a strict typed env we would cast, but JS allows this assignment.
+            // We use description because content is often truncated/missing at this stage.
+            (article as any).complexityScore = calculateReadingComplexity(article.description);
 
             // C. Validation
             if (!this.isValid(article)) continue;
