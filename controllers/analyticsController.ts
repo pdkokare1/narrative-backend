@@ -157,6 +157,9 @@ export const getUserStats = async (req: Request, res: Response, next: NextFuncti
         // Fetch the Smart Stats (True Reads, Attention Span)
         const stats = await UserStats.findOne({ userId }).lean();
 
+        // NEW: Fetch Gamification Data (Quests & Badges) from Profile
+        const profile = await Profile.findOne({ userId }).select('quests badges');
+
         // If no stats yet, return default structure
         if (!stats) {
             res.status(200).json({
@@ -170,12 +173,16 @@ export const getUserStats = async (req: Request, res: Response, next: NextFuncti
                     timeSpent: 0,
                     articlesRead: 0,
                     goalsMet: false
-                }
+                },
+                quests: profile?.quests || [], // Return empty quests if stats missing
+                badges: profile?.badges || []
             });
             return;
         }
 
         // LAZY RESET: If dailyStats is from yesterday, show 0 to the user
+        // Note: The actual DB reset happens in statsService on next interaction, 
+        // but this ensures the UI looks correct immediately.
         const lastDate = stats.dailyStats?.date ? new Date(stats.dailyStats.date) : new Date(0);
         const isSameDay = lastDate.toDateString() === new Date().toDateString();
 
@@ -188,7 +195,14 @@ export const getUserStats = async (req: Request, res: Response, next: NextFuncti
             };
         }
 
-        res.status(200).json(stats);
+        // MERGE Quests into the response
+        const responseData = {
+            ...stats,
+            quests: profile?.quests || [],
+            badges: profile?.badges || []
+        };
+
+        res.status(200).json(responseData);
     } catch (error) {
         next(error);
     }
