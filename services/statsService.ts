@@ -42,6 +42,9 @@ class StatsService {
             const focusScore = interaction.focusScore || 100; // New: Default to 100
             const flowDuration = interaction.flowDuration || 0; // NEW: Seconds in flow
             
+            // NEW: Receive Average Velocity from Client
+            const avgVelocity = interaction.avgVelocity || 0.05; // Default to Reading speed if missing
+
             // NEW: Update Global Focus Score (Moving Average)
             // Weight recent interaction 10%, historical 90%
             stats.focusScoreAvg = Math.round(((stats.focusScoreAvg || 100) * 0.9) + (focusScore * 0.1));
@@ -84,9 +87,43 @@ class StatsService {
             // Logic A: Standard Text Reading
             if (interaction.contentType === 'article' || interaction.contentType === 'narrative') {
 
+                // --- NEW: COGNITIVE LOAD METRIC ---
+                // We fetch the article to get its Complexity Score
+                // If the user scrolls SLOWLY through COMPLEX text, it is high effort.
+                // If the user scrolls QUICKLY through SIMPLE text, it is low effort (skimming).
+                let complexityBonus = 0;
+                
+                try {
+                    const article = await Article.findById(interaction.contentId).select('complexityScore');
+                    if (article && article.complexityScore) {
+                        const score = article.complexityScore; // 0-100
+                        
+                        // Calculate "Effort Score"
+                        // Low velocity (0.02) + High Complexity (80) = High Effort
+                        // High velocity (0.15) + Low Complexity (30) = Low Effort
+                        
+                        // Normalize velocity: 0.01 (slow) to 0.1 (fast)
+                        // If velocity is very low, multiplier is high.
+                        const velocityFactor = Math.max(0.2, 0.1 / Math.max(0.001, avgVelocity)); 
+                        
+                        const effortScore = score * velocityFactor; // Roughly 0 to 500 range
+                        
+                        // If Effort is high (>200), we are more lenient with duration/scroll checks
+                        // because they are reading dense material.
+                        if (effortScore > 200) {
+                            complexityBonus = 0.8; // Reduce required constraints by 20%
+                            logger.info(`🧠 High Cognitive Load Detected (Effort: ${Math.round(effortScore)}) for User ${userId}`);
+                        }
+                    }
+                } catch (e) {}
+
                 // STRICT CHECK: Dynamic Time, > 75% scroll, reasonable speed
                 // NEW: Added Focus Score check. If they tabbed away constantly (score < 50), it's not a true read.
-                if (wordCount > 100 && scrollDepth > 75 && duration > requiredTime && wpm < 600 && focusScore > 40) {
+                // UPDATED: Apply complexity bonus to the thresholds
+                const minScroll = 75 * (1 - complexityBonus * 0.1); // e.g. 75 -> 67%
+                const minFocus = 40; 
+
+                if (wordCount > 100 && scrollDepth > minScroll && duration > (requiredTime * (1 - complexityBonus * 0.2)) && wpm < 600 && focusScore > minFocus) {
                     isTrueRead = true;
                 }
 
