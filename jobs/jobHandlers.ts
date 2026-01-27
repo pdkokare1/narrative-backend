@@ -4,7 +4,7 @@ import logger from '../utils/logger';
 import newsFetcher from './newsFetcher';
 import statsService from '../services/statsService';
 import redisClient from '../utils/redisClient';
-import notificationService from '../services/notificationService'; // We will create this next
+import notificationService from '../services/notificationService'; 
 import UserStats from '../models/userStatsModel';
 
 /**
@@ -43,6 +43,35 @@ export const handleSmartNotifications = async (job: Job) => {
         return { status: 'completed', sent: sentCount };
     } catch (error: any) {
         logger.error(`❌ Smart Notification Error: ${error.message}`);
+        throw error;
+    }
+};
+
+/**
+ * Handler: Daily Interest Decay
+ * Reduces the weight of old interests for all users to keep recommendations fresh.
+ */
+export const handleDailyDecay = async (job: Job) => {
+    logger.info(`📉 Starting Daily Interest Decay for all users...`);
+    
+    try {
+        // Fetch all user stats (Just IDs to save memory)
+        // In a large scale app, this should be a cursor or batched.
+        const allStats = await UserStats.find({}).select('userId');
+        
+        logger.info(`👥 Applying decay to ${allStats.length} user profiles.`);
+
+        let processed = 0;
+        for (const stat of allStats) {
+            await statsService.applyInterestDecay(stat.userId);
+            processed++;
+        }
+
+        logger.info(`✅ Decay Complete. Processed ${processed} users.`);
+        return { status: 'completed', count: processed };
+
+    } catch (error: any) {
+        logger.error(`❌ Interest Decay Failed: ${error.message}`);
         throw error;
     }
 };
