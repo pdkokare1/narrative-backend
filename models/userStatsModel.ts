@@ -20,7 +20,10 @@ export interface IUserStats extends Document {
 
   averageAttentionSpan: number; // in seconds
   focusScoreAvg: number; // 0-100 (New: How often they stay on the tab)
-  
+
+  // NEW: Deep Work Tracking
+  deepFocusMinutes: number; // Total minutes spent in "Flow State"
+
   // NEW: Perspective & Echo Chamber Tracking
   diversityScore: number; // 0-100 (Higher = Better balanced diet)
   lastLeanSequence: string[]; // Keep track of last 10 reads ['Left', 'Right', 'Center'...]
@@ -107,6 +110,9 @@ const userStatsSchema = new Schema<IUserStats>({
 
   averageAttentionSpan: { type: Number, default: 0 },
   focusScoreAvg: { type: Number, default: 100 }, // Defaults to perfect focus
+
+  // NEW: Deep Focus
+  deepFocusMinutes: { type: Number, default: 0 },
   
   // NEW: Perspective Tracking
   diversityScore: { type: Number, default: 50 }, // Start neutral
