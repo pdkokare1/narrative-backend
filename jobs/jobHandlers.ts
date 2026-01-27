@@ -77,6 +77,19 @@ export const handleDailyDecay = async (job: Job) => {
 };
 
 /**
+ * Handler: Update User Vector
+ * New handler to process heavy vector math in the background
+ */
+export const handleUpdateVector = async (job: Job) => {
+    // Only log at debug level to keep logs clean, or info if meaningful
+    const { userId } = job.data;
+    if (!userId) return { status: 'skipped', reason: 'missing_user_id' };
+    
+    await statsService.computeUserVector(userId);
+    return { status: 'completed' };
+};
+
+/**
  * Handler: Fetch Feed & Process Immediately (Inline Batch)
  */
 export const handleFetchFeed = async (job: Job) => {
