@@ -60,6 +60,10 @@ const articleSchema = new Schema<ArticleDocument>({
   trustScore: { type: Number, default: 0, min: 0, max: 100, index: true }, 
   trustLevel: String,
   
+  // NEW: Cognitive Load Metric
+  // 0 = Simple/Viral style, 100 = Complex/Academic
+  complexityScore: { type: Number, default: 50 },
+
   // Coverage Stats
   coverageLeft: { type: Number, default: 0 },
   coverageCenter: { type: Number, default: 0 },
