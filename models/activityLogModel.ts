@@ -31,6 +31,10 @@ const activityLogSchema = new Schema<ActivityLogDocument>({
 activityLogSchema.index({ userId: 1, timestamp: -1 });
 activityLogSchema.index({ userId: 1, action: 1, timestamp: -1 });
 
+// --- NEW OPTIMIZATION: Feed Filtering ---
+// Allows rapid lookup of "Has user X read article Y?" without full table scan
+activityLogSchema.index({ userId: 1, articleId: 1 });
+
 // --- DATA RETENTION: 6 MONTHS ---
 // 15552000 seconds = ~180 days
 activityLogSchema.index({ timestamp: 1 }, { expireAfterSeconds: 15552000 });
