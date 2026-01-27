@@ -6,6 +6,8 @@ export interface IHabit {
   type: 'daily_minutes' | 'weekly_articles';
   target: number;
   label: string;
+  // NEW: Frequency for flexible habits
+  frequency?: 'daily' | 'weekly'; 
 }
 
 export interface IQuest {
@@ -17,6 +19,8 @@ export interface IQuest {
   reward: string;      // 'xp', 'streak_freeze'
   description: string;
   expiresAt: Date;
+  // NEW: Frequency for flexible quests
+  frequency?: 'daily' | 'weekly';
 }
 
 export interface IProfile extends Document {
@@ -90,7 +94,9 @@ const profileSchema = new Schema<IProfile>({
   habits: [{
     type: { type: String, enum: ['daily_minutes', 'weekly_articles'] },
     target: Number,
-    label: String
+    label: String,
+    // NEW: Frequency with default to daily
+    frequency: { type: String, enum: ['daily', 'weekly'], default: 'daily' }
   }],
   
   // NEW: Quests
@@ -102,7 +108,9 @@ const profileSchema = new Schema<IProfile>({
     isCompleted: { type: Boolean, default: false },
     reward: String,
     description: String,
-    expiresAt: Date
+    expiresAt: Date,
+    // NEW: Frequency with default to daily
+    frequency: { type: String, enum: ['daily', 'weekly'], default: 'daily' }
   }],
 
   badges: [{
