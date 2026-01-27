@@ -21,6 +21,11 @@ class AnalyticsBufferService {
 
     try {
       const client = redisClient.getClient();
+      // Safe check: ensure client exists
+      if (!client) {
+          return this.writeDirectly(sessionId, updateOps);
+      }
+
       const payload = JSON.stringify({ sessionId, updateOps });
       await client.lPush(this.QUEUE_KEY, payload);
     } catch (error) {
@@ -53,6 +58,10 @@ class AnalyticsBufferService {
 
     try {
        const client = redisClient.getClient();
+       if (!client) {
+           this.isFlushing = false;
+           return;
+       }
        
        // 1. Retrieve a batch of items
        // Note: We use a loop to pop items to ensure we respect BATCH_SIZE
