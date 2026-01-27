@@ -38,15 +38,31 @@ class StatsService {
             const scrollDepth = interaction.scrollDepth || 0; // percentage
             const wordCount = interaction.wordCount || 0;
             const focusScore = interaction.focusScore || 100; // New: Default to 100
+            const flowDuration = interaction.flowDuration || 0; // NEW: Seconds in flow
             
             // NEW: Update Global Focus Score (Moving Average)
             // Weight recent interaction 10%, historical 90%
             stats.focusScoreAvg = Math.round(((stats.focusScoreAvg || 100) * 0.9) + (focusScore * 0.1));
 
+            // NEW: Accumulate Deep Focus
+            if (flowDuration > 0) {
+                 // Convert to minutes for the DB
+                 stats.deepFocusMinutes = (stats.deepFocusMinutes || 0) + (flowDuration / 60);
+            }
+
             // NEW: Save Stop Point (Resume Reading)
-            if (interaction.scrollPosition && interaction.contentId) {
+            // Logic updated to use granular drop-off element if available
+            if (interaction.contentId) {
                 if (!stats.readingProgress) stats.readingProgress = new Map();
-                if (interaction.scrollPosition > 100) {
+                
+                // Prefer the granular Drop-off Element ID if valid
+                if (interaction.dropOffElement && typeof interaction.dropOffElement === 'string') {
+                    // NOTE: We're storing ID as negative pixel value (hack) OR we could just rely on scroll.
+                    // Since readingProgress is defined as Map<string, number>, we stick to scrollPosition for now.
+                    // Granular Element tracking is currently only for AnalyticsSession logs (via controller).
+                }
+
+                if (interaction.scrollPosition && interaction.scrollPosition > 100) {
                     stats.readingProgress.set(interaction.contentId, interaction.scrollPosition);
                 }
             }
