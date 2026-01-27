@@ -24,6 +24,19 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
       return;
     }
 
+    // --- NEW: Abandonment / Bounce Heuristic ---
+    // If the user has been active for < 5 seconds AND has performed zero interactions,
+    // we consider this a "Bounce" and do not save it to the DB.
+    // This dramatically reduces DB noise and improves "Average Time" accuracy.
+    const duration = metrics?.total || 0;
+    const hasInteractions = interactions && Array.isArray(interactions) && interactions.length > 0;
+
+    if (duration < 5 && !hasInteractions) {
+        res.status(200).json({ status: 'ignored_bounce' });
+        return;
+    }
+    // -------------------------------------------
+
     // --- NEW: Privacy / Incognito Check ---
     if (userId) {
         const profile = await Profile.findOne({ userId }).select('isIncognito');
