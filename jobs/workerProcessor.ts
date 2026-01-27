@@ -7,7 +7,8 @@ import {
     handleUpdateTrending, 
     handleFetchFeed, 
     handleProcessArticle,
-    handleSmartNotifications // NEW: Imported
+    handleSmartNotifications,
+    handleUpdateVector // NEW: Imported
 } from './jobHandlers';
 
 /**
@@ -44,6 +45,10 @@ export default async function workerProcessor(job: Job) {
             // NEW: Smart Notifications Handler
             case 'smart-notifications':
                 return await handleSmartNotifications(job);
+
+            // NEW: Vector Update Handler
+            case 'update-user-vector':
+                return await handleUpdateVector(job);
 
             case 'daily-cleanup':
                 // No-op or handled directly in scheduler, but good to have a safe return
