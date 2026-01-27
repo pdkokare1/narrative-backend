@@ -54,8 +54,8 @@ class GamificationService {
         this.checkPerspectiveBadge(userId);
         this.checkReadBadges(userId);
 
-        // NEW: Check/Generate Quests on new day
-        await this.checkDailyQuests(profile, timezone);
+        // NEW: Check/Generate Quests (Daily & Weekly)
+        await this.checkQuests(profile, timezone);
 
         return streakBadge;
     }
@@ -176,78 +176,130 @@ class GamificationService {
 
     // --- 4. NEW: Quest System Engine ---
     
-    // A. Generate Daily Quests
-    async checkDailyQuests(profile: IProfile, timezone: string) {
+    // A. Generate Quests (Checks Daily AND Weekly)
+    async checkQuests(profile: IProfile, timezone: string) {
         try {
             const now = new Date();
-            const quests = profile.quests || [];
+            // Ensure quests array exists
+            if (!profile.quests) profile.quests = [];
+            const quests = profile.quests;
             
-            // Check if quests are expired
-            const hasActiveQuests = quests.some(q => new Date(q.expiresAt) > now && !q.isCompleted);
+            // 1. Check for Active Quests by Frequency
+            const activeDaily = quests.some(q => 
+                (!q.frequency || q.frequency === 'daily') && 
+                new Date(q.expiresAt) > now && 
+                !q.isCompleted
+            );
+
+            const activeWeekly = quests.some(q => 
+                q.frequency === 'weekly' && 
+                new Date(q.expiresAt) > now && 
+                !q.isCompleted
+            );
             
-            if (!hasActiveQuests) {
-                // Generate new quests
-                const newQuests = await this.generateQuests(profile.userId);
+            let updated = false;
+
+            // 2. Generate Daily if missing
+            if (!activeDaily) {
+                const newDailies = await this.generateQuests(profile.userId, 'daily');
+                const dailyExpiry = new Date(now.getTime() + 24 * 60 * 60 * 1000); 
                 
-                // Set expiry to end of day in user timezone
-                // Simplified: Set to 24 hours from now for robustness
-                const expiry = new Date(now.getTime() + 24 * 60 * 60 * 1000); 
-                
-                profile.quests = newQuests.map(q => ({ ...q, expiresAt: expiry }));
-                await profile.save();
+                newDailies.forEach(q => {
+                    q.expiresAt = dailyExpiry;
+                    profile.quests.push(q);
+                });
+                updated = true;
             }
+
+            // 3. Generate Weekly if missing
+            if (!activeWeekly) {
+                const newWeeklies = await this.generateQuests(profile.userId, 'weekly');
+                // Weekly expiry: 7 Days
+                const weeklyExpiry = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); 
+                
+                newWeeklies.forEach(q => {
+                    q.expiresAt = weeklyExpiry;
+                    profile.quests.push(q);
+                });
+                updated = true;
+            }
+
+            if (updated) await profile.save();
+
         } catch (error) {
             console.error('Quest Gen Error:', error);
         }
     }
 
-    // B. Create specific quests based on user needs
-    private async generateQuests(userId: string): Promise<any[]> {
+    // B. Create specific quests based on user needs & frequency
+    private async generateQuests(userId: string, frequency: 'daily' | 'weekly'): Promise<any[]> {
         const stats = await UserStats.findOne({ userId });
-        // Fixed: Explicitly typed as any[] to allow pushing objects dynamically
         const quests: any[] = [];
+        const timestamp = Date.now();
 
-        // Quest 1: Deep Reading (Standard)
-        quests.push({
-            id: `daily_deep_${Date.now()}`,
-            type: 'read_deep',
-            target: 1,
-            progress: 0,
-            isCompleted: false,
-            reward: 'xp',
-            description: 'Read 1 article deeply (spend > 2 mins).'
-        });
-
-        // Quest 2: Echo Chamber Breaker (Smart)
-        if (stats) {
-            const left = stats.leanExposure?.Left || 0;
-            const right = stats.leanExposure?.Right || 0;
+        if (frequency === 'daily') {
+            // --- DAILY QUESTS ---
             
-            let targetBias = '';
-            if (left > right * 2) targetBias = 'Right';
-            if (right > left * 2) targetBias = 'Left';
+            // Quest 1: Deep Reading (Standard)
+            quests.push({
+                id: `daily_deep_${timestamp}`,
+                type: 'read_deep',
+                frequency: 'daily',
+                target: 1,
+                progress: 0,
+                isCompleted: false,
+                reward: 'xp',
+                description: 'Read 1 article deeply (spend > 2 mins).'
+            });
 
-            if (targetBias) {
-                quests.push({
-                    id: `daily_bridge_${Date.now()}`,
-                    type: 'read_opposing',
-                    target: 1,
-                    progress: 0,
-                    isCompleted: false,
-                    reward: 'streak_freeze',
-                    description: `Read 1 article from a ${targetBias}-leaning source.`
-                });
-            } else {
-                 quests.push({
-                    id: `daily_explore_${Date.now()}`,
-                    type: 'topic_explorer',
-                    target: 3,
-                    progress: 0,
-                    isCompleted: false,
-                    reward: 'xp',
-                    description: 'Read articles from 3 different categories.'
-                });
+            // Quest 2: Echo Chamber Breaker (Smart)
+            if (stats) {
+                const left = stats.leanExposure?.Left || 0;
+                const right = stats.leanExposure?.Right || 0;
+                
+                let targetBias = '';
+                if (left > right * 2) targetBias = 'Right';
+                if (right > left * 2) targetBias = 'Left';
+
+                if (targetBias) {
+                    quests.push({
+                        id: `daily_bridge_${timestamp}`,
+                        type: 'read_opposing',
+                        frequency: 'daily',
+                        target: 1,
+                        progress: 0,
+                        isCompleted: false,
+                        reward: 'streak_freeze',
+                        description: `Read 1 article from a ${targetBias}-leaning source.`
+                    });
+                } else {
+                     quests.push({
+                        id: `daily_explore_${timestamp}`,
+                        type: 'topic_explorer',
+                        frequency: 'daily',
+                        target: 3,
+                        progress: 0,
+                        isCompleted: false,
+                        reward: 'xp',
+                        description: 'Read articles from 3 different categories.'
+                    });
+                }
             }
+        } 
+        else if (frequency === 'weekly') {
+            // --- WEEKLY QUESTS ---
+            
+            // Quest 3: Weekly Explorer (Harder, Better Reward)
+            quests.push({
+                id: `weekly_explorer_${timestamp}`,
+                type: 'topic_explorer',
+                frequency: 'weekly',
+                target: 10, // Higher target for the week
+                progress: 0,
+                isCompleted: false,
+                reward: 'streak_freeze', // Valuable reward
+                description: 'Weekly Challenge: Read 10 articles from different categories.'
+            });
         }
 
         return quests;
