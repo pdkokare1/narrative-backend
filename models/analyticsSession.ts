@@ -15,6 +15,10 @@ export interface IInteraction {
   // NEW: Quarterly Retention (Array of seconds)
   quarters?: number[]; 
 
+  // NEW: Flow State & Drop-off
+  flowDuration?: number; // Minutes spent in flow state
+  dropOffElement?: string; // ID of the last element viewed
+
   // NEW: Element-level Heatmap (Element ID -> Seconds)
   heatmap?: Record<string, number>;
 
@@ -79,6 +83,10 @@ const analyticsSessionSchema = new Schema<IAnalyticsSession>({
     
     // NEW
     quarters: [Number],
+
+    // NEW
+    flowDuration: Number,
+    dropOffElement: String,
     
     // NEW: Store flexible object for heatmap data
     heatmap: { type: Map, of: Number },
