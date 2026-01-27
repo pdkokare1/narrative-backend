@@ -5,6 +5,7 @@ import UserStats from '../models/userStatsModel';
 import SearchLog from '../models/searchLogModel';
 import Profile from '../models/profileModel'; 
 import statsService from '../services/statsService';
+import analyticsBufferService from '../services/analyticsBufferService'; // NEW IMPORT
 import logger from '../utils/logger';
 
 // @desc    Track User Activity (Heartbeat & Beacon)
@@ -76,6 +77,7 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
     }
 
     // 2. Update Session Analytics
+    // OPTIMIZATION: Moved to Redis Buffer Service to reduce DB Write Load
     const updateOps: any = {
       $inc: {
         totalDuration: metrics?.total || 0,
@@ -96,11 +98,8 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
     if (meta?.platform) updateOps.$set.platform = meta.platform;
     if (meta?.userAgent) updateOps.$set.userAgent = meta.userAgent;
 
-    await AnalyticsSession.findOneAndUpdate(
-      { sessionId },
-      updateOps,
-      { upsert: true, new: true }
-    );
+    // Call the Buffer Service instead of Direct Write
+    await analyticsBufferService.bufferSessionData(sessionId, updateOps);
 
     // 3. Update Real-time User Stats (Lightweight)
     if (userId && metrics?.total > 0) {
