@@ -7,6 +7,8 @@ import UserStats, { IUserStats } from '../models/userStatsModel';
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
 import gamificationService from './gamificationService';
+import queueManager from '../jobs/queueManager';
+import { CONSTANTS } from '../utils/constants';
 
 class StatsService {
     
@@ -127,9 +129,10 @@ class StatsService {
             // 6. HABIT & STREAK TRACKING (The "Daily Ritual")
             await this.checkHabitProgress(userId, stats, duration, isTrueRead, timezone);
 
-            // 7. Trigger Vector Update
+            // 7. Trigger Vector Update (Async)
+            // UPDATED: Now calls the Job Queue instead of doing math here
             if (isTrueRead) {
-                this.updateUserVector(userId);
+                this.triggerVectorUpdate(userId);
             }
 
             // 8. Update Topic Interests AND Perspective Score
@@ -608,18 +611,31 @@ class StatsService {
         }
     }
 
-    // 4. Update User Personalization Vector
-    async updateUserVector(userId: string) {
+    // 4. Trigger Vector Update (Async Job)
+    async triggerVectorUpdate(userId: string) {
         try {
             if (redisClient.isReady()) {
                 const client = redisClient.getClient();
                 if (client) {
                     const countKey = `vector_update_count:${userId}`;
                     const count = await client.incr(countKey);
+                    // Optimization: Only re-calculate vector every 5th read
                     if (count % 5 !== 0) return;
                 }
             }
 
+            // Offload the heavy calculation to the background worker
+            await queueManager.addJobToQueue(CONSTANTS.QUEUE.NAME, 'update-user-vector', { userId });
+        
+        } catch (error) {
+            logger.error("❌ Failed to queue vector update:", error);
+        }
+    }
+
+    // 5. Compute Vector (Worker Process)
+    // This is the heavy lifting function called by the worker
+    async computeUserVector(userId: string) {
+        try {
             const recentLogs = await ActivityLog.find({ userId, action: 'view_analysis' })
                 .sort({ timestamp: -1 })
                 .limit(50) 
@@ -651,13 +667,14 @@ class StatsService {
             }
 
             await Profile.updateOne({ userId }, { userEmbedding: avgVector });
+            logger.info(`🧬 User Vector Updated: ${userId}`);
 
         } catch (error) {
             logger.error("❌ Vector Update Failed:", error);
         }
     }
 
-    // 5. Log Search Query
+    // 6. Log Search Query
     async logSearch(query: string, resultCount: number) {
         try {
             const normalized = query.toLowerCase().trim();
@@ -681,7 +698,7 @@ class StatsService {
         }
     }
 
-    // 6. Apply Recency Decay
+    // 7. Apply Recency Decay
     async applyInterestDecay(userId: string) {
         try {
             const stats = await UserStats.findOne({ userId });
@@ -735,7 +752,7 @@ class StatsService {
         }
     }
 
-    // 7. Tune Feed (Modify Interests Manually)
+    // 8. Tune Feed (Modify Interests Manually)
     async manageFeedTuning(userId: string, action: string, topic: string) {
         try {
             const stats = await UserStats.findOne({ userId });
