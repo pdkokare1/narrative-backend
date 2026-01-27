@@ -32,7 +32,8 @@ const cleanupGhostJobs = async () => {
             'fetch-feed-morning', 
             'fetch-feed-night',
             'fetch-feed',      
-            'update-trending'
+            'update-trending',
+            'interest-decay' 
         ];
 
         let cleanedCount = 0;
@@ -131,7 +132,13 @@ export const startScheduler = async () => {
       await newsQueue.add('smart-notifications', {}, { removeOnComplete: true });
   });
 
-  // 8. Daily Cleanup & Trash Purge (Midnight)
+  // 8. NEW: Interest Decay (Daily at 3:00 AM)
+  // Ensures user recommendations stay fresh by decaying old interests
+  safeSchedule('interest-decay', '0 3 * * *', async () => {
+      await cleanupQueue.add('interest-decay', {}, { removeOnComplete: true });
+  });
+
+  // 9. Daily Cleanup & Trash Purge (Midnight)
   safeSchedule('daily-cleanup', '0 0 * * *', async () => {
       // A. Standard Cache Cleanup
       await cleanupQueue.add('daily-cleanup', {}, { removeOnComplete: true });
@@ -153,5 +160,5 @@ export const startScheduler = async () => {
       }
   });
 
-  logger.info('✅ Schedules registered: Heartbeat, Trending, Feed, SmartNotifs, Cleanup');
+  logger.info('✅ Schedules registered: Heartbeat, Trending, Feed, SmartNotifs, Decay, Cleanup');
 };
