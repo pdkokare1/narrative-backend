@@ -74,12 +74,17 @@ class StatsService {
             let isTrueRead = false;
             const wpm = duration > 0 ? wordCount / (duration / 60) : 9999;
             
+            // UPDATED: Dynamic True Read Calculation
+            // Calculate minimum time based on word count (e.g., 200 words / 400 * 60 = 30s)
+            // Floor set to 15s to capture very short briefs, but filter out bounces.
+            const requiredTime = wordCount > 0 ? Math.max((wordCount / 400) * 60, 15) : 30;
+
             // Logic A: Standard Text Reading
             if (interaction.contentType === 'article' || interaction.contentType === 'narrative') {
 
-                // STRICT CHECK: Must be > 30s, > 75% scroll, reasonable speed
+                // STRICT CHECK: Dynamic Time, > 75% scroll, reasonable speed
                 // NEW: Added Focus Score check. If they tabbed away constantly (score < 50), it's not a true read.
-                if (wordCount > 100 && scrollDepth > 75 && duration > 30 && wpm < 600 && focusScore > 40) {
+                if (wordCount > 100 && scrollDepth > 75 && duration > requiredTime && wpm < 600 && focusScore > 40) {
                     isTrueRead = true;
                 }
 
@@ -234,12 +239,26 @@ class StatsService {
             const now = new Date();
             const tz = timezone || 'UTC';
 
+            // UPDATED: Fetch Profile FIRST to determine Habit Frequency rules
+            const profile = await Profile.findOne({ userId });
+            const habits = profile?.habits || []; 
+
             const getDayString = (date: Date) => date.toLocaleDateString('en-CA', { timeZone: tz });
+            
+            // Helper to get Week String (YYYY-WeekNum)
+            const getWeekString = (date: Date) => {
+                const tempDate = new Date(date.valueOf());
+                tempDate.setDate(tempDate.getDate() - ((tempDate.getDay() + 6) % 7)); // Move to Monday
+                return tempDate.toLocaleDateString('en-CA', { timeZone: tz });
+            };
+
             const todayStr = getDayString(now);
+            const thisWeekStr = getWeekString(now);
             
             // Handle new user case
             const lastActiveDate = stats.lastActiveDate ? new Date(stats.lastActiveDate) : new Date(0);
             const lastActiveStr = getDayString(lastActiveDate);
+            const lastWeekStr = getWeekString(lastActiveDate);
 
             // If it's a NEW DAY (not the same as last active)
             if (todayStr !== lastActiveStr) {
@@ -276,8 +295,21 @@ class StatsService {
                     stats.longestStreak = stats.currentStreak;
                 }
 
-                // Reset Daily Habit Status for the new day
-                stats.dailyHabitStatus = [];
+                // UPDATED: Smart Habit Reset
+                // Instead of wiping all daily habits, we preserve Weekly habits if the week hasn't changed.
+                if (stats.dailyHabitStatus && stats.dailyHabitStatus.length > 0) {
+                    const isNewWeek = thisWeekStr !== lastWeekStr;
+                    
+                    stats.dailyHabitStatus = stats.dailyHabitStatus.filter((status: any) => {
+                        const habitConfig = habits.find((h: any) => 
+                            (h.id && h.id === status.habitId) || (h._id && h._id.toString() === status.habitId)
+                        );
+                        // Keep if it's a Weekly habit AND we are still in the same week
+                        return habitConfig?.frequency === 'weekly' && !isNewWeek;
+                    });
+                } else {
+                    stats.dailyHabitStatus = [];
+                }
             }
             stats.lastActiveDate = now;
 
@@ -303,16 +335,12 @@ class StatsService {
             };
 
             // --- REFINED: Flexible Habit Checking ---
-            // 1. Fetch Profile to get habits
-            const profile = await Profile.findOne({ userId });
-            const habits = profile?.habits || []; 
-
             // 2. Initialize status array if needed
             if (!stats.dailyHabitStatus) stats.dailyHabitStatus = [];
 
             // 3. Process each configured habit
             habits.forEach((habit: any) => {
-                const habitId = habit.id || habit._id || 'default_habit';
+                const habitId = habit.id || (habit._id ? habit._id.toString() : 'default_habit');
                 
                 // Find existing progress or create new
                 let progress = stats.dailyHabitStatus.find((s: any) => s.habitId === habitId || s.type === habit.type);
@@ -324,29 +352,41 @@ class StatsService {
                         current: 0,
                         target: habit.target || 0,
                         completed: false,
-                        label: habit.label || 'Daily Goal'
+                        label: habit.label || 'Goal'
                     };
                     stats.dailyHabitStatus.push(progress);
                 }
 
                 // Update Progress based on Type
+                // Note: For weekly habits, this accumulates across days because we didn't reset it above.
                 if (habit.type === 'daily_minutes') {
-                    // Convert seconds to minutes for comparison, or target to seconds
-                    // Usually habit.target is in minutes (e.g. 15). dailyEntry.timeSpent is seconds.
-                    progress.current = Math.floor(dailyEntry.timeSpent / 60);
-                } else if (habit.type === 'daily_articles') {
-                    progress.current = dailyEntry.articlesRead;
+                    // For weekly minutes, we need to accumulate differently, but for now assuming daily_minutes type
+                    // uses the 'daily' frequency usually. If it's 'weekly', 'current' handles the accumulation.
+                    if (habit.frequency === 'weekly') {
+                         // Add just the current duration (converted to minutes) to the accumulator
+                         progress.current += (duration / 60);
+                    } else {
+                         // Daily: just set to today's total
+                         progress.current = Math.floor(dailyEntry.timeSpent / 60);
+                    }
+                } else if (habit.type === 'daily_articles' || habit.type === 'weekly_articles') {
+                    if (habit.frequency === 'weekly') {
+                        if (isTrueRead) progress.current += 1;
+                    } else {
+                        progress.current = dailyEntry.articlesRead;
+                    }
                 }
 
                 // Check Completion
-                if (progress.current >= progress.target) {
+                // Use floor for minutes to avoid precision issues
+                if (Math.floor(progress.current) >= progress.target) {
                     progress.completed = true;
                 }
             });
 
             // 4. CHECK LEGACY GOALS (Primary Habit for Streaks)
             // We preserve this exact logic so the UI streak doesn't break
-            const dailyHabit = habits.find((h:any) => h.type === 'daily_minutes');
+            const dailyHabit = habits.find((h:any) => h.type === 'daily_minutes' && (!h.frequency || h.frequency === 'daily'));
             // Default to 15 mins if no habit found
             const targetSeconds = dailyHabit ? dailyHabit.target * 60 : 15 * 60; 
 
