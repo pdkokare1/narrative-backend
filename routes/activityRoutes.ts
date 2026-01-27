@@ -47,7 +47,7 @@ router.post('/log-view', validate(schemas.logActivity), asyncHandler(async (req:
 
     // --- UPDATE PERSONALIZATION VECTOR ---
     // Moved to Service to keep route clean. Fire and forget.
-    statsService.updateUserVector(userId).catch(err => console.error(err));
+    statsService.triggerVectorUpdate(userId).catch(err => console.error(err));
 
     // Check for Badges
     const streakBadge = await gamificationService.updateStreak(userId);
@@ -91,7 +91,7 @@ router.post('/log-read', validate(schemas.logActivity), asyncHandler(async (req:
     await ActivityLog.create({ userId, articleId, action: 'read_external' });
     
     // Also update vector on external read
-    statsService.updateUserVector(userId).catch(err => console.error(err));
+    statsService.triggerVectorUpdate(userId).catch(err => console.error(err));
 
     const newBadge = await gamificationService.updateStreak(userId);
 
