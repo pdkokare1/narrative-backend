@@ -18,6 +18,7 @@ import { registerShutdownHandler } from './utils/shutdownHandler';
 // Services & Middleware
 import { errorHandler } from './middleware/errorMiddleware';
 import { apiLimiter } from './middleware/rateLimiters';
+import analyticsBufferService from './services/analyticsBufferService';
 
 // Routes
 import apiRouter from './routes/index'; 
@@ -120,6 +121,9 @@ const startServer = async () => {
 
         // 1. Connect to Infrastructure (DB & Redis)
         await dbLoader.connect();
+
+        // NEW: Start the Analytics Buffer Flushing Engine
+        analyticsBufferService.startService();
 
         // 2. Start HTTP Server
         const PORT = config.port || 3001;
