@@ -33,6 +33,9 @@ export interface IUserStats extends Document {
   lastSentimentSequence: string[]; // Keep track of last 5 reads ['Negative', 'Positive'...]
   suggestPalateCleanser: boolean; // Flag to trigger UI intervention
 
+  // NEW: Smart Habit Calibration
+  suggestGoalUpgrade: boolean; // Flag to suggest increasing daily target
+
   leanExposure: {
     Left: number;
     Center: number;
@@ -123,6 +126,9 @@ const userStatsSchema = new Schema<IUserStats>({
   // NEW: Sentiment Velocity
   lastSentimentSequence: { type: [String], default: [] },
   suggestPalateCleanser: { type: Boolean, default: false },
+
+  // NEW: Smart Habit Calibration
+  suggestGoalUpgrade: { type: Boolean, default: false },
 
   leanExposure: {
     Left: { type: Number, default: 0 },
