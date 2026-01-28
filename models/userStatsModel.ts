@@ -16,10 +16,11 @@ export interface IUserStats extends Document {
   totalTimeSpent: number; // in seconds
   
   // Quality Metric
-  articlesReadCount: number; // Only counts "True Reads"
+  articlesReadCount: number; // Binary "True Reads"
+  totalReadValue: number;    // NEW: Accumulated "Partial Credit" (e.g. 0.5 + 0.8 + 1.0)
 
   averageAttentionSpan: number; // in seconds
-  focusScoreAvg: number; // 0-100 (New: How often they stay on the tab)
+  focusScoreAvg: number; // 0-100 (How often they stay on the tab)
 
   // NEW: Deep Work Tracking
   deepFocusMinutes: number; // Total minutes spent in "Flow State"
@@ -107,6 +108,7 @@ const userStatsSchema = new Schema<IUserStats>({
   totalTimeSpent: { type: Number, default: 0 },
   
   articlesReadCount: { type: Number, default: 0 },
+  totalReadValue: { type: Number, default: 0 }, // NEW
 
   averageAttentionSpan: { type: Number, default: 0 },
   focusScoreAvg: { type: Number, default: 100 }, // Defaults to perfect focus
@@ -188,7 +190,7 @@ const userStatsSchema = new Schema<IUserStats>({
   },
 
   activityByHour: { type: Map, of: Number, default: {} },
-  peakLearningTime: { type: Number, default: null }, // NEW
+  peakLearningTime: { type: Number, default: null }, 
   
   engagementScore: { type: Number, default: 50 },
   lastUpdated: { type: Date, default: Date.now }
