@@ -60,13 +60,6 @@ class StatsService {
             if (interaction.contentId) {
                 if (!stats.readingProgress) stats.readingProgress = new Map();
                 
-                // Prefer the granular Drop-off Element ID if valid
-                if (interaction.dropOffElement && typeof interaction.dropOffElement === 'string') {
-                    // NOTE: We're storing ID as negative pixel value (hack) OR we could just rely on scroll.
-                    // Since readingProgress is defined as Map<string, number>, we stick to scrollPosition for now.
-                    // Granular Element tracking is currently only for AnalyticsSession logs (via controller).
-                }
-
                 if (interaction.scrollPosition && interaction.scrollPosition > 100) {
                     stats.readingProgress.set(interaction.contentId, interaction.scrollPosition);
                 }
@@ -75,8 +68,10 @@ class StatsService {
             // 3. Update Global Time
             stats.totalTimeSpent = (stats.totalTimeSpent || 0) + duration;
 
-            // 4. "True Read" Validation (Enhanced)
+            // 4. "True Read" Validation (Enhanced with Partial Credit)
             let isTrueRead = false;
+            let valueScore = 0.0; // NEW: Partial Credit (0.0 - 1.0)
+            
             const wpm = duration > 0 ? wordCount / (duration / 60) : 9999;
             
             // UPDATED: Dynamic True Read Calculation
@@ -88,9 +83,6 @@ class StatsService {
             if (interaction.contentType === 'article' || interaction.contentType === 'narrative') {
 
                 // --- NEW: COGNITIVE LOAD METRIC ---
-                // We fetch the article to get its Complexity Score
-                // If the user scrolls SLOWLY through COMPLEX text, it is high effort.
-                // If the user scrolls QUICKLY through SIMPLE text, it is low effort (skimming).
                 let complexityBonus = 0;
                 
                 try {
@@ -99,17 +91,10 @@ class StatsService {
                         const score = article.complexityScore; // 0-100
                         
                         // Calculate "Effort Score"
-                        // Low velocity (0.02) + High Complexity (80) = High Effort
-                        // High velocity (0.15) + Low Complexity (30) = Low Effort
-                        
-                        // Normalize velocity: 0.01 (slow) to 0.1 (fast)
-                        // If velocity is very low, multiplier is high.
                         const velocityFactor = Math.max(0.2, 0.1 / Math.max(0.001, avgVelocity)); 
                         
                         const effortScore = score * velocityFactor; // Roughly 0 to 500 range
                         
-                        // If Effort is high (>200), we are more lenient with duration/scroll checks
-                        // because they are reading dense material.
                         if (effortScore > 200) {
                             complexityBonus = 0.8; // Reduce required constraints by 20%
                             logger.info(`🧠 High Cognitive Load Detected (Effort: ${Math.round(effortScore)}) for User ${userId}`);
@@ -117,20 +102,34 @@ class StatsService {
                     }
                 } catch (e) {}
 
+                // --- NEW: Value Score Calculation ---
+                // Calculate completion percentage based on scroll and time
+                const scrollCompletion = Math.min(scrollDepth, 100) / 100;
+                const timeCompletion = Math.min(duration / requiredTime, 1.0);
+                
+                // Base value is average of time & scroll depth
+                let rawValue = (scrollCompletion * 0.4) + (timeCompletion * 0.6);
+                
+                // Multiplier for Complexity (Harder content yields more value even if incomplete)
+                if (complexityBonus > 0) rawValue *= 1.2;
+
+                // Cap at 1.0
+                valueScore = Math.min(rawValue, 1.0);
+
                 // STRICT CHECK: Dynamic Time, > 75% scroll, reasonable speed
-                // NEW: Added Focus Score check. If they tabbed away constantly (score < 50), it's not a true read.
-                // UPDATED: Apply complexity bonus to the thresholds
                 const minScroll = 75 * (1 - complexityBonus * 0.1); // e.g. 75 -> 67%
                 const minFocus = 40; 
 
                 if (wordCount > 100 && scrollDepth > minScroll && duration > (requiredTime * (1 - complexityBonus * 0.2)) && wpm < 600 && focusScore > minFocus) {
                     isTrueRead = true;
+                    valueScore = 1.0; // Boost to max if they passed the threshold
                 }
 
                 // NEW: Skimmer Detection
                 // If they scrolled deep (>50%) but read very fast (>600 WPM)
                 if (scrollDepth > 50 && wpm > 600) {
                     stats.readingStyle = 'skimmer';
+                    valueScore *= 0.5; // Penalty for skimming
                 }
                 // If they read slowly (>60s) and deeply
                 else if (duration > 60 && scrollDepth > 80 && wpm < 400) {
@@ -141,13 +140,17 @@ class StatsService {
             // Logic B: Audio Completion
             if (interaction.contentType === 'audio_action' && interaction.audioAction === 'complete') {
                 isTrueRead = true;
+                valueScore = 1.0;
                 logger.info(`🎧 Audio Completion Verified for User ${userId}`);
             }
+
+            // --- APPLY VALUE SCORE ---
+            stats.totalReadValue = (stats.totalReadValue || 0) + valueScore;
 
             if (isTrueRead) {
                 stats.articlesReadCount = (stats.articlesReadCount || 0) + 1;
                 const readType = interaction.contentType === 'audio_action' ? 'Audio Listen' : 'Text Read';
-                logger.info(`📖 True Read Recorded (${readType}): User ${userId} | Time: ${duration}s | Focus: ${focusScore}`);
+                logger.info(`📖 True Read Recorded (${readType}): User ${userId} | Time: ${duration}s | Focus: ${focusScore} | Value: ${valueScore.toFixed(2)}`);
                 
                 await this.checkContentFatigue(userId, interaction.text);
 
@@ -168,13 +171,14 @@ class StatsService {
 
             // 7. Trigger Vector Update (Async)
             // UPDATED: Now calls the Job Queue instead of doing math here
-            if (isTrueRead) {
+            if (isTrueRead || valueScore > 0.5) {
                 this.triggerVectorUpdate(userId);
             }
 
             // 8. Update Topic Interests AND Perspective Score
+            // UPDATED: Now passes Value Score for weighting
             if (interaction.contentId && (interaction.contentType === 'article' || interaction.contentType === 'narrative')) {
-                 await this.updateInterests(stats, interaction.contentId, duration, timezone, userId);
+                 await this.updateInterests(stats, interaction.contentId, duration, valueScore, timezone, userId);
             }
 
             // 9. NEW: Golden Hour Calculation
@@ -200,6 +204,17 @@ class StatsService {
 
         } catch (error) {
             logger.error(`❌ Error processing interaction for user ${userId}:`, error);
+        }
+    }
+
+    // --- NEW: Golden Hour Query Helper (Used by Notification Service) ---
+    async getUsersByPeakHour(hour: number) {
+        try {
+            // Find users whose peak learning time is NOW
+            return await UserStats.find({ peakLearningTime: hour }).select('userId');
+        } catch (error) {
+            logger.error('Error fetching peak hour users:', error);
+            return [];
         }
     }
 
@@ -445,13 +460,17 @@ class StatsService {
     }
 
     // --- HELPER: Update Interests & Diversity ---
-    private async updateInterests(stats: any, articleId: string, duration: number, timezone?: string, userId?: string) {
+    // UPDATED: Now accepts valueScore for weighted interest
+    private async updateInterests(stats: any, articleId: string, duration: number, valueScore: number, timezone?: string, userId?: string) {
         try {
             // UPDATED: Added 'sentiment' to the select query
             const article = await Article.findOne({ _id: articleId }).select('topics detectedBias category sentiment');
             if (!article) return;
 
-            const interestWeight = Math.min(duration, 120); 
+            // WEIGHT LOGIC: Use Value Score (0.0 - 1.0) to weight the interest
+            // If they skimmed (0.5), it counts less. If they studied (1.0), it counts full.
+            const baseWeight = Math.min(duration, 120); 
+            const interestWeight = baseWeight * (valueScore || 0.5); // Fallback to 0.5 if 0
 
             // 1. Update Topic Interest
             if (article.topics && Array.isArray(article.topics)) {
@@ -473,7 +492,8 @@ class StatsService {
                 stats.leanExposure[bucket] = (stats.leanExposure[bucket] || 0) + interestWeight;
 
                 // --- NEW: Update Quest Progress (Echo Chamber Breaker) ---
-                if (userId) {
+                // Only count high-value reads for Quests
+                if (userId && valueScore > 0.8) {
                     await gamificationService.processQuestEvent(userId, 'read_article', { lean: bucket });
                 }
                 // --------------------------------------------------------
@@ -645,6 +665,7 @@ class StatsService {
             await client.incr(key);
             await client.expire(key, 60 * 60 * 24 * 7);
         } catch (error) {
+            // silent fail
         }
     }
 
