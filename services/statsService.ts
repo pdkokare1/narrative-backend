@@ -207,6 +207,33 @@ class StatsService {
         }
     }
 
+    // --- NEW: Smart Goal Calibration (Strategy C) ---
+    // Checks if the user is crushing their goals and suggests an upgrade.
+    async checkSmartGoals(stats: any, habits: any[]) {
+        try {
+            // Only check if we have history
+            if (!stats.recentDailyHistory || stats.recentDailyHistory.length < 3) return;
+
+            // Find the daily minutes goal
+            const dailyHabit = habits.find((h: any) => h.type === 'daily_minutes' && (!h.frequency || h.frequency === 'daily'));
+            const target = dailyHabit ? dailyHabit.target * 60 : 15 * 60; // Default 15 min
+
+            // Check last 3 days
+            const last3 = stats.recentDailyHistory.slice(-3);
+            const allCrushed = last3.every((day: any) => day.timeSpent > (target * 1.5));
+
+            if (allCrushed && !stats.suggestGoalUpgrade) {
+                stats.suggestGoalUpgrade = true;
+                logger.info(`🚀 Smart Goal Triggered: User ${stats.userId} is performing 1.5x above target.`);
+            } else if (!allCrushed) {
+                // Reset if performance drops
+                stats.suggestGoalUpgrade = false;
+            }
+        } catch (e) {
+            logger.warn('Error checking smart goals', e);
+        }
+    }
+
     // --- NEW: Golden Hour Query Helper (Used by Notification Service) ---
     async getUsersByPeakHour(hour: number) {
         try {
@@ -453,6 +480,9 @@ class StatsService {
                     await gamificationService.updateStreak(userId, timezone);
                 }
             }
+
+            // --- NEW: Trigger Smart Goal Check ---
+            await this.checkSmartGoals(stats, habits);
             
         } catch (error) {
             logger.error(`Habit Check Error:`, error);
