@@ -3,8 +3,31 @@ import * as admin from 'firebase-admin';
 import Profile from '../models/profileModel';
 import redisClient from '../utils/redisClient';
 import logger from '../utils/logger';
+import statsService from './statsService'; // Updated to import statsService
 
 class NotificationService {
+
+    /**
+     * Entry Point for Scheduler: Sends alerts to users whose Golden Hour is NOW.
+     * @param hour Current hour (0-23)
+     */
+    async sendGoldenHourBriefings(hour: number): Promise<void> {
+        try {
+            // 1. Get Users matched to this hour
+            const candidates = await statsService.getUsersByPeakHour(hour);
+            if (!candidates || candidates.length === 0) return;
+
+            logger.info(`🔔 Golden Hour: Found ${candidates.length} users active at hour ${hour}.`);
+
+            // 2. Process individually (Promise.allSettled to avoid blocking)
+            await Promise.allSettled(
+                candidates.map(user => this.sendSmartAlert(user.userId, hour.toString()))
+            );
+
+        } catch (err) {
+            logger.error('Golden Hour Batch Failed:', err);
+        }
+    }
 
     /**
      * Sends a "Smart Alert" to a user if they haven't received one today.
@@ -19,7 +42,7 @@ class NotificationService {
             
             const hasSent = await redisClient.get(rateKey);
             if (hasSent) {
-                logger.debug(`🔕 Notification skipped for ${userId}: Already sent today.`);
+                // logger.debug(`🔕 Notification skipped for ${userId}: Already sent today.`);
                 return false;
             }
 
@@ -30,11 +53,11 @@ class NotificationService {
             }
 
             // 3. Construct Message
-            // In the future, this can be personalized with 'negativeInterest' data
+            // We personalize the title based on the time context
             const message = {
                 notification: {
                     title: "Your Daily Briefing",
-                    body: "Your feed has been updated with stories matching your active hours."
+                    body: "We've curated stories matching your peak learning time."
                 },
                 token: profile.fcmToken,
                 data: {
