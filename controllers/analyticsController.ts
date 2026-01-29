@@ -116,14 +116,18 @@ export const trackActivity = async (req: Request, res: Response, next: NextFunct
         );
     }
 
-    // 4. CHECK FOR FEEDBACK TRIGGERS (Palate Cleanser)
+    // 4. CHECK FOR FEEDBACK TRIGGERS (Palate Cleanser & Goals)
     // FIX: Explicitly type command to allow string or null
     let command: string | null = null;
     if (userId) {
-        // Check if the user needs an intervention (Doomscrolling detected)
-        const stats = await UserStats.findOne({ userId }).select('suggestPalateCleanser');
+        // Updated query to fetch both flags
+        const stats = await UserStats.findOne({ userId }).select('suggestPalateCleanser suggestGoalUpgrade');
+
         if (stats?.suggestPalateCleanser) {
             command = 'trigger_palate_cleanser';
+        } else if (stats?.suggestGoalUpgrade) {
+            // NEW: Smart Goal Trigger
+            command = 'trigger_goal_upgrade';
         }
     }
 
