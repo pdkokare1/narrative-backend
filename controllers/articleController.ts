@@ -2,7 +2,7 @@
 import { Request, Response, NextFunction } from 'express';
 import Article from '../models/articleModel'; 
 import articleService from '../services/articleService'; 
-import statsService from '../services/statsService'; // NEW Import
+import statsService from '../services/statsService'; 
 import catchAsync from '../utils/asyncHandler'; 
 import AppError from '../utils/AppError'; 
 import { FeedFilters } from '../types';
@@ -20,7 +20,6 @@ export const searchArticles = catchAsync(async (req: Request, res: Response, nex
 
   const result = await articleService.searchArticles(query);
 
-  // NEW: Log the search asynchronously (Fire & Forget)
   statsService.logSearch(query, result.total).catch(err => console.error(err));
 
   res.status(200).json({
@@ -79,9 +78,10 @@ export const getBalancedFeed = catchAsync(async (req: Request, res: Response, ne
   const userId = (req as any).user?.uid; 
   const result = await articleService.getBalancedFeed(userId);
 
+  // Updated to be safe if meta is missing in new blended feed logic
   res.status(200).json({
     status: 'success',
-    meta: result.meta,
+    meta: (result as any).meta || {},
     data: result.articles
   });
 });
@@ -91,9 +91,10 @@ export const getPersonalizedFeed = catchAsync(async (req: Request, res: Response
   const userId = (req as any).user.uid;
   const result = await articleService.getPersonalizedFeed(userId);
 
+  // Updated to be safe if meta is missing
   res.status(200).json({
     status: 'success',
-    meta: result.meta,
+    meta: (result as any).meta || {},
     data: result.articles
   });
 });
