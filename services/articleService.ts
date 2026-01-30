@@ -338,8 +338,8 @@ class ArticleService {
     
     // 1. Fetch User Stats (Thermostat & Affinity)
     let injectionStrategy = { targetLean: ['Center'], frequency: 7, intensity: 'Neutral' };
-    let userProfile = null;
-    let userStats = null;
+    let userProfile: any = null; // Explicit type ANY to prevent TS errors
+    let userStats: any = null;    // Explicit type ANY to prevent TS errors
     
     if (userId) {
         const [stats, profile] = await Promise.all([
@@ -537,14 +537,21 @@ class ArticleService {
 
   // --- 5. Balanced Feed (Legacy Wrapper) ---
   async getBalancedFeed(userId: string) {
-      // Functionality moved to getMainFeed injections
-      return this.getMainFeed({ limit: 20 }, userId);
+      // Return getMainFeed results but format it to allow fallback compatibility if needed
+      const result = await this.getMainFeed({ limit: 20 }, userId);
+      return {
+          articles: result.articles,
+          meta: { reason: "Merged with Main Feed" } // Dummy meta to satisfy controller expectation
+      };
   }
 
   // --- 6. Personalized Feed (Legacy Wrapper) ---
   async getPersonalizedFeed(userId: string) {
-      // Functionality moved to getMainFeed base scoring
-      return this.getMainFeed({ limit: 20 }, userId);
+      const result = await this.getMainFeed({ limit: 20 }, userId);
+      return {
+          articles: result.articles,
+          meta: { topCategories: ["Merged Mix"] } // Dummy meta
+      };
   }
 
   // --- 7. Saved Articles (RESTORED) ---
