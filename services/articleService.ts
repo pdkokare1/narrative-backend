@@ -42,7 +42,7 @@ const mapLeanToKey = (lean: string): 'Left' | 'Right' | 'Center' => {
     return 'Center';
 };
 
-// --- NEW: ADVANCED HYBRID DEDUPLICATION ---
+// --- ADVANCED HYBRID DEDUPLICATION ---
 
 // 1. Text Normalizer: Handles "U.S." -> "us", "US-Iran" -> "us iran"
 const getTokens = (str: string) => {
@@ -126,11 +126,52 @@ const deduplicateTopics = (rawTopics: any[]) => {
 
 class ArticleService {
   
+  // --- SMART INJECTION LOGIC (NEW) ---
+
+  /**
+   * Calculates the "Thermostat" setting for the user.
+   * Returns the target lean to inject and the frequency (1 in N).
+   */
+  private getInjectionStrategy(stats: any): { targetLean: string[], frequency: number, intensity: string } {
+      if (!stats || !stats.leanExposure) {
+          return { targetLean: ['Center', 'Balanced'], frequency: 7, intensity: 'Low' }; // Default: 1 in 7
+      }
+
+      const { Left = 0, Right = 0, Center = 0 } = stats.leanExposure;
+      const total = Left + Right + Center;
+      
+      // Cold start: Inject neutral
+      if (total < 10) return { targetLean: ['Center'], frequency: 7, intensity: 'Neutral' };
+
+      const leftRatio = Left / total;
+      const rightRatio = Right / total;
+
+      // CASE 1: High Left Exposure -> Inject Right
+      if (leftRatio > 0.65) {
+          const freq = leftRatio > 0.8 ? 3 : 5; // If extreme (>80%), inject every 3rd. Else every 5th.
+          return { targetLean: ['Right', 'Right-Leaning'], frequency: freq, intensity: 'High' };
+      }
+
+      // CASE 2: High Right Exposure -> Inject Left
+      if (rightRatio > 0.65) {
+          const freq = rightRatio > 0.8 ? 3 : 5;
+          return { targetLean: ['Left', 'Left-Leaning'], frequency: freq, intensity: 'High' };
+      }
+
+      // CASE 3: Echo Chamber (Too much matching Center/Safe content) -> Inject Conflict
+      if ((Center / total) > 0.8) {
+           return { targetLean: ['Left', 'Right'], frequency: 6, intensity: 'Diversify' };
+      }
+
+      // CASE 4: Balanced User -> Inject Complexity (Deep Dives)
+      return { targetLean: ['Center', 'Balanced'], frequency: 8, intensity: 'Maintenance' };
+  }
+
   // --- 1. Smart Trending Topics (7 Days + Hybrid Dedupe) ---
   async getTrendingTopics() {
-    // CACHE BUST: 'v13' - Updated to 7 Days
+    // CACHE BUST: 'v14' - Updated to 7 Days
     return redis.getOrFetch(
-        'trending_topics_v13', 
+        'trending_topics_v14', 
         async () => {
             // UPDATED: Extended from 72h to 7 days to match clustering window
             const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -239,30 +280,26 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. Weighted Merge Main Feed (Triple Zone) ---
+  // --- 3. THE SMART FEED (RESTORED SCORING + INJECTION) ---
   async getMainFeed(filters: FeedFilters, userId?: string) {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
 
-    // NEW: PRIORITY TOPIC FILTER
-    if (filters.topic) {
-         // CLEANUP: If user clicked "U.S. Immigration", also search for "US Immigration"
-         // This regex handles the "Hybrid" matching in the reverse direction (DB Query)
-         const cleanTopic = filters.topic.replace(/[^\w\s]/g, '').replace(/\s+/g, '.*'); 
+    // A. FILTER MODE (Skip injection if user is filtering specifically)
+    if (filters.topic || (filters.category && filters.category !== 'All') || filters.politicalLean) {
+         // Standard filtered query
+         const query = buildArticleQuery(filters);
          
-         const query: any = { 
-             $or: [
+         if (filters.topic) {
+             const cleanTopic = filters.topic.replace(/[^\w\s]/g, '').replace(/\s+/g, '.*'); 
+             query.$or = [
                  { clusterTopic: filters.topic }, 
-                 // Matches "US Immigration" if topic is "U.S. Immigration"
                  { clusterTopic: { $regex: new RegExp(cleanTopic, 'i') } } 
-             ]
-         };
-         
-         if (filters.category && filters.category !== 'All') query.category = filters.category;
-         if (filters.politicalLean) query.politicalLean = filters.politicalLean;
+             ];
+             delete query.topic; 
+         }
 
          const articles = await Article.find(query)
-            .select('-content -embedding -recommendations')
             .sort({ publishedAt: -1 })
             .skip(page)
             .limit(Number(limit))
@@ -270,64 +307,81 @@ class ArticleService {
             .read('secondaryPreferred');
 
          return { 
-             articles: articles.map(a => ({
+             articles: articles.map(a => ({ 
                  ...a, 
                  type: 'Article', 
-                 imageUrl: optimizeImageUrl(a.imageUrl)
+                 imageUrl: optimizeImageUrl(a.imageUrl) 
              })), 
              pagination: { total: 100 } 
          };
     }
 
-    // ZONE 3: Deep Scrolling (Optimized)
-    if (page >= 20) {
-         const query = buildArticleQuery(filters);
-         
-         const articles = await Article.find(query)
-            .select('-content -embedding -recommendations')
+    // B. DEEP SCROLL MODE (Page 2+) 
+    // Optimization: Skip heavy personalization logic after page 2
+    if (page >= 40) {
+         const articles = await Article.find({ 
+             publishedAt: { $gte: new Date(Date.now() - 72*3600*1000) },
+             trustScore: { $gt: 40 }
+         })
             .sort({ publishedAt: -1 })
             .skip(page)
             .limit(Number(limit))
-            .lean()
-            .read('secondaryPreferred');
-
+            .lean();
+            
          return { 
              articles: articles.map(a => ({...a, type: 'Article', imageUrl: optimizeImageUrl(a.imageUrl)})), 
-             pagination: { total: 1000 }
+             pagination: { total: 1000 } 
          };
     }
 
-    // ZONE 1 & 2: Weighted Construction (First Page Load)
-    const initialQuery: any = { 
-        publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) } 
-    };
+    // C. SMART MIXER + PERSONALIZED SCORING (Restored functionality)
     
-    if (filters.category) initialQuery.category = filters.category;
-    if (filters.politicalLean) initialQuery.politicalLean = filters.politicalLean;
+    // 1. Fetch User Stats (Thermostat & Affinity)
+    let injectionStrategy = { targetLean: ['Center'], frequency: 7, intensity: 'Neutral' };
+    let userProfile = null;
+    let userStats = null;
+    
+    if (userId) {
+        const [stats, profile] = await Promise.all([
+            UserStats.findOne({ userId }).select('leanExposure topicInterest'),
+            Profile.findOne({ userId }).select('userEmbedding')
+        ]);
+        if (stats) {
+            injectionStrategy = this.getInjectionStrategy(stats);
+            userStats = stats;
+        }
+        userProfile = profile;
+    }
 
-    const [latestCandidates, userProfile, userStats] = await Promise.all([
-        Article.find(initialQuery)
-           .sort({ publishedAt: -1 })
-           .limit(80) 
-           .select('+embedding') 
-           .lean(),
-        userId ? Profile.findOne({ userId }).select('userEmbedding') : null,
-        userId ? UserStats.findOne({ userId }).select('leanExposure topicInterest') : null
-    ]);
+    // 2. FETCH BASE CONTENT (Trending + Personalized)
+    // We fetch a larger pool to score them in-memory, ensuring the "Comfort" feed logic is preserved
+    const poolSize = 80; 
+    const baseQuery = { 
+        publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) },
+        trustScore: { $gt: 40 } 
+    };
 
-    // 2. Score Candidates
-    const scoredCandidates = latestCandidates.map((article: any) => {
+    const rawBaseCandidates = await Article.find(baseQuery)
+        .sort({ publishedAt: -1 }) // Initial sort by time
+        .limit(poolSize)
+        .select('+embedding') // Needed for personalization
+        .lean();
+
+    // 3. SCORE CANDIDATES (The restored logic)
+    const scoredCandidates = rawBaseCandidates.map((article: any) => {
         let score = 0;
         
+        // Recency Decay
         const hoursOld = (Date.now() - new Date(article.publishedAt).getTime()) / (1000 * 60 * 60);
         score += Math.max(0, 40 - (hoursOld * 1.5));
 
+        // Quality Bonuses
         if (article.trustScore > 85) score += 10;
         if (article.clusterId && article.isLatest) score += 10; 
         if (article.biasScore < 15) score += 5; 
 
+        // Personalization (Vector + Interest)
         const userVec = (userProfile as any)?.userEmbedding;
-        
         if (userVec && article.embedding) {
             const sim = calculateSimilarity(userVec, article.embedding);
             score += Math.max(0, (sim - 0.5) * 100); 
@@ -341,21 +395,81 @@ class ArticleService {
         return { article: cleanArticle, score };
     });
 
-    const sorted = scoredCandidates.sort((a, b) => b.score - a.score);
+    // Select Top Base Articles based on Personal Score
+    const baseLimit = Math.ceil(Number(limit) * 0.8);
+    const baseArticles = scoredCandidates
+        .sort((a, b) => b.score - a.score) // High score first
+        .slice(0, baseLimit + 5) // Buffer
+        .map(i => i.article);
 
-    const zone1 = sorted.slice(0, 10).map(i => i.article);
-    const zone1Ids = new Set(zone1.map(a => a._id.toString()));
+    
+    // 4. FETCH INJECTION CONTENT (Perspective Wideners)
+    const injectionLimit = Math.floor(Number(limit) * 0.3); 
+    const injectionQuery = {
+        publishedAt: { $gte: new Date(Date.now() - 96 * 60 * 60 * 1000) }, // Wider time window
+        politicalLean: { $in: injectionStrategy.targetLean },
+        trustScore: { $gt: 80 } 
+    };
 
-    const zone2Candidates = sorted.slice(10, 30).filter(i => !zone1Ids.has(i.article._id.toString()));
-    const zone2 = zone2Candidates
-        .map(i => i.article)
-        .sort(() => Math.random() - 0.5); 
+    const injectionCandidates = await Article.find(injectionQuery)
+        .sort({ trustScore: -1 })
+        .limit(injectionLimit)
+        .lean();
 
-    const mixedFeed = [...zone1, ...zone2];
-    const resultFeed = mixedFeed.slice(0, Number(limit));
+    // 5. THE MIXER (Interleaving)
+    const finalFeed: any[] = [];
+    const usedIds = new Set<string>();
+
+    let injectionIndex = 0;
+    let baseIndex = 0;
+
+    // Skip redundant base articles if they appear in pagination
+    if (page > 0) {
+        baseIndex = page % baseLimit; // approximate offset logic for simplicity in this view
+    }
+
+    for (let i = 0; i < Number(limit); i++) {
+        const isInjectionSlot = (i + 1) % injectionStrategy.frequency === 0;
+        
+        // Attempt Injection
+        if (isInjectionSlot && injectionIndex < injectionCandidates.length) {
+            const candidate = injectionCandidates[injectionIndex];
+            if (!usedIds.has(candidate._id.toString())) {
+                finalFeed.push({ ...candidate, suggestionType: 'Perspective' }); // Flag for UI
+                usedIds.add(candidate._id.toString());
+                injectionIndex++;
+                continue;
+            }
+        }
+
+        // Standard Article
+        if (baseIndex < baseArticles.length) {
+             const candidate = baseArticles[baseIndex];
+             if (!usedIds.has(candidate._id.toString())) {
+                 finalFeed.push(candidate);
+                 usedIds.add(candidate._id.toString());
+                 baseIndex++;
+             } else {
+                 baseIndex++; // Skip duplicate
+                 i--; // Retry slot
+             }
+        }
+    }
+
+    // Fill remaining slots
+    while (finalFeed.length < Number(limit) && baseIndex < baseArticles.length) {
+        const candidate = baseArticles[baseIndex];
+        if (!usedIds.has(candidate._id.toString())) {
+            finalFeed.push(candidate);
+            usedIds.add(candidate._id.toString());
+        }
+        baseIndex++;
+    }
+
+    logger.info(`feed_gen user=${userId || 'guest'} strategy=${injectionStrategy.intensity} items=${finalFeed.length}`);
 
     return { 
-        articles: resultFeed.map(a => ({ 
+        articles: finalFeed.map(a => ({ 
             ...a, 
             type: 'Article', 
             imageUrl: optimizeImageUrl(a.imageUrl) 
@@ -364,17 +478,15 @@ class ArticleService {
     };
   }
 
-  // --- 4. In Focus Feed (Narratives OR Top Stories) ---
+  // --- 4. In Focus Feed (RESTORED) ---
   async getInFocusFeed(filters: FeedFilters) {
      const { offset = 0, limit = 20 } = filters;
-     
      const query: any = {};
      if (filters.category && filters.category !== 'All') {
          query.category = { $regex: filters.category, $options: 'i' };
      }
 
      let narratives: any[] = [];
-     
      try {
          narratives = await Narrative.find(query)
              .select('-articles -vector') 
@@ -390,9 +502,8 @@ class ArticleService {
                  .limit(Number(limit))
                  .lean();
          }
-
      } catch (err) {
-         console.error("[InFocus] CRITICAL DB ERROR:", err);
+         logger.error(`[InFocus] Error: ${err}`);
          narratives = [];
      }
 
@@ -424,107 +535,19 @@ class ArticleService {
      };
   }
 
-  // --- 5. Balanced Feed (Anti-Echo Chamber) ---
+  // --- 5. Balanced Feed (Legacy Wrapper) ---
   async getBalancedFeed(userId: string) {
-      if (!userId) {
-          const feed = await this.getMainFeed({ limit: 20 });
-          return { 
-              articles: feed.articles, 
-              meta: { reason: "Trending Headlines" } 
-          };
-      }
-
-      const stats = await UserStats.findOne({ userId });
-      
-      let query: any = { 
-          publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } 
-      };
-
-      let reason = "Global Perspectives";
-
-      if (stats) {
-          const { Left, Right } = stats.leanExposure;
-          const total = Left + Right + stats.leanExposure.Center;
-          
-          if (total > 300) { 
-              if (Left > Right * 1.5) {
-                  query.politicalLean = { $in: ['Right', 'Right-Leaning', 'Center'] };
-                  reason = "Perspectives from Center & Right";
-              } else if (Right > Left * 1.5) {
-                  query.politicalLean = { $in: ['Left', 'Left-Leaning', 'Center'] };
-                  reason = "Perspectives from Center & Left";
-              } else {
-                  reason = "Deep Dive & Neutral Analysis";
-              }
-          }
-      }
-
-      const articles = await Article.find(query)
-          .select('-content -embedding')
-          .sort({ trustScore: -1, publishedAt: -1 })
-          .limit(20)
-          .lean();
-
-      return {
-          articles: articles.map(a => ({ 
-              ...a, 
-              type: 'Article', 
-              imageUrl: optimizeImageUrl(a.imageUrl), 
-              suggestionType: 'Challenge' 
-          })),
-          meta: { reason }
-      };
+      // Functionality moved to getMainFeed injections
+      return this.getMainFeed({ limit: 20 }, userId);
   }
 
-  // --- 6. Personalized Feed (Legacy / Backup) ---
+  // --- 6. Personalized Feed (Legacy Wrapper) ---
   async getPersonalizedFeed(userId: string) {
-    const CACHE_KEY = `my_mix_v2:${userId}`;
-    
-    return redis.getOrFetch(CACHE_KEY, async () => {
-        const profile = await Profile.findOne({ userId }).select('userEmbedding').lean();
-        if (!profile || !(profile as any).userEmbedding?.length) return { articles: [], meta: { reason: "No profile" }};
-
-        try {
-            const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-            const pipeline: any = [
-                {
-                    "$vectorSearch": {
-                        "index": "vector_index",
-                        "path": "embedding",
-                        "queryVector": (profile as any).userEmbedding,
-                        "numCandidates": 150,
-                        "limit": 50
-                    }
-                },
-                { 
-                    "$match": { 
-                        "publishedAt": { "$gte": threeDaysAgo }
-                    } 
-                },
-                { "$limit": 20 },
-                { 
-                    "$project": { 
-                        "headline": 1, "summary": 1, "source": 1, "category": 1, "politicalLean": 1, 
-                        "url": 1, "imageUrl": 1, "publishedAt": 1, "analysisType": 1, 
-                        "sentiment": 1, "biasScore": 1, "trustScore": 1, "clusterTopic": 1, 
-                        "audioUrl": 1, "keyFindings": 1,
-                        "score": { "$meta": "vectorSearchScore" } 
-                    } 
-                }
-            ];
-            const articles = await Article.aggregate(pipeline);
-            return { 
-                articles: articles.map(a => ({ ...a, suggestionType: 'Comfort', imageUrl: optimizeImageUrl(a.imageUrl) })), 
-                meta: { topCategories: ["AI Curated"] } 
-            };
-        } catch (error) {
-            logger.error(`Vector Search Failed: ${error}`);
-            return { articles: [], meta: { reason: "Error" }};
-        }
-    }, CONSTANTS.CACHE.TTL_PERSONAL);
+      // Functionality moved to getMainFeed base scoring
+      return this.getMainFeed({ limit: 20 }, userId);
   }
 
-  // --- 7. Saved Articles ---
+  // --- 7. Saved Articles (RESTORED) ---
   async getSavedArticles(userId: string) {
     const profile = await Profile.findOne({ userId }).select('savedArticles').lean();
     if (!profile || !profile.savedArticles.length) return [];
@@ -538,7 +561,7 @@ class ArticleService {
     return articles.map(a => ({ ...a, imageUrl: optimizeImageUrl(a.imageUrl) }));
   }
 
-  // --- 8. Toggle Save ---
+  // --- 8. Toggle Save (RESTORED) ---
   async toggleSaveArticle(userId: string, articleIdStr: string) {
     const articleId = new mongoose.Types.ObjectId(articleIdStr);
     const profile = await Profile.findOne({ userId, savedArticles: articleId });
