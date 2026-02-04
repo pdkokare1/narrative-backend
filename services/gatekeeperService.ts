@@ -12,21 +12,53 @@ class GatekeeperService {
 
     async initialize() {
         try {
+            // 1. Sync Banned Domains (Merge defaults with DB)
             let bannedDoc = await SystemConfig.findOne({ key: 'BANNED_DOMAINS' });
             if (!bannedDoc) {
                 bannedDoc = await SystemConfig.create({ key: 'BANNED_DOMAINS', value: DEFAULT_BANNED_DOMAINS });
+            } else {
+                // AUTO-SYNC: Add new code-level defaults to the database if missing
+                const existingBans = new Set(bannedDoc.value);
+                let changed = false;
+                for (const def of DEFAULT_BANNED_DOMAINS) {
+                    if (!existingBans.has(def)) {
+                        bannedDoc.value.push(def);
+                        changed = true;
+                    }
+                }
+                if (changed) {
+                    await bannedDoc.save();
+                    logger.info('🔄 Gatekeeper: Updated DB with new BANNED_DOMAINS defaults.');
+                }
             }
             
+            // 2. Load Bans into Redis
             if (redis.isReady() && bannedDoc.value.length > 0) {
                 for (const domain of bannedDoc.value) {
                     await redis.sAdd(CONSTANTS.REDIS_KEYS.BANNED_DOMAINS, domain);
                 }
             }
 
+            // 3. Sync Junk Keywords (Merge defaults with DB)
             let keywordsDoc = await SystemConfig.findOne({ key: 'JUNK_KEYWORDS' });
             if (!keywordsDoc) {
                 keywordsDoc = await SystemConfig.create({ key: 'JUNK_KEYWORDS', value: JUNK_KEYWORDS });
+            } else {
+                // AUTO-SYNC: Add new code-level keywords to the database if missing
+                const existingKeywords = new Set(keywordsDoc.value);
+                let kChanged = false;
+                for (const def of JUNK_KEYWORDS) {
+                    if (!existingKeywords.has(def)) {
+                        keywordsDoc.value.push(def);
+                        kChanged = true;
+                    }
+                }
+                if (kChanged) {
+                    await keywordsDoc.save();
+                    logger.info('🔄 Gatekeeper: Updated DB with new JUNK_KEYWORDS defaults.');
+                }
             }
+
             this.localKeywords = keywordsDoc ? keywordsDoc.value : JUNK_KEYWORDS;
             
             logger.info(`✅ Gatekeeper Config Loaded: ${this.localKeywords.length} keywords.`);
