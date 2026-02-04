@@ -116,7 +116,10 @@ export const DEFAULT_BANNED_DOMAINS = [
     
     // Shopping / PR Wires
     'prweb.com', 'businesswire.com', 'prnewswire.com', 'globenewswire.com',
-    'marketwatch.com'
+    'marketwatch.com',
+    
+    // SPAM / NGO Spam
+    'fundsforngos.org', 'fundsforngo1.weebly.com'
 ];
 
 // --- JUNK KEYWORDS (The "Trap") ---
@@ -148,7 +151,8 @@ export const JUNK_KEYWORDS = [
     'powerball', 'mega millions', 'lottery results', 'winning numbers', 
     'betting odds', 'prediction', 'parlay', 'gambling',
     
-    // Admin / Paywall
+    // Admin / Paywall / Spam Topics
     'subscribe now', 'sign up', 'newsletter', 'login', 'register',
-    'have an account?', 'exclusive content', 'premium', 'giveaway'
+    'have an account?', 'exclusive content', 'premium', 'giveaway',
+    'funds for ngo', 'grants for ngo'
 ];
