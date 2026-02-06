@@ -169,7 +169,11 @@ const getCorsOrigins = () => {
     'https://thegamut.in',
     'https://www.thegamut.in',
     'https://api.thegamut.in',
-    'http://localhost:3000'
+    'http://localhost:3000',
+    // --- NEW: Android/Capacitor Origins ---
+    'capacitor://localhost',
+    'http://localhost',
+    'https://localhost'
   ];
   
   if (env.CORS_ORIGINS) {
