@@ -280,7 +280,7 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. THE SMART FEED (RESTORED SCORING + INJECTION) ---
+  // --- 3. THE SMART FEED (RESTORED SCORING + SLIDING WINDOW FALLBACK) ---
   async getMainFeed(filters: FeedFilters, userId?: string) {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
@@ -334,12 +334,12 @@ class ArticleService {
          };
     }
 
-    // C. SMART MIXER + PERSONALIZED SCORING (Restored functionality)
+    // C. SMART MIXER + PERSONALIZED SCORING (With Fallback)
     
     // 1. Fetch User Stats (Thermostat & Affinity)
     let injectionStrategy = { targetLean: ['Center'], frequency: 7, intensity: 'Neutral' };
-    let userProfile: any = null; // Explicit type ANY to prevent TS errors
-    let userStats: any = null;    // Explicit type ANY to prevent TS errors
+    let userProfile: any = null; 
+    let userStats: any = null;    
     
     if (userId) {
         const [stats, profile] = await Promise.all([
@@ -353,19 +353,56 @@ class ArticleService {
         userProfile = profile;
     }
 
-    // 2. FETCH BASE CONTENT (Trending + Personalized)
-    // We fetch a larger pool to score them in-memory, ensuring the "Comfort" feed logic is preserved
-    const poolSize = 80; 
-    const baseQuery = { 
+    // 2. FETCH BASE CONTENT (Sliding Window Fallback)
+    const poolSize = 80;
+    let rawBaseCandidates: any[] = [];
+
+    // Attempt 1: Recent High Quality (48h)
+    rawBaseCandidates = await Article.find({ 
         publishedAt: { $gte: new Date(Date.now() - 48 * 60 * 60 * 1000) },
         trustScore: { $gt: 40 } 
-    };
+    })
+    .sort({ publishedAt: -1 })
+    .limit(poolSize)
+    .select('+embedding')
+    .lean();
 
-    const rawBaseCandidates = await Article.find(baseQuery)
-        .sort({ publishedAt: -1 }) // Initial sort by time
+    // Attempt 2: Weekly High Quality (7 Days) - Fallback if recent is empty
+    if (rawBaseCandidates.length < 10) {
+        logger.info(`[SmartFeed] 48h pool low (${rawBaseCandidates.length}). Extending to 7 days.`);
+        rawBaseCandidates = await Article.find({ 
+            publishedAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+            trustScore: { $gt: 40 } 
+        })
+        .sort({ publishedAt: -1 })
         .limit(poolSize)
-        .select('+embedding') // Needed for personalization
+        .select('+embedding')
         .lean();
+    }
+
+    // Attempt 3: ULTIMATE FALLBACK (Standard Chronological Feed)
+    // If we still don't have enough high-quality articles, return a simple chronological feed
+    // so the user never sees an empty screen.
+    if (rawBaseCandidates.length < 5) {
+        logger.info(`[SmartFeed] High-trust pool empty. Falling back to Standard Chronological Feed.`);
+        
+        const articles = await Article.find({}) // All articles
+            .sort({ publishedAt: -1 })
+            .skip(page)
+            .limit(Number(limit))
+            .lean()
+            .read('secondaryPreferred');
+
+        return { 
+            articles: articles.map(a => ({ 
+                ...a, 
+                type: 'Article', 
+                imageUrl: optimizeImageUrl(a.imageUrl),
+                suggestionType: 'Latest News' // UI hint
+            })), 
+            pagination: { total: 1000 } 
+        };
+    }
 
     // 3. SCORE CANDIDATES (The restored logic)
     const scoredCandidates = rawBaseCandidates.map((article: any) => {
