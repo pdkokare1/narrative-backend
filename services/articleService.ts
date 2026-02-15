@@ -317,8 +317,9 @@ class ArticleService {
     }
 
     // B. DEEP SCROLL MODE (Page 2+) 
-    // Optimization: Skip heavy personalization logic after page 2
-    if (page >= 40) {
+    // Optimization: Skip heavy personalization logic after page 1 (Offset > 0)
+    // This ensures proper pagination via .skip() which the Smart Mixer does not handle well.
+    if (page > 0) {
          const articles = await Article.find({ 
              publishedAt: { $gte: new Date(Date.now() - 72*3600*1000) },
              trustScore: { $gt: 40 }
@@ -334,7 +335,7 @@ class ArticleService {
          };
     }
 
-    // C. SMART MIXER + PERSONALIZED SCORING (With Fallback)
+    // C. SMART MIXER + PERSONALIZED SCORING (First Page Only)
     
     // 1. Fetch User Stats (Thermostat & Affinity)
     let injectionStrategy = { targetLean: ['Center'], frequency: 7, intensity: 'Neutral' };
