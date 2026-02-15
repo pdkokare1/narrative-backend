@@ -280,7 +280,7 @@ class ArticleService {
     }, CONSTANTS.CACHE.TTL_SEARCH);
   }
 
-  // --- 3. THE SMART FEED (RESTORED SCORING + SLIDING WINDOW FALLBACK) ---
+  // --- 3. THE SMART FEED (RESTORED SCORING + ROBUST PAGINATION FIX) ---
   async getMainFeed(filters: FeedFilters, userId?: string) {
     const { offset = 0, limit = 20 } = filters;
     const page = Number(offset);
@@ -318,12 +318,9 @@ class ArticleService {
 
     // B. DEEP SCROLL MODE (Page 2+) 
     // Optimization: Skip heavy personalization logic after page 1 (Offset > 0)
-    // This ensures proper pagination via .skip() which the Smart Mixer does not handle well.
+    // FIX: Removed 72h/Trust filters to ensure pagination works even with old/test data.
     if (page > 0) {
-         const articles = await Article.find({ 
-             publishedAt: { $gte: new Date(Date.now() - 72*3600*1000) },
-             trustScore: { $gt: 40 }
-         })
+         const articles = await Article.find({}) // All articles allowed in deep scroll
             .sort({ publishedAt: -1 })
             .skip(page)
             .limit(Number(limit))
@@ -494,7 +491,7 @@ class ArticleService {
         }
     }
 
-    // Fill remaining slots
+    // Fill remaining slots from base articles
     while (finalFeed.length < Number(limit) && baseIndex < baseArticles.length) {
         const candidate = baseArticles[baseIndex];
         if (!usedIds.has(candidate._id.toString())) {
@@ -502,6 +499,21 @@ class ArticleService {
             usedIds.add(candidate._id.toString());
         }
         baseIndex++;
+    }
+
+    // --- FIX 2: BACKFILL STRATEGY ---
+    // If we are still short of the requested limit (because Smart Pool was small),
+    // backfill with standard chronological articles to ensure the frontend gets a full page.
+    if (finalFeed.length < Number(limit)) {
+        const needed = Number(limit) - finalFeed.length;
+        const backfillArticles = await Article.find({
+            _id: { $nin: Array.from(usedIds) }
+        })
+        .sort({ publishedAt: -1 })
+        .limit(needed)
+        .lean();
+        
+        finalFeed.push(...backfillArticles);
     }
 
     logger.info(`feed_gen user=${userId || 'guest'} strategy=${injectionStrategy.intensity} items=${finalFeed.length}`);
