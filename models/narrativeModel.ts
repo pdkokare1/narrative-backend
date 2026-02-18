@@ -1,5 +1,5 @@
-// models/narrativeModel.ts
-import mongoose, { Schema, Document, Model } from 'mongoose';
+// src/models/narrativeModel.ts
+import mongoose, { Schema, Document } from 'mongoose';
 import { INarrative } from '../types';
 
 export interface NarrativeDocument extends Omit<INarrative, '_id'>, Document {}
@@ -33,11 +33,9 @@ const narrativeSchema = new Schema<NarrativeDocument>({
   timestamps: true 
 });
 
-// TTL: Delete narratives after 14 days to save space
-// DISABLED for debugging to prevent data loss on older sets
-// narrativeSchema.index({ updatedAt: 1 }, { expireAfterSeconds: 1209600 });
+// REMOVED: The TTL index definition has been deleted to prevents auto-deletion.
+// Ensure you have run db.narratives.dropIndex("updatedAt_1") in your database.
 
-// FIXED: Explicitly bind to 'narratives' collection to prevent naming mismatches
 const Narrative = mongoose.model<NarrativeDocument>('Narrative', narrativeSchema, 'narratives');
 
 export default Narrative;
